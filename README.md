@@ -13,10 +13,20 @@ go run ./cmd/wiki-server
 
 默认配置挂载 `/Users/chenhao/Project/knowledge-base`。
 
+前端工作台位于 `web/`，构建产物默认输出到 `web/dist` 并由 Gin 同域挂载。
+
 也可以通过 `WIKIOS_CONFIG` 切换配置文件：
 
 ```bash
 WIKIOS_CONFIG=configs/config.prod.yaml go run ./cmd/wiki-server
+```
+
+前端构建：
+
+```bash
+cd web
+bun install
+bun run build
 ```
 
 主要接口：

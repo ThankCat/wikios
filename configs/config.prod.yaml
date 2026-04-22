@@ -40,3 +40,6 @@ sync:
   remote: origin
   branch: main
 
+web:
+  enabled: true
+  dist_dir: web/dist

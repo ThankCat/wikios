@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --primary: 168 84% 31%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 215 28% 93%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 214 32% 92%;
+    --muted-foreground: 215 16% 42%;
+    --accent: 198 93% 60%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 215 28% 85%;
+    --input: 215 28% 85%;
+    --ring: 168 84% 31%;
+    --radius: 1rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    @apply min-h-screen bg-background text-foreground antialiased;
+  }
+
+  body {
+    @apply bg-grid-fade;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+@layer components {
+  .panel-glass {
+    @apply rounded-3xl border border-white/50 bg-white/80 shadow-soft backdrop-blur-sm;
+  }
+
+  .sidebar-pill {
+    @apply w-full rounded-2xl px-3 py-3 text-left text-sm font-medium transition hover:bg-secondary hover:text-foreground;
+  }
+
+  .sidebar-pill-active {
+    @apply bg-foreground text-background hover:bg-foreground hover:text-background;
+  }
+}
+

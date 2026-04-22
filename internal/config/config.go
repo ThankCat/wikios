@@ -24,6 +24,7 @@ type Config struct {
 	Sandbox     SandboxConfig     `yaml:"sandbox"`
 	TaskStore   TaskStoreConfig   `yaml:"task_store"`
 	Sync        SyncConfig        `yaml:"sync"`
+	Web         WebConfig         `yaml:"web"`
 }
 
 type ServerConfig struct {
@@ -75,6 +76,11 @@ type SyncConfig struct {
 	Enabled  bool   `yaml:"enabled"`
 	Remote   string `yaml:"remote"`
 	Branch   string `yaml:"branch"`
+}
+
+type WebConfig struct {
+	Enabled *bool  `yaml:"enabled"`
+	DistDir string `yaml:"dist_dir"`
 }
 
 func Load(path string) (*Config, error) {
@@ -155,5 +161,13 @@ func (c *Config) normalizeAndValidate() error {
 	if strings.TrimSpace(c.Sync.Branch) == "" {
 		c.Sync.Branch = "main"
 	}
+	if c.Web.DistDir == "" {
+		c.Web.DistDir = "web/dist"
+	}
+	if c.Web.Enabled == nil {
+		enabled := true
+		c.Web.Enabled = &enabled
+	}
+	c.Web.DistDir = filepath.Clean(c.Web.DistDir)
 	return nil
 }
