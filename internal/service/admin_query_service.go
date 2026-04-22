@@ -19,6 +19,15 @@ type AdminQueryService struct {
 	baseService
 }
 
+type adminQueryLLMOutput struct {
+	Answer         string   `json:"answer"`
+	MatchedPages   []string `json:"matched_pages"`
+	SourcePaths    []string `json:"source_paths"`
+	Contradictions []string `json:"contradictions"`
+	Limitations    []string `json:"limitations"`
+	OutputFile     string   `json:"output_file"`
+}
+
 func NewAdminQueryService(deps Deps) *AdminQueryService {
 	return &AdminQueryService{baseService: newBaseService(deps)}
 }
@@ -44,22 +53,37 @@ func (s *AdminQueryService) Run(ctx context.Context, taskModel *task.Task, trace
 	if err != nil {
 		return nil, err
 	}
-	answer, err := s.deps.LLM.Chat(ctx, s.deps.Config.LLM.ModelAdmin, []llm.Message{
+	prompt += "\n\n你必须只返回一个 JSON 对象，不要输出代码块。"
+	llmText, err := s.deps.LLM.Chat(ctx, s.deps.Config.LLM.ModelAdmin, []llm.Message{
 		{Role: "system", Content: prompt},
 		{Role: "user", Content: fmt.Sprintf("问题：%s\n\n页面：\n%s", req.Question, strings.Join(pageContents, "\n\n"))},
 	})
 	if err != nil {
 		return nil, err
 	}
-	result := map[string]any{
-		"answer":        answer,
-		"matched_pages": matched,
-		"source_paths":  matched,
+	parsed := adminQueryLLMOutput{}
+	if err := llm.DecodeJSONObject(llmText, &parsed); err != nil {
+		parsed.Answer = llmText
 	}
-	var outputFiles []string
+	if len(parsed.MatchedPages) == 0 {
+		parsed.MatchedPages = matched
+	}
+	if len(parsed.SourcePaths) == 0 {
+		parsed.SourcePaths = matched
+	}
+	result := map[string]any{
+		"summary":        "admin query completed",
+		"answer":         parsed.Answer,
+		"matched_pages":  parsed.MatchedPages,
+		"source_paths":   parsed.SourcePaths,
+		"contradictions": parsed.Contradictions,
+		"limitations":    parsed.Limitations,
+	}
+	outputFiles := []string{}
+	artifacts := []report.Artifact{}
 	if req.WriteOutput {
 		outputPath := "wiki/outputs/" + nowDate() + "-" + slugFromText(req.Question) + ".md"
-		outputDoc := buildOutputDocument(req.Question, answer+"\n\n## Sources\n\n"+strings.Join(bulletize(matched), "\n"), len(matched))
+		outputDoc := buildOutputDocument(req.Question, renderQueryOutputMarkdown(parsed), len(parsed.SourcePaths))
 		if _, err := s.executeTool(ctx, taskModel, env, "wiki.write_output", map[string]any{"path": outputPath, "content": outputDoc}, "write output"); err != nil {
 			return nil, err
 		}
@@ -72,9 +96,47 @@ func (s *AdminQueryService) Run(ctx context.Context, taskModel *task.Task, trace
 		}, "append log")
 		result["output_file"] = outputPath
 		outputFiles = append(outputFiles, outputPath)
+		artifacts = append(artifacts, report.Artifact{Kind: "synthesis", Label: "query output", Path: outputPath})
 	}
 	rep := reportResult(taskModel.ID, "query", "admin query completed", outputFiles, taskModel.Steps)
-	result["report"] = report.Markdown(rep)
+	rep.Inputs = []report.Field{
+		{Label: "question", Value: req.Question},
+		{Label: "write_output", Value: fmt.Sprintf("%t", req.WriteOutput)},
+		{Label: "matched_page_count", Value: fmt.Sprintf("%d", len(matched))},
+	}
+	rep.Outputs = []report.Field{
+		{Label: "matched_pages", Value: joinOrNone(parsed.MatchedPages)},
+		{Label: "source_paths", Value: joinOrNone(parsed.SourcePaths)},
+		{Label: "answer_preview", Value: summarizeContent(parsed.Answer)},
+		{Label: "contradictions", Value: joinOrNone(parsed.Contradictions)},
+		{Label: "limitations", Value: joinOrNone(parsed.Limitations)},
+	}
+	rep.Artifacts = artifacts
+	if len(parsed.MatchedPages) == 0 {
+		rep.Findings = append(rep.Findings, report.Finding{Level: "high", Title: "未命中页面", Detail: "没有读取到可用于回答的问题相关页面"})
+		rep.NextActions = append(rep.NextActions, "缩小问题范围，或先补充 source 页面后再执行 query")
+	} else if len(parsed.MatchedPages) < 3 {
+		rep.Findings = append(rep.Findings, report.Finding{Level: "medium", Title: "证据较薄", Detail: "命中页面较少，回答稳定性可能不足"})
+		rep.NextActions = append(rep.NextActions, "补充更多来源页，提升 query 命中覆盖面")
+	} else {
+		rep.Findings = append(rep.Findings, report.Finding{Level: "low", Title: "命中正常", Detail: "已读取多页内容并生成回答"})
+	}
+	for _, contradiction := range parsed.Contradictions {
+		rep.Findings = append(rep.Findings, report.Finding{Level: "medium", Title: "来源分歧", Detail: contradiction})
+	}
+	for _, limitation := range parsed.Limitations {
+		rep.Findings = append(rep.Findings, report.Finding{Level: "medium", Title: "结果限制", Detail: limitation})
+	}
+	reportMarkdown := report.Markdown(rep)
+	reportPath := "wiki/outputs/query-report-" + nowDate() + "-" + slugFromText(req.Question) + ".md"
+	reportDoc := buildReportDocument("Query Report", "query", taskModel.ID, reportMarkdown)
+	if _, err := s.executeTool(ctx, taskModel, env, "wiki.write_output", map[string]any{"path": reportPath, "content": reportDoc}, "write query report"); err != nil {
+		return nil, err
+	}
+	outputFiles = append(outputFiles, reportPath)
+	result["report"] = reportMarkdown
+	result["report_file"] = reportPath
+	result["output_files"] = outputFiles
 	return result, nil
 }
 
@@ -102,4 +164,19 @@ func slugFromText(text string) string {
 		return "output"
 	}
 	return text
+}
+
+func renderQueryOutputMarkdown(parsed adminQueryLLMOutput) string {
+	parts := []string{strings.TrimSpace(parsed.Answer)}
+	if len(parsed.SourcePaths) > 0 {
+		parts = append(parts, "## Sources\n\n"+strings.Join(bulletize(parsed.SourcePaths), "\n"))
+	}
+	if len(parsed.Contradictions) > 0 {
+		parts = append(parts, "## Contradictions\n\n"+strings.Join(bulletize(parsed.Contradictions), "\n"))
+	}
+	if len(parsed.Limitations) > 0 {
+		parts = append(parts, "## Limitations\n\n"+strings.Join(bulletize(parsed.Limitations), "\n"))
+	}
+	parts = append(parts, "## Confidence Notes\n\n- 基于当前命中页面和来源链路生成，若来源不足或存在冲突，请结合 limitations 与 contradictions 一并判断。")
+	return strings.Join(parts, "\n\n")
 }

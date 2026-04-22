@@ -52,7 +52,7 @@ func (t *execQMDTool) Validate(args map[string]any) error {
 		return err
 	}
 	switch sub {
-	case "query", "status", "update", "collection_add":
+	case "query", "status", "update", "collection_add", "multi_get":
 		return nil
 	default:
 		return fmt.Errorf("unsupported qmd subcommand %q", sub)
@@ -86,6 +86,16 @@ func (t *execQMDTool) Execute(ctx context.Context, env *runtime.ExecEnv, args ma
 			name = "wiki"
 		}
 		cmdArgs = append(cmdArgs, "collection", "add", path, "--name", name)
+	case "multi_get":
+		pattern, err := requireString(args, "pattern")
+		if err != nil {
+			return failure(t.risk, "INVALID_ARGS", err), nil
+		}
+		limit := optionalString(args, "limit")
+		if limit == "" {
+			limit = "20"
+		}
+		cmdArgs = append(cmdArgs, "multi-get", pattern, "-l", limit)
 	}
 	stdout, stderr, exitCode, err := runCommand(runCtx, env.WikiRoot, "qmd", cmdArgs, nil)
 	if err != nil {

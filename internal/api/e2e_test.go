@@ -29,7 +29,14 @@ import (
 type mockLLM struct{}
 
 func (mockLLM) Chat(_ context.Context, _ string, _ []llm.Message) (string, error) {
-	return "mock answer", nil
+	return `{
+  "answer": "mock answer",
+  "matched_pages": ["wiki/sources/rules.md"],
+  "source_paths": ["wiki/sources/rules.md"],
+  "contradictions": ["来源之间没有直接冲突，但覆盖面有限"],
+  "limitations": ["当前样本页较少，结论偏保守"],
+  "output_file": ""
+}`, nil
 }
 
 func TestAdminQueryTaskFlow(t *testing.T) {
@@ -110,6 +117,12 @@ func TestAdminQueryTaskFlow(t *testing.T) {
 	}
 	if !bytes.Contains(statusBody, []byte(`"output_file"`)) {
 		t.Fatalf("expected output_file in task result: %s", string(statusBody))
+	}
+	if !bytes.Contains(statusBody, []byte(`"contradictions"`)) || !bytes.Contains(statusBody, []byte(`"limitations"`)) {
+		t.Fatalf("expected structured query fields in task result: %s", string(statusBody))
+	}
+	if !bytes.Contains(statusBody, []byte(`"report_file"`)) || !bytes.Contains(statusBody, []byte(`## Inputs`)) || !bytes.Contains(statusBody, []byte(`## Outputs`)) {
+		t.Fatalf("expected tightened report sections in task result: %s", string(statusBody))
 	}
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/query", bytes.NewReader(reqBody))
 	rec = httptest.NewRecorder()

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"wikios/internal/report"
 	"wikios/internal/task"
 	"wikios/internal/wikiadapter"
 )
@@ -79,12 +80,53 @@ func (s *IngestService) Run(ctx context.Context, taskModel *task.Task, traceID s
 	_, _ = s.executeTool(ctx, taskModel, env, "wiki.append_log", map[string]any{
 		"line": fmt.Sprintf("%s | ingest | %s", nowDate(), title),
 	}, "append log")
-	_, _ = s.executeTool(ctx, taskModel, env, "exec.qmd", map[string]any{"subcommand": "update"}, "qmd update")
+	qmdUpdated := false
+	if _, err := s.executeTool(ctx, taskModel, env, "exec.qmd", map[string]any{"subcommand": "update"}, "qmd update"); err == nil {
+		qmdUpdated = true
+	}
+	rep := reportResult(taskModel.ID, "ingest", "ingest completed", nil, taskModel.Steps)
+	rep.Inputs = []report.Field{
+		{Label: "input_type", Value: req.InputType},
+		{Label: "path", Value: req.Path},
+		{Label: "interactive", Value: fmt.Sprintf("%t", req.Interactive)},
+	}
+	rep.Outputs = []report.Field{
+		{Label: "source_title", Value: title},
+		{Label: "source_slug", Value: slug},
+		{Label: "source_page", Value: target},
+		{Label: "qmd_updated", Value: fmt.Sprintf("%t", qmdUpdated)},
+	}
+	rep.Artifacts = []report.Artifact{
+		{Kind: "source_page", Label: "source page", Path: target},
+		{Kind: "system_page", Label: "index", Path: "wiki/index.md"},
+		{Kind: "system_page", Label: "log", Path: "wiki/log.md"},
+	}
+	rep.Findings = []report.Finding{
+		{Level: "low", Title: "来源页已创建", Detail: fmt.Sprintf("已基于模板生成 %s", target)},
+	}
+	if req.Interactive {
+		rep.NextActions = append(rep.NextActions, "当前为交互模式请求，但 V1 仍按自动化 ingest 流程执行；如需逐步确认，需要后续补充多阶段交互")
+	}
+	if !qmdUpdated {
+		rep.Findings = append(rep.Findings, report.Finding{Level: "medium", Title: "QMD 未更新", Detail: "source 页面已落盘，但未成功刷新 qmd 索引"})
+		rep.NextActions = append(rep.NextActions, "手动执行 qmd update，确认新 source 页已被索引")
+	} else {
+		rep.NextActions = append(rep.NextActions, "可继续执行 admin/query 或 reflect 验证新来源是否已进入检索结果")
+	}
+	reportMarkdown := report.Markdown(rep)
+	reportPath := "wiki/outputs/ingest-report-" + nowDate() + "-" + slug + ".md"
+	reportDoc := buildReportDocument("Ingest Report", "ingest", taskModel.ID, reportMarkdown)
+	if _, err := s.executeTool(ctx, taskModel, env, "wiki.write_output", map[string]any{"path": reportPath, "content": reportDoc}, "write ingest report"); err != nil {
+		return nil, err
+	}
 	return map[string]any{
 		"summary":       "ingest completed",
 		"created_pages": []string{target},
 		"updated_pages": []string{"wiki/index.md", "wiki/log.md"},
-		"qmd_updated":   true,
+		"qmd_updated":   qmdUpdated,
+		"report":        reportMarkdown,
+		"report_file":   reportPath,
+		"output_files":  []string{reportPath},
 	}, nil
 }
 
@@ -100,8 +142,9 @@ func extractTitle(content string, fallback string) string {
 
 func summarizeContent(content string) string {
 	content = strings.TrimSpace(content)
-	if len(content) > 400 {
-		content = content[:400] + "..."
+	runes := []rune(content)
+	if len(runes) > 400 {
+		content = string(runes[:400]) + "..."
 	}
 	return content
 }

@@ -105,11 +105,13 @@ func reportResult(taskID string, taskType string, summary string, outputFiles []
 			Tool:       step.Tool,
 			Status:     step.Status,
 			DurationMs: step.DurationMs,
+			Message:    summarizeStepOutput(step),
 		})
 	}
 	return report.Report{
 		TaskID:      taskID,
 		TaskType:    taskType,
+		Title:       strings.Title(taskType) + " Report",
 		Summary:     summary,
 		Timeline:    events,
 		OutputFiles: outputFiles,
@@ -133,4 +135,43 @@ graph-excluded: true
 
 %s
 `, title, nowDate(), sourceCount, body)
+}
+
+func buildReportDocument(title string, taskType string, taskID string, body string) string {
+	return fmt.Sprintf(`---
+type: system-report
+title: %q
+date: %s
+graph-excluded: true
+task_type: %s
+task_id: %s
+---
+
+%s
+`, title, nowDate(), taskType, taskID, body)
+}
+
+func summarizeStepOutput(step task.Step) string {
+	if step.Output == nil {
+		return ""
+	}
+	for _, key := range []string{"path", "report_path", "error", "stdout"} {
+		if value, ok := step.Output[key]; ok {
+			text := fmt.Sprintf("%v", value)
+			if key == "stdout" && len(text) > 80 {
+				text = text[:80] + "..."
+			}
+			if strings.TrimSpace(text) != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func joinOrNone(items []string) string {
+	if len(items) == 0 {
+		return "暂无"
+	}
+	return strings.Join(items, ", ")
 }

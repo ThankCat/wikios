@@ -44,9 +44,15 @@ func TestPublicAnswerUsesKnowledgeBase(t *testing.T) {
 	})
 	rt := runtime.NewRuntime(registry, runtime.NewPolicyEngine(), runtime.NewValidator(), runtime.NewAuditLogger())
 	svc := service.NewPublicQueryService(service.Deps{
-		Config:       cfg,
-		Runtime:      rt,
-		LLM:          mockLLM{answer: "知识库规则摘要"},
+		Config:  cfg,
+		Runtime: rt,
+		LLM: mockLLM{answer: `{
+  "answer_type": "text",
+  "answer_markdown": "知识库规则摘要",
+  "sources": [{"path":"wiki/sources/rules.md","confidence":"medium"}],
+  "confidence": 0.82,
+  "notes": "基于命中来源生成"
+}`},
 		Retriever:    retrieval.NewQMDRetriever(rt),
 		TaskStore:    store,
 		PromptDir:    "../../internal/llm/prompts",
@@ -56,7 +62,7 @@ func TestPublicAnswerUsesKnowledgeBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("answer: %v", err)
 	}
-	if resp.Answer == "" || len(resp.Sources) == 0 {
+	if resp.AnswerMarkdown == "" || resp.AnswerType != "text" || len(resp.Sources) == 0 || resp.Notes == "" {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
