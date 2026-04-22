@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"wikios/internal/task"
 )
 
 type LintRequest struct {
@@ -18,13 +17,13 @@ func NewLintService(deps Deps) *LintService {
 	return &LintService{baseService: newBaseService(deps)}
 }
 
-func (s *LintService) Run(ctx context.Context, taskModel *task.Task, traceID string, req LintRequest) (map[string]any, error) {
-	env := s.env("admin", traceID, taskModel.ID, taskModel.ID)
-	lintResult, err := s.executeTool(ctx, taskModel, env, "lint.run", nil, "run lint")
+func (s *LintService) Run(ctx context.Context, execution *Execution, traceID string, req LintRequest) (map[string]any, error) {
+	env := s.env("admin", traceID, execution.ID, execution.ID)
+	lintResult, err := s.executeTool(ctx, execution, env, "lint.run", nil, "run lint")
 	if err != nil {
 		return nil, err
 	}
-	statusResult, err := s.executeTool(ctx, taskModel, env, "exec.qmd", map[string]any{
+	statusResult, err := s.executeTool(ctx, execution, env, "exec.qmd", map[string]any{
 		"subcommand": "status",
 	}, "qmd status")
 	if err != nil {

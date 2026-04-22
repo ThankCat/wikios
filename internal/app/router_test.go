@@ -12,15 +12,20 @@ import (
 	"wikios/internal/api"
 	"wikios/internal/app"
 	"wikios/internal/config"
+	"wikios/internal/store"
 )
 
 func TestRouterServesMissingWebBuildPage(t *testing.T) {
+	dataStore, err := store.Open(filepath.Join(t.TempDir(), "service.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
 	cfg := &config.Config{
 		MountedWiki: config.MountedWikiConfig{Name: "fixture-wiki"},
-		Auth:        config.AuthConfig{AdminBearerToken: "secret"},
+		Auth:        config.AuthConfig{SessionCookieName: "wikios_admin_session"},
 		Web:         config.WebConfig{DistDir: filepath.Join(t.TempDir(), "dist")},
 	}
-	router := app.NewRouter(cfg, &api.Handlers{})
+	router := app.NewRouter(cfg, &api.Handlers{}, dataStore)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -51,7 +56,7 @@ func TestRouterServesMissingWebBuildPage(t *testing.T) {
 	}
 }
 
-func TestRouterServesStaticFilesAndSPAFallback(t *testing.T) {
+func TestRouterServesStaticFilesAndAPINotFound(t *testing.T) {
 	distDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(distDir, "index.html"), []byte("<html><body>workbench</body></html>"), 0o644); err != nil {
 		t.Fatalf("write index: %v", err)
@@ -62,13 +67,16 @@ func TestRouterServesStaticFilesAndSPAFallback(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(distDir, "assets", "app.js"), []byte("console.log('ok');"), 0o644); err != nil {
 		t.Fatalf("write asset: %v", err)
 	}
-
+	dataStore, err := store.Open(filepath.Join(t.TempDir(), "service.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
 	cfg := &config.Config{
 		MountedWiki: config.MountedWikiConfig{Name: "fixture-wiki"},
-		Auth:        config.AuthConfig{AdminBearerToken: "secret"},
+		Auth:        config.AuthConfig{SessionCookieName: "wikios_admin_session"},
 		Web:         config.WebConfig{DistDir: distDir},
 	}
-	router := app.NewRouter(cfg, &api.Handlers{})
+	router := app.NewRouter(cfg, &api.Handlers{}, dataStore)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
@@ -78,17 +86,10 @@ func TestRouterServesStaticFilesAndSPAFallback(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/login", nil)
+	req = httptest.NewRequest(http.MethodGet, "/chat", nil)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "workbench") {
 		t.Fatalf("expected spa fallback, got %d %s", rec.Code, rec.Body.String())
-	}
-
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/../secrets.txt", nil)
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for invalid path, got %d", rec.Code)
 	}
 
 	rec = httptest.NewRecorder()

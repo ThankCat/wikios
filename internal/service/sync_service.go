@@ -2,8 +2,6 @@ package service
 
 import (
 	"context"
-
-	"wikios/internal/task"
 )
 
 type SyncRequest struct {
@@ -18,19 +16,19 @@ func NewSyncService(deps Deps) *SyncService {
 	return &SyncService{baseService: newBaseService(deps)}
 }
 
-func (s *SyncService) Run(ctx context.Context, taskModel *task.Task, traceID string, req SyncRequest) (map[string]any, error) {
-	env := s.env("admin", traceID, taskModel.ID, taskModel.ID)
-	status, err := s.executeTool(ctx, taskModel, env, "git.status", nil, "git status")
+func (s *SyncService) Run(ctx context.Context, execution *Execution, traceID string, req SyncRequest) (map[string]any, error) {
+	env := s.env("admin", traceID, execution.ID, execution.ID)
+	status, err := s.executeTool(ctx, execution, env, "git.status", nil, "git status")
 	if err != nil {
 		return nil, err
 	}
-	commit, err := s.executeTool(ctx, taskModel, env, "git.commit", map[string]any{
+	commit, err := s.executeTool(ctx, execution, env, "git.commit", map[string]any{
 		"message": req.Message,
 	}, "git commit")
 	if err != nil {
 		return nil, err
 	}
-	push, err := s.executeTool(ctx, taskModel, env, "git.push", nil, "git push")
+	push, err := s.executeTool(ctx, execution, env, "git.push", nil, "git push")
 	if err != nil {
 		return nil, err
 	}

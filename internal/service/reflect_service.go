@@ -8,7 +8,6 @@ import (
 	"wikios/internal/llm"
 	"wikios/internal/report"
 	"wikios/internal/runtime"
-	"wikios/internal/task"
 )
 
 type ReflectRequest struct {
@@ -22,12 +21,13 @@ type ReflectService struct {
 }
 
 type reflectLLMOutput struct {
-	Patterns       []string              `json:"patterns"`
-	Gaps           []string              `json:"gaps"`
-	Contradictions []string              `json:"contradictions"`
-	LowRiskFixes   []string              `json:"low_risk_fixes"`
-	Proposals      []reflectProposalItem `json:"proposals"`
-	OutputFiles    []string              `json:"output_files"`
+	Patterns       []string               `json:"patterns"`
+	Gaps           []string               `json:"gaps"`
+	Contradictions []string               `json:"contradictions"`
+	LowRiskFixes   []string               `json:"low_risk_fixes"`
+	Proposals      []reflectProposalItem  `json:"proposals"`
+	Corrections    []correctionSuggestion `json:"corrections"`
+	OutputFiles    []string               `json:"output_files"`
 }
 
 type reflectProposalItem struct {
@@ -42,17 +42,17 @@ func NewReflectService(deps Deps) *ReflectService {
 	return &ReflectService{baseService: newBaseService(deps)}
 }
 
-func (s *ReflectService) Run(ctx context.Context, taskModel *task.Task, traceID string, req ReflectRequest) (map[string]any, error) {
-	env := s.env("admin", traceID, taskModel.ID, taskModel.ID)
-	counterEvidence := s.collectCounterEvidence(ctx, taskModel, env, req.Topic)
-	stageOneBlocks := s.collectStageOneBlocks(ctx, taskModel, env)
-	deepPages, deepBlocks := s.collectDeepReadBlocks(ctx, taskModel, env, req.Topic)
+func (s *ReflectService) Run(ctx context.Context, execution *Execution, traceID string, req ReflectRequest) (map[string]any, error) {
+	env := s.env("admin", traceID, execution.ID, execution.ID)
+	counterEvidence := s.collectCounterEvidence(ctx, execution, env, req.Topic)
+	stageOneBlocks := s.collectStageOneBlocks(ctx, execution, env)
+	deepPages, deepBlocks := s.collectDeepReadBlocks(ctx, execution, env, req.Topic)
 	prompt, err := s.loadPromptWithWikiAgent("admin_reflect_system.md")
 	if err != nil {
 		return nil, err
 	}
 	prompt += "\n\n你必须只返回一个 JSON 对象，不要输出代码块。"
-	llmText, err := s.executeLLM(ctx, taskModel, s.deps.Config.LLM.ModelAdmin, []llm.Message{
+	llmText, err := s.executeLLM(ctx, execution, s.deps.Config.LLM.ModelAdmin, []llm.Message{
 		{Role: "system", Content: prompt},
 		{Role: "user", Content: fmt.Sprintf("主题：%s\n\nStage 0 反证：\n%s\n\nStage 1 模式扫描：\n%s\n\nStage 2 深读页面：\n%s", req.Topic, counterEvidence, stageOneBlocks, strings.Join(deepBlocks, "\n\n"))},
 	}, "llm reflect")
@@ -63,18 +63,33 @@ func (s *ReflectService) Run(ctx context.Context, taskModel *task.Task, traceID 
 	if err := llm.DecodeJSONObject(llmText, &parsed); err != nil {
 		parsed.Patterns = []string{llmText}
 	}
+	detectedCorrections, err := s.detectBackedCorrections(ctx, execution, env, req.Topic)
+	if err != nil {
+		return nil, err
+	}
+	fixes, correctionWarnings, err := s.buildCorrectionFixes(ctx, execution, env, detectedCorrections.Corrections)
+	if err != nil {
+		return nil, err
+	}
+	appliedFixes := []string{}
+	if req.AutoFixLowRisk && len(fixes) > 0 {
+		appliedFixes, err = s.applyCorrectionFixes(ctx, execution, env, fixes)
+		if err != nil {
+			return nil, err
+		}
+	}
 	outputFiles := []string{}
 	artifacts := []report.Artifact{}
 	if req.WriteReport {
-		path := "wiki/outputs/gap-report-" + nowDate() + ".md"
+		path := "wiki/outputs/reflect/" + nowDate() + "-" + slugFromText(req.Topic) + "-reflect-report.md"
 		doc := buildOutputDocument("Gap Report", renderReflectOutputMarkdown(parsed), len(deepPages))
-		if _, err := s.executeTool(ctx, taskModel, env, "wiki.write_output", map[string]any{"path": path, "content": doc}, "write gap report"); err != nil {
+		if _, err := s.executeTool(ctx, execution, env, "wiki.write_output", map[string]any{"path": path, "content": doc}, "write reflect output"); err != nil {
 			return nil, err
 		}
 		outputFiles = append(outputFiles, path)
-		artifacts = append(artifacts, report.Artifact{Kind: "gap_report", Label: "gap report", Path: path})
+		artifacts = append(artifacts, report.Artifact{Kind: "reflect_report", Label: "reflect report", Path: path})
 	}
-	rep := reportResult(taskModel.ID, "reflect", "reflect completed", outputFiles, taskModel.Steps)
+	rep := reportResult(execution.ID, "reflect", "reflect completed", outputFiles, execution.Steps)
 	rep.Inputs = []report.Field{
 		{Label: "topic", Value: req.Topic},
 		{Label: "write_report", Value: fmt.Sprintf("%t", req.WriteReport)},
@@ -88,6 +103,8 @@ func (s *ReflectService) Run(ctx context.Context, taskModel *task.Task, traceID 
 		{Label: "gaps", Value: joinOrNone(parsed.Gaps)},
 		{Label: "contradictions", Value: joinOrNone(parsed.Contradictions)},
 		{Label: "low_risk_fixes", Value: joinOrNone(parsed.LowRiskFixes)},
+		{Label: "detected_corrections", Value: fmt.Sprintf("%d", len(fixes))},
+		{Label: "applied_corrections", Value: joinOrNone(appliedFixes)},
 	}
 	rep.Artifacts = artifacts
 	if len(deepPages) == 0 {
@@ -106,6 +123,22 @@ func (s *ReflectService) Run(ctx context.Context, taskModel *task.Task, traceID 
 	for _, contradiction := range parsed.Contradictions {
 		rep.Findings = append(rep.Findings, report.Finding{Level: "medium", Title: "潜在矛盾", Detail: contradiction})
 	}
+	for _, correction := range fixes {
+		rep.Findings = append(rep.Findings, report.Finding{
+			Level:  "low",
+			Title:  "检测到可验证纠错",
+			Detail: fmt.Sprintf("%s: %s -> %s", correction.Path, correction.Wrong, correction.Correct),
+		})
+	}
+	for _, warning := range append(detectedCorrections.Warnings, correctionWarnings...) {
+		rep.Findings = append(rep.Findings, report.Finding{Level: "medium", Title: "纠错提示", Detail: warning})
+	}
+	if len(fixes) > 0 && !req.AutoFixLowRisk {
+		rep.NextActions = append(rep.NextActions, "已检测到 raw 支持的低风险字面纠错；可用 repair 自动模式直接应用")
+	}
+	if len(appliedFixes) > 0 {
+		rep.NextActions = append(rep.NextActions, "已自动应用低风险纠错，请重新执行 query 验证答案是否恢复")
+	}
 	for _, item := range parsed.Proposals {
 		rep.Proposals = append(rep.Proposals, report.Proposal{
 			ID:          item.ID,
@@ -120,26 +153,28 @@ func (s *ReflectService) Run(ctx context.Context, taskModel *task.Task, traceID 
 		rep.NextActions = append(rep.NextActions, "如需留档，请使用 write_report=true 重新执行 reflect")
 	}
 	reportMarkdown := report.Markdown(rep)
-	reportPath := "wiki/outputs/reflect-report-" + nowDate() + "-" + slugFromText(req.Topic) + ".md"
-	reportDoc := buildReportDocument("Reflect Report", "reflect", taskModel.ID, reportMarkdown)
-	if _, err := s.executeTool(ctx, taskModel, env, "wiki.write_output", map[string]any{"path": reportPath, "content": reportDoc}, "write reflect report"); err != nil {
+	reportPath := "wiki/outputs/reflect/" + nowDate() + "-" + slugFromText(req.Topic) + "-reflect-report.md"
+	reportDoc := buildReportDocument("反思与修复报告", "reflect", execution.ID, reportMarkdown)
+	if _, err := s.executeTool(ctx, execution, env, "wiki.write_output", map[string]any{"path": reportPath, "content": reportDoc}, "write reflect report"); err != nil {
 		return nil, err
 	}
 	outputFiles = append(outputFiles, reportPath)
 	return map[string]any{
-		"summary":        "reflect completed",
-		"patterns":       parsed.Patterns,
-		"gaps":           parsed.Gaps,
-		"contradictions": parsed.Contradictions,
-		"low_risk_fixes": parsed.LowRiskFixes,
-		"proposals":      parsed.Proposals,
-		"output_files":   outputFiles,
-		"report":         reportMarkdown,
-		"report_file":    reportPath,
+		"summary":              firstNonEmpty(detectedCorrections.Summary, "reflect completed"),
+		"patterns":             parsed.Patterns,
+		"gaps":                 parsed.Gaps,
+		"contradictions":       parsed.Contradictions,
+		"low_risk_fixes":       parsed.LowRiskFixes,
+		"detected_corrections": fixes,
+		"applied_fixes":        appliedFixes,
+		"proposals":            parsed.Proposals,
+		"output_files":         outputFiles,
+		"report":               reportMarkdown,
+		"report_file":          reportPath,
 	}, nil
 }
 
-func (s *ReflectService) collectCounterEvidence(ctx context.Context, taskModel *task.Task, env *runtime.ExecEnv, topic string) string {
+func (s *ReflectService) collectCounterEvidence(ctx context.Context, execution *Execution, env *runtime.ExecEnv, topic string) string {
 	query := topic + " 反对 争议 风险 反例"
 	pages, err := s.deps.Retriever.Retrieve(ctx, env, query, 3)
 	if err != nil || len(pages) == 0 {
@@ -147,7 +182,7 @@ func (s *ReflectService) collectCounterEvidence(ctx context.Context, taskModel *
 	}
 	blocks := make([]string, 0, len(pages))
 	for _, page := range pages {
-		readResult, err := s.executeTool(ctx, taskModel, env, "wiki.read_page", map[string]any{"path": page.Path}, "counter read "+page.Path)
+		readResult, err := s.executeTool(ctx, execution, env, "wiki.read_page", map[string]any{"path": page.Path}, "counter read "+page.Path)
 		if err != nil {
 			continue
 		}
@@ -160,7 +195,7 @@ func (s *ReflectService) collectCounterEvidence(ctx context.Context, taskModel *
 	return strings.Join(blocks, "\n\n")
 }
 
-func (s *ReflectService) collectStageOneBlocks(ctx context.Context, taskModel *task.Task, env *runtime.ExecEnv) string {
+func (s *ReflectService) collectStageOneBlocks(ctx context.Context, execution *Execution, env *runtime.ExecEnv) string {
 	requests := []struct {
 		pattern string
 		limit   string
@@ -171,7 +206,7 @@ func (s *ReflectService) collectStageOneBlocks(ctx context.Context, taskModel *t
 	}
 	blocks := []string{}
 	for _, req := range requests {
-		result, err := s.executeTool(ctx, taskModel, env, "exec.qmd", map[string]any{
+		result, err := s.executeTool(ctx, execution, env, "exec.qmd", map[string]any{
 			"subcommand": "multi_get",
 			"pattern":    req.pattern,
 			"limit":      req.limit,
@@ -191,7 +226,7 @@ func (s *ReflectService) collectStageOneBlocks(ctx context.Context, taskModel *t
 	return strings.Join(blocks, "\n\n")
 }
 
-func (s *ReflectService) collectDeepReadBlocks(ctx context.Context, taskModel *task.Task, env *runtime.ExecEnv, topic string) ([]string, []string) {
+func (s *ReflectService) collectDeepReadBlocks(ctx context.Context, execution *Execution, env *runtime.ExecEnv, topic string) ([]string, []string) {
 	pages, err := s.deps.Retriever.Retrieve(ctx, env, topic, s.deps.Config.Retrieval.TopK)
 	if err != nil {
 		return nil, nil
@@ -199,7 +234,7 @@ func (s *ReflectService) collectDeepReadBlocks(ctx context.Context, taskModel *t
 	paths := make([]string, 0, len(pages))
 	blocks := make([]string, 0, len(pages))
 	for _, page := range pages {
-		readResult, err := s.executeTool(ctx, taskModel, env, "wiki.read_page", map[string]any{"path": page.Path}, "deep read "+page.Path)
+		readResult, err := s.executeTool(ctx, execution, env, "wiki.read_page", map[string]any{"path": page.Path}, "deep read "+page.Path)
 		if err != nil {
 			continue
 		}

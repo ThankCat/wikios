@@ -4,14 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -22,7 +21,7 @@ import (
 	"wikios/internal/retrieval"
 	"wikios/internal/runtime"
 	"wikios/internal/service"
-	"wikios/internal/task"
+	"wikios/internal/store"
 	"wikios/internal/tools"
 	"wikios/internal/wikiadapter"
 )
@@ -30,44 +29,25 @@ import (
 type mockLLM struct{}
 
 func (mockLLM) Chat(_ context.Context, _ string, messages []llm.Message) (string, error) {
-	if len(messages) > 0 && strings.Contains(messages[0].Content, "Wiki 摄入助手") {
+	if len(messages) > 0 && strings.Contains(messages[0].Content, "后台深度查询助手") {
 		return `{
-  "summary": "已根据 mounted wiki 的摄入规则完成结构化提取",
-  "source_title": "Customer 1-5",
-  "source_slug": "customer-1-5",
-  "key_points": ["测试来源要点一", "测试来源要点二"],
-  "concepts_affected": ["客户分层", "需求管理"],
-  "entities_affected": ["Customer 1-5"],
-  "concepts": [
-    {
-      "title": "客户分层",
-      "slug": "customer-segmentation",
-      "english_name": "Customer Segmentation",
-      "aliases": ["客户分层", "Customer Segmentation"],
-      "definition": "客户分层是按照客户价值、需求或服务策略对客户进行分类的方法，用于决定差异化服务方式。",
-      "key_points": ["可以帮助客服团队识别高价值客户", "不同层级客户适合不同响应策略"],
-      "contradictions": []
-    },
-    {
-      "title": "需求管理",
-      "slug": "demand-management",
-      "english_name": "Demand Management",
-      "aliases": ["需求管理", "Demand Management"],
-      "definition": "需求管理用于收集、整理和持续跟踪客户需求，确保知识库内容与客户问题保持一致。",
-      "key_points": ["需要持续记录高频问题", "应与知识库更新节奏联动"],
-      "contradictions": []
-    }
-  ],
-  "entities": [
-    {
-      "title": "Customer 1-5",
-      "slug": "customer-1-5",
-      "entity_type": "product",
-      "aliases": ["Customer 1-5"],
-      "description": "一个用于验证 ingest 链路的测试来源实体。",
-      "key_contributions": ["提供了客户服务知识整理的测试样本"]
-    }
-  ],
+  "answer": "静态IP适合需要长期稳定网络环境的场景，例如账号长期运营、白名单绑定和远程办公。",
+  "matched_pages": ["wiki/sources/customer-qa.md"],
+  "source_paths": ["wiki/sources/customer-qa.md"],
+  "contradictions": [],
+  "limitations": []
+}`, nil
+	}
+	if len(messages) > 0 && strings.Contains(messages[0].Content, "摄入助手") {
+		return `{
+  "summary": "已完成来源摄入",
+  "source_title": "Customer QA",
+  "source_slug": "customer-qa",
+  "key_points": ["静态IP适合稳定场景"],
+  "concepts_affected": ["静态IP"],
+  "entities_affected": ["四叶天"],
+  "concepts": [],
+  "entities": [],
   "contradictions": [],
   "low_risk_fixes": [],
   "high_risk_proposals": [],
@@ -76,151 +56,135 @@ func (mockLLM) Chat(_ context.Context, _ string, messages []llm.Message) (string
 }`, nil
 	}
 	return `{
-  "answer": "mock answer",
-  "matched_pages": ["wiki/sources/rules.md"],
-  "source_paths": ["wiki/sources/rules.md"],
-  "contradictions": ["来源之间没有直接冲突，但覆盖面有限"],
-  "limitations": ["当前样本页较少，结论偏保守"],
-  "output_file": ""
+  "answer_type": "text",
+  "answer_markdown": "静态IP适合账号运营、白名单绑定和远程办公。",
+  "sources": [{"path":"wiki/sources/customer-qa.md","confidence":"medium"}],
+  "confidence": 0.9,
+  "notes": ""
 }`, nil
 }
 
-func (mockLLM) StreamChat(_ context.Context, _ string, messages []llm.Message, onDelta func(string)) (string, error) {
-	text, err := mockLLM{}.Chat(context.Background(), "", messages)
+func (m mockLLM) StreamChat(ctx context.Context, model string, messages []llm.Message, onDelta func(string)) (string, error) {
+	text, err := m.Chat(ctx, model, messages)
 	if err != nil {
 		return "", err
 	}
-	if onDelta != nil && text != "" {
+	if onDelta != nil {
 		onDelta(text)
 	}
 	return text, nil
 }
 
-func TestAdminQueryTaskFlow(t *testing.T) {
+func TestAdminLoginAndChat(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	workspace := t.TempDir()
-	root := createFixtureWiki(t)
-	cfg := &config.Config{
-		Server:      config.ServerConfig{Mode: "debug"},
-		MountedWiki: config.MountedWikiConfig{Root: root, QMDIndex: "test-index"},
-		Auth:        config.AuthConfig{AdminBearerToken: "secret"},
-		Retrieval:   config.RetrievalConfig{TopK: 3},
-		Workspace:   config.WorkspaceConfig{BaseDir: workspace},
-		Sandbox:     config.SandboxConfig{QMDTimeoutSec: 1},
-		Sync:        config.SyncConfig{Remote: "origin", Branch: "main"},
-		LLM:         config.LLMConfig{ModelAdmin: "test", ModelPublic: "test"},
-		TaskStore:   config.TaskStoreConfig{SQLitePath: filepath.Join(workspace, "service.db")},
-	}
-	store, err := task.OpenStore(cfg.TaskStore.SQLitePath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	registry := runtime.NewRegistry()
-	tools.RegisterAll(registry, tools.Dependencies{Config: cfg, Resolver: wikiadapter.NewPathResolver(cfg.MountedWiki.Root)})
-	rt := runtime.NewRuntime(registry, runtime.NewPolicyEngine(), runtime.NewValidator(), runtime.NewAuditLogger())
-	deps := service.Deps{
-		Config:       cfg,
-		Runtime:      rt,
-		LLM:          mockLLM{},
-		Retriever:    retrieval.NewQMDRetriever(rt),
-		TaskStore:    store,
-		PromptDir:    "../../internal/llm/prompts",
-		WorkspaceDir: workspace,
-	}
-	handlers := api.NewHandlers(
-		service.NewPublicQueryService(deps),
-		service.NewAdminQueryService(deps),
-		service.NewIngestService(deps),
-		service.NewLintService(deps),
-		service.NewReflectService(deps),
-		service.NewRepairService(deps),
-		service.NewSyncService(deps),
-		task.NewManager(store),
-	)
-	router := app.NewRouter(cfg, handlers)
+	router := buildRouter(t)
 
-	reqBody, _ := json.Marshal(service.AdminQueryRequest{Question: "知识库系统规则", WriteOutput: true})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/query", bytes.NewReader(reqBody))
-	req.Header.Set("Authorization", "Bearer secret")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	loginBody, _ := json.Marshal(map[string]any{
+		"username": "admin",
+		"password": "admin123",
+	})
+	loginRec := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/auth/login", bytes.NewReader(loginBody))
+	loginReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login failed: %d %s", loginRec.Code, loginRec.Body.String())
 	}
-	var accepted map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &accepted); err != nil {
-		t.Fatalf("decode accepted: %v", err)
-	}
-	taskID := accepted["task_id"].(string)
+	cookie := loginRec.Result().Cookies()[0]
 
-	var finalTask task.Task
-	for range 40 {
-		time.Sleep(100 * time.Millisecond)
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tasks/"+taskID, nil)
-		req.Header.Set("Authorization", "Bearer secret")
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("expected 200 for task status, got %d", rec.Code)
-		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &finalTask); err != nil {
-			t.Fatalf("decode task status: %v", err)
-		}
-		if finalTask.Status == task.StatusSuccess || finalTask.Status == task.StatusFailed {
-			break
-		}
+	chatBody, _ := json.Marshal(map[string]any{
+		"message":   "静态IP适用什么场景？",
+		"stream":    false,
+		"mode_hint": "query",
+	})
+	chatRec := httptest.NewRecorder()
+	chatReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/chat", bytes.NewReader(chatBody))
+	chatReq.Header.Set("Content-Type", "application/json")
+	chatReq.AddCookie(cookie)
+	router.ServeHTTP(chatRec, chatReq)
+	if chatRec.Code != http.StatusOK {
+		t.Fatalf("chat failed: %d %s", chatRec.Code, chatRec.Body.String())
 	}
-	statusBody, _ := json.Marshal(finalTask)
-	if finalTask.Status != task.StatusSuccess {
-		t.Fatalf("task did not complete successfully: %s", string(statusBody))
-	}
-	if !bytes.Contains(statusBody, []byte(`"output_file"`)) {
-		t.Fatalf("expected output_file in task result: %s", string(statusBody))
-	}
-	if !bytes.Contains(statusBody, []byte(`"contradictions"`)) || !bytes.Contains(statusBody, []byte(`"limitations"`)) {
-		t.Fatalf("expected structured query fields in task result: %s", string(statusBody))
-	}
-	if !bytes.Contains(statusBody, []byte(`"report_file"`)) || !bytes.Contains(statusBody, []byte(`## Inputs`)) || !bytes.Contains(statusBody, []byte(`## Outputs`)) {
-		t.Fatalf("expected tightened report sections in task result: %s", string(statusBody))
-	}
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/query", bytes.NewReader(reqBody))
-	rec = httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 without token, got %d", rec.Code)
-	}
-	health := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	healthRec := httptest.NewRecorder()
-	router.ServeHTTP(healthRec, health)
-	if healthRec.Code != http.StatusOK {
-		t.Fatalf("expected healthz to work")
-	}
-	if _, err := os.Stat(filepath.Join(root, "wiki/outputs")); err != nil {
-		t.Fatalf("fixture outputs directory missing: %v", err)
+	if !strings.Contains(chatRec.Body.String(), "长期稳定网络环境") {
+		t.Fatalf("unexpected chat response: %s", chatRec.Body.String())
 	}
 }
 
-func TestAdminIngestAcceptsAbsoluteMountedPath(t *testing.T) {
+func TestAdminUploadStoresAndAutoIngestsText(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	router := buildRouter(t)
+	cookie := loginCookie(t, router)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "customer.txt")
+	if err != nil {
+		t.Fatalf("create part: %v", err)
+	}
+	_, _ = part.Write([]byte("# Customer QA\n静态IP适合账号运营。"))
+	_ = writer.Close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/upload", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.AddCookie(cookie)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "已完成来源摄入") {
+		t.Fatalf("unexpected upload response: %s", rec.Body.String())
+	}
+}
+
+func TestPublicAnswerStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := buildRouter(t)
+
+	body, _ := json.Marshal(map[string]any{
+		"question": "静态IP适用什么场景？",
+		"history": []map[string]any{
+			{"role": "user", "content": "静态IP是什么？"},
+		},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer/stream", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stream failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "event: delta") || !strings.Contains(rec.Body.String(), "event: result") {
+		t.Fatalf("expected stream events, got %s", rec.Body.String())
+	}
+}
+
+func buildRouter(t *testing.T) http.Handler {
+	t.Helper()
 	workspace := t.TempDir()
 	root := createFixtureWiki(t)
-	rawPath := filepath.Join(root, "raw", "articles", "customer1-5.md")
-	mustWrite(t, rawPath, "# Customer 1-5\n\n这是一个用于 ingest 的测试来源。\n\n包含若干关键事实。\n")
 	cfg := &config.Config{
 		Server:      config.ServerConfig{Mode: "debug"},
 		MountedWiki: config.MountedWikiConfig{Root: root, QMDIndex: "test-index"},
-		Auth:        config.AuthConfig{AdminBearerToken: "secret"},
-		Retrieval:   config.RetrievalConfig{TopK: 3},
-		Workspace:   config.WorkspaceConfig{BaseDir: workspace},
-		Sandbox:     config.SandboxConfig{QMDTimeoutSec: 1},
-		Sync:        config.SyncConfig{Remote: "origin", Branch: "main"},
-		LLM:         config.LLMConfig{ModelAdmin: "test", ModelPublic: "test"},
-		TaskStore:   config.TaskStoreConfig{SQLitePath: filepath.Join(workspace, "service.db")},
+		Auth: config.AuthConfig{
+			DefaultAdminUsername: "admin",
+			DefaultAdminPassword: "admin123",
+			SessionCookieName:    "wikios_admin_session",
+			SessionTTLHours:      24,
+		},
+		Retrieval: config.RetrievalConfig{TopK: 3},
+		Workspace: config.WorkspaceConfig{BaseDir: workspace, DefaultTimeoutSec: 5},
+		Sandbox:   config.SandboxConfig{QMDTimeoutSec: 1, PythonTimeoutSec: 1},
+		Sync:      config.SyncConfig{Remote: "origin", Branch: "main"},
+		LLM:       config.LLMConfig{ModelAdmin: "test", ModelPublic: "test"},
+		Storage:   config.StorageConfig{SQLitePath: filepath.Join(workspace, "service.db")},
 	}
-	store, err := task.OpenStore(cfg.TaskStore.SQLitePath)
+	dataStore, err := store.Open(cfg.Storage.SQLitePath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
+	}
+	if err := dataStore.EnsureDefaultAdmin(context.Background(), "admin", "admin123"); err != nil {
+		t.Fatalf("seed admin: %v", err)
 	}
 	registry := runtime.NewRegistry()
 	tools.RegisterAll(registry, tools.Dependencies{Config: cfg, Resolver: wikiadapter.NewPathResolver(cfg.MountedWiki.Root)})
@@ -230,9 +194,9 @@ func TestAdminIngestAcceptsAbsoluteMountedPath(t *testing.T) {
 		Runtime:      rt,
 		LLM:          mockLLM{},
 		Retriever:    retrieval.NewQMDRetriever(rt),
-		TaskStore:    store,
+		Store:        dataStore,
 		PromptDir:    "../../internal/llm/prompts",
-		WorkspaceDir: workspace,
+		WorkspaceDir: cfg.Workspace.BaseDir,
 	}
 	handlers := api.NewHandlers(
 		service.NewPublicQueryService(deps),
@@ -242,115 +206,54 @@ func TestAdminIngestAcceptsAbsoluteMountedPath(t *testing.T) {
 		service.NewReflectService(deps),
 		service.NewRepairService(deps),
 		service.NewSyncService(deps),
-		task.NewManager(store),
+		service.NewUploadService(deps),
+		dataStore,
+		cfg.Auth,
 	)
-	router := app.NewRouter(cfg, handlers)
+	return app.NewRouter(cfg, handlers, dataStore)
+}
 
-	reqBody, _ := json.Marshal(service.IngestRequest{
-		InputType: "file",
-		Path:      rawPath,
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/ingest", bytes.NewReader(reqBody))
-	req.Header.Set("Authorization", "Bearer secret")
-	req.Header.Set("Content-Type", "application/json")
+func loginCookie(t *testing.T, router http.Handler) *http.Cookie {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"username": "admin", "password": "admin123"})
 	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/auth/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login failed: %d %s", rec.Code, rec.Body.String())
 	}
-	var accepted map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &accepted); err != nil {
-		t.Fatalf("decode accepted: %v", err)
-	}
-	taskID := accepted["task_id"].(string)
-
-	var finalTask task.Task
-	for range 40 {
-		time.Sleep(100 * time.Millisecond)
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tasks/"+taskID, nil)
-		req.Header.Set("Authorization", "Bearer secret")
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("expected 200 for task status, got %d", rec.Code)
-		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &finalTask); err != nil {
-			t.Fatalf("decode task status: %v", err)
-		}
-		if finalTask.Status == task.StatusSuccess || finalTask.Status == task.StatusFailed {
-			break
-		}
-	}
-	statusBody, _ := json.Marshal(finalTask)
-	if finalTask.Status != task.StatusSuccess {
-		t.Fatalf("ingest task did not complete: %s", string(statusBody))
-	}
-	if _, err := os.Stat(filepath.Join(root, "wiki", "sources", "customer-1-5.md")); err != nil {
-		t.Fatalf("expected ingested source page to exist: %v", err)
-	}
-	conceptPath := filepath.Join(root, "wiki", "concepts", "customer-segmentation.md")
-	content, err := os.ReadFile(conceptPath)
-	if err != nil {
-		t.Fatalf("expected concept page to exist: %v", err)
-	}
-	text := string(content)
-	if !strings.Contains(text, "title: 客户分层") {
-		t.Fatalf("expected concept title to be enriched, got: %s", text)
-	}
-	if !strings.Contains(text, "客户分层是按照客户价值") {
-		t.Fatalf("expected concept definition to be written, got: %s", text)
-	}
-	if !strings.Contains(text, "可以帮助客服团队识别高价值客户") {
-		t.Fatalf("expected concept key points to be written, got: %s", text)
-	}
+	return rec.Result().Cookies()[0]
 }
 
 func createFixtureWiki(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	mustMkdirAll(t, filepath.Join(root, "wiki", "outputs"))
-	mustWrite(t, filepath.Join(root, "wiki", "index.md"), "---\ntype: system-index\ngraph-excluded: true\n---\n\n# System Index\n\n## Sources\n\n规则说明\n")
-	mustWrite(t, filepath.Join(root, "wiki", "log.md"), "---\ntype: system-log\ngraph-excluded: true\n---\n\n# System Log\n")
-	mustWrite(t, filepath.Join(root, "wiki", "overview.md"), "---\ntype: system-overview\ngraph-excluded: true\n---\n\n# System Overview\n")
-	mustWrite(t, filepath.Join(root, "wiki", "QUESTIONS.md"), "---\ntype: system-questions\ngraph-excluded: true\n---\n\n# Questions\n\n## Open Questions\n")
-	mustMkdirAll(t, filepath.Join(root, "wiki", "sources"))
-	mustWrite(t, filepath.Join(root, "wiki", "sources", "rules.md"), "---\ntype: source\ntitle: 规则\nprocessed: true\n---\n\n## Summary\n\n知识库系统规则说明。\n\n## Key Points\n\n- 规则一\n")
-	mustMkdirAll(t, filepath.Join(root, "wiki", "templates"))
-	mustWrite(t, filepath.Join(root, "wiki", "templates", "source-template.md"), "---\ntype: source\ntitle: \"\"\ndate: 2026-04-22\nprocessed: false\n---\n\n## Summary\n\n## Key Points\n\n## Concepts Extracted\n\n## Entities Extracted\n\n## Contradictions\n\n## My Notes\n")
-	mustWrite(t, filepath.Join(root, "wiki", "templates", "concept-template.md"), "---\ntype: concept\ntitle: \"\"\ndate: 2026-04-22\nupdated: 2026-04-22\ntags: []\nsource_count: 0\nconfidence: low\ndomain_volatility: medium\nlast_reviewed: 2026-04-22\naliases: []\n---\n\n## Definition\n\n## Key Points\n\n## My Position\n\n## Contradictions\n\n## Sources\n\n## Evolution Log\n")
-	mustWrite(t, filepath.Join(root, "wiki", "templates", "entity-template.md"), "---\ntype: entity\ntitle: \"\"\ndate: 2026-04-22\ntags: []\nentity_type: person\naliases: []\n---\n\n## Description\n\n## Key Contributions\n\n## Related Concepts\n\n## Sources\n")
-	mustMkdirAll(t, filepath.Join(root, "scripts"))
-	mustWrite(t, filepath.Join(root, "scripts", "lint.py"), "#!/usr/bin/env python3\nprint('Wrote lint report to wiki/outputs/lint-2026-04-22.md')\n")
-	run(t, root, "git", "init", "-b", "main")
-	run(t, root, "git", "config", "user.email", "test@example.com")
-	run(t, root, "git", "config", "user.name", "Test")
-	run(t, root, "git", "add", ".")
-	run(t, root, "git", "commit", "-m", "init")
-	run(t, root, "git", "remote", "add", "origin", "https://example.com/repo.git")
-	return root
-}
+	mustWrite(t, filepath.Join(root, "AGENT.md"), "# AGENT\n")
+	mustWrite(t, filepath.Join(root, "wiki/index.md"), "# index\n")
+	mustWrite(t, filepath.Join(root, "wiki/log.md"), "# log\n")
+	mustWrite(t, filepath.Join(root, "wiki/templates/source-template.md"), "## Summary\n\n## Key Points\n\n## Concepts Extracted\n\n## Entities Extracted\n\n## Contradictions\n\n## My Notes\n")
+	mustWrite(t, filepath.Join(root, "wiki/templates/concept-template.md"), "## Definition\n\n## Key Points\n\n## Contradictions\n\n## Sources\n\n## Evolution Log\n")
+	mustWrite(t, filepath.Join(root, "wiki/templates/entity-template.md"), "## Description\n\n## Key Contributions\n\n## Sources\n")
+	mustWrite(t, filepath.Join(root, "wiki/sources/customer-qa.md"), `---
+title: Customer QA
+raw_file: raw/articles/customer.txt
+---
 
-func mustMkdirAll(t *testing.T, path string) {
-	t.Helper()
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", path, err)
-	}
+## Summary
+
+静态IP适合长期稳定网络环境。
+`)
+	mustWrite(t, filepath.Join(root, "raw/articles/customer.txt"), "# Customer QA\n静态IP适合账号运营。")
+	return root
 }
 
 func mustWrite(t *testing.T, path string, content string) {
 	t.Helper()
-	mustMkdirAll(t, filepath.Dir(path))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
-	}
-}
-
-func run(t *testing.T, dir string, name string, args ...string) {
-	t.Helper()
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("%s %v: %v\n%s", name, args, err, string(out))
 	}
 }

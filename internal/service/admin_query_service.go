@@ -6,8 +6,6 @@ import (
 	"strings"
 
 	"wikios/internal/llm"
-	"wikios/internal/report"
-	"wikios/internal/task"
 )
 
 type AdminQueryRequest struct {
@@ -32,8 +30,8 @@ func NewAdminQueryService(deps Deps) *AdminQueryService {
 	return &AdminQueryService{baseService: newBaseService(deps)}
 }
 
-func (s *AdminQueryService) Run(ctx context.Context, taskModel *task.Task, traceID string, req AdminQueryRequest) (map[string]any, error) {
-	env := s.env("admin", traceID, taskModel.ID, taskModel.ID)
+func (s *AdminQueryService) Run(ctx context.Context, execution *Execution, traceID string, req AdminQueryRequest) (map[string]any, error) {
+	env := s.env("admin", traceID, execution.ID, execution.ID)
 	pages, err := s.deps.Retriever.Retrieve(ctx, env, req.Question, s.deps.Config.Retrieval.TopK)
 	if err != nil {
 		return nil, err
@@ -41,7 +39,7 @@ func (s *AdminQueryService) Run(ctx context.Context, taskModel *task.Task, trace
 	pageContents := make([]string, 0, len(pages))
 	matched := make([]string, 0, len(pages))
 	for _, page := range pages {
-		readResult, err := s.executeTool(ctx, taskModel, env, "wiki.read_page", map[string]any{"path": page.Path}, "read "+page.Path)
+		readResult, err := s.executeTool(ctx, execution, env, "wiki.read_page", map[string]any{"path": page.Path}, "read "+page.Path)
 		if err != nil {
 			continue
 		}
@@ -54,7 +52,7 @@ func (s *AdminQueryService) Run(ctx context.Context, taskModel *task.Task, trace
 		return nil, err
 	}
 	prompt += "\n\n你必须只返回一个 JSON 对象，不要输出代码块。"
-	llmText, err := s.executeLLM(ctx, taskModel, s.deps.Config.LLM.ModelAdmin, []llm.Message{
+	llmText, err := s.executeLLM(ctx, execution, s.deps.Config.LLM.ModelAdmin, []llm.Message{
 		{Role: "system", Content: prompt},
 		{Role: "user", Content: fmt.Sprintf("问题：%s\n\n页面：\n%s", req.Question, strings.Join(pageContents, "\n\n"))},
 	}, "llm admin query")
@@ -80,62 +78,22 @@ func (s *AdminQueryService) Run(ctx context.Context, taskModel *task.Task, trace
 		"limitations":    parsed.Limitations,
 	}
 	outputFiles := []string{}
-	artifacts := []report.Artifact{}
 	if req.WriteOutput {
 		outputPath := "wiki/outputs/" + nowDate() + "-" + slugFromText(req.Question) + ".md"
 		outputDoc := buildOutputDocument(req.Question, renderQueryOutputMarkdown(parsed), len(parsed.SourcePaths))
-		if _, err := s.executeTool(ctx, taskModel, env, "wiki.write_output", map[string]any{"path": outputPath, "content": outputDoc}, "write output"); err != nil {
+		if _, err := s.executeTool(ctx, execution, env, "wiki.write_output", map[string]any{"path": outputPath, "content": outputDoc}, "write output"); err != nil {
 			return nil, err
 		}
-		_, _ = s.executeTool(ctx, taskModel, env, "wiki.update_index_entry", map[string]any{
+		_, _ = s.executeTool(ctx, execution, env, "wiki.update_index_entry", map[string]any{
 			"section": "## Recent Synthesis",
 			"entry":   "- [[" + strings.TrimSuffix(outputPath, ".md") + "]]",
 		}, "update index")
-		_, _ = s.executeTool(ctx, taskModel, env, "wiki.append_log", map[string]any{
+		_, _ = s.executeTool(ctx, execution, env, "wiki.append_log", map[string]any{
 			"line": fmt.Sprintf("%s | query | %s", nowDate(), outputPath),
 		}, "append log")
 		result["output_file"] = outputPath
 		outputFiles = append(outputFiles, outputPath)
-		artifacts = append(artifacts, report.Artifact{Kind: "synthesis", Label: "query output", Path: outputPath})
 	}
-	rep := reportResult(taskModel.ID, "query", "admin query completed", outputFiles, taskModel.Steps)
-	rep.Inputs = []report.Field{
-		{Label: "question", Value: req.Question},
-		{Label: "write_output", Value: fmt.Sprintf("%t", req.WriteOutput)},
-		{Label: "matched_page_count", Value: fmt.Sprintf("%d", len(matched))},
-	}
-	rep.Outputs = []report.Field{
-		{Label: "matched_pages", Value: joinOrNone(parsed.MatchedPages)},
-		{Label: "source_paths", Value: joinOrNone(parsed.SourcePaths)},
-		{Label: "answer_preview", Value: summarizeContent(parsed.Answer)},
-		{Label: "contradictions", Value: joinOrNone(parsed.Contradictions)},
-		{Label: "limitations", Value: joinOrNone(parsed.Limitations)},
-	}
-	rep.Artifacts = artifacts
-	if len(parsed.MatchedPages) == 0 {
-		rep.Findings = append(rep.Findings, report.Finding{Level: "high", Title: "未命中页面", Detail: "没有读取到可用于回答的问题相关页面"})
-		rep.NextActions = append(rep.NextActions, "缩小问题范围，或先补充 source 页面后再执行 query")
-	} else if len(parsed.MatchedPages) < 3 {
-		rep.Findings = append(rep.Findings, report.Finding{Level: "medium", Title: "证据较薄", Detail: "命中页面较少，回答稳定性可能不足"})
-		rep.NextActions = append(rep.NextActions, "补充更多来源页，提升 query 命中覆盖面")
-	} else {
-		rep.Findings = append(rep.Findings, report.Finding{Level: "low", Title: "命中正常", Detail: "已读取多页内容并生成回答"})
-	}
-	for _, contradiction := range parsed.Contradictions {
-		rep.Findings = append(rep.Findings, report.Finding{Level: "medium", Title: "来源分歧", Detail: contradiction})
-	}
-	for _, limitation := range parsed.Limitations {
-		rep.Findings = append(rep.Findings, report.Finding{Level: "medium", Title: "结果限制", Detail: limitation})
-	}
-	reportMarkdown := report.Markdown(rep)
-	reportPath := "wiki/outputs/query-report-" + nowDate() + "-" + slugFromText(req.Question) + ".md"
-	reportDoc := buildReportDocument("Query Report", "query", taskModel.ID, reportMarkdown)
-	if _, err := s.executeTool(ctx, taskModel, env, "wiki.write_output", map[string]any{"path": reportPath, "content": reportDoc}, "write query report"); err != nil {
-		return nil, err
-	}
-	outputFiles = append(outputFiles, reportPath)
-	result["report"] = reportMarkdown
-	result["report_file"] = reportPath
 	result["output_files"] = outputFiles
 	return result, nil
 }

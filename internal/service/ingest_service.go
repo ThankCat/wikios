@@ -9,14 +9,16 @@ import (
 	"wikios/internal/llm"
 	"wikios/internal/report"
 	"wikios/internal/runtime"
-	"wikios/internal/task"
 	"wikios/internal/wikiadapter"
 )
 
 type IngestRequest struct {
-	InputType   string `json:"input_type"`
-	Path        string `json:"path"`
-	Interactive bool   `json:"interactive"`
+	InputType       string `json:"input_type"`
+	Path            string `json:"path"`
+	Interactive     bool   `json:"interactive"`
+	ContentOverride string `json:"content_override,omitempty"`
+	TitleOverride   string `json:"title_override,omitempty"`
+	SHA256Override  string `json:"sha256_override,omitempty"`
 }
 
 type IngestService struct {
@@ -67,8 +69,8 @@ func NewIngestService(deps Deps) *IngestService {
 	return &IngestService{baseService: newBaseService(deps)}
 }
 
-func (s *IngestService) Run(ctx context.Context, taskModel *task.Task, traceID string, req IngestRequest) (map[string]any, error) {
-	env := s.env("admin", traceID, taskModel.ID, taskModel.ID)
+func (s *IngestService) Run(ctx context.Context, execution *Execution, traceID string, req IngestRequest) (map[string]any, error) {
+	env := s.env("admin", traceID, execution.ID, execution.ID)
 	normalizedPath, err := s.normalizeMountedInputPath(req.Path)
 	if err != nil {
 		return nil, err
@@ -76,20 +78,27 @@ func (s *IngestService) Run(ctx context.Context, taskModel *task.Task, traceID s
 	if !strings.HasPrefix(normalizedPath, "raw/") {
 		return nil, fmt.Errorf("ingest path must be under raw/, got %s", normalizedPath)
 	}
-	if _, err := s.executeTool(ctx, taskModel, env, "workspace.create_job_dir", map[string]any{"job_id": taskModel.ID}, "create job dir"); err != nil {
+	if _, err := s.executeTool(ctx, execution, env, "workspace.create_job_dir", map[string]any{"job_id": execution.ID}, "create job dir"); err != nil {
 		return nil, err
 	}
-	readResult, err := s.executeTool(ctx, taskModel, env, "fs.read_file", map[string]any{"path": normalizedPath}, "read raw")
-	if err != nil {
-		return nil, err
+	content := strings.TrimSpace(req.ContentOverride)
+	shaValue := strings.TrimSpace(req.SHA256Override)
+	if content == "" {
+		readResult, err := s.executeTool(ctx, execution, env, "fs.read_file", map[string]any{"path": normalizedPath}, "read raw")
+		if err != nil {
+			return nil, err
+		}
+		content, _ = readResult.Data["content"].(string)
 	}
-	hashResult, err := s.executeTool(ctx, taskModel, env, "hash.sha256", map[string]any{"path": normalizedPath}, "hash raw")
-	if err != nil {
-		return nil, err
+	if shaValue == "" {
+		hashResult, err := s.executeTool(ctx, execution, env, "hash.sha256", map[string]any{"path": normalizedPath}, "hash raw")
+		if err != nil {
+			return nil, err
+		}
+		shaValue = fmt.Sprintf("%v", hashResult.Data["sha256"])
 	}
-	content, _ := readResult.Data["content"].(string)
-	title := extractTitle(content, filepath.Base(normalizedPath))
-	analysis, err := s.analyzeIngestContent(ctx, normalizedPath, req.Interactive, content, fmt.Sprintf("%v", hashResult.Data["sha256"]))
+	title := firstNonEmpty(strings.TrimSpace(req.TitleOverride), extractTitle(content, filepath.Base(normalizedPath)))
+	analysis, err := s.analyzeIngestContent(ctx, normalizedPath, req.Interactive, content, shaValue)
 	if err != nil {
 		return nil, err
 	}
@@ -109,11 +118,11 @@ func (s *IngestService) Run(ctx context.Context, taskModel *task.Task, traceID s
 		"date":              nowDate(),
 		"processed":         true,
 		"raw_file":          normalizedPath,
-		"raw_sha256":        hashResult.Data["sha256"],
+		"raw_sha256":        shaValue,
 		"last_verified":     nowDate(),
 		"possibly_outdated": analysis.PossiblyOutdated,
 	}
-	if _, err := s.executeTool(ctx, taskModel, env, "wiki.create_from_template", map[string]any{
+	if _, err := s.executeTool(ctx, execution, env, "wiki.create_from_template", map[string]any{
 		"template_path": "wiki/templates/source-template.md",
 		"target_path":   target,
 		"frontmatter":   frontmatter,
@@ -128,7 +137,7 @@ func (s *IngestService) Run(ctx context.Context, taskModel *task.Task, traceID s
 		{"type": "replace_section", "section": "## Contradictions", "content": bulletListOrPlaceholder(analysis.Contradictions, "暂无明确矛盾")},
 		{"type": "replace_section", "section": "## My Notes", "content": bulletListOrPlaceholder(analysis.Warnings, "非交互模式执行；可继续人工校对摘要和提取结果")},
 	}
-	if _, err := s.executeTool(ctx, taskModel, env, "wiki.patch_page", map[string]any{
+	if _, err := s.executeTool(ctx, execution, env, "wiki.patch_page", map[string]any{
 		"path": target,
 		"ops":  toAnySlice(ops),
 	}, "patch source page"); err != nil {
@@ -137,7 +146,7 @@ func (s *IngestService) Run(ctx context.Context, taskModel *task.Task, traceID s
 
 	updatedPages := []string{"wiki/index.md", "wiki/log.md"}
 	createdPages := []string{target}
-	conceptChanges, entityChanges, pageArtifacts, err := s.upsertKnowledgePages(ctx, taskModel, env, slug, analysis)
+	conceptChanges, entityChanges, pageArtifacts, err := s.upsertKnowledgePages(ctx, execution, env, slug, analysis)
 	if err != nil {
 		return nil, err
 	}
@@ -146,19 +155,19 @@ func (s *IngestService) Run(ctx context.Context, taskModel *task.Task, traceID s
 	updatedPages = append(updatedPages, conceptChanges.Updated...)
 	updatedPages = append(updatedPages, entityChanges.Updated...)
 
-	_, _ = s.executeTool(ctx, taskModel, env, "wiki.update_index_entry", map[string]any{
+	_, _ = s.executeTool(ctx, execution, env, "wiki.update_index_entry", map[string]any{
 		"section": "## Sources",
 		"entry":   fmt.Sprintf("- %s | [[sources/%s]]", nowDate(), slug),
 	}, "update index")
-	_, _ = s.executeTool(ctx, taskModel, env, "wiki.append_log", map[string]any{
+	_, _ = s.executeTool(ctx, execution, env, "wiki.append_log", map[string]any{
 		"line": fmt.Sprintf("%s | ingest | %s", nowDate(), title),
 	}, "append log")
 	qmdUpdated := false
-	if _, err := s.executeTool(ctx, taskModel, env, "exec.qmd", map[string]any{"subcommand": "update"}, "qmd update"); err == nil {
+	if _, err := s.executeTool(ctx, execution, env, "exec.qmd", map[string]any{"subcommand": "update"}, "qmd update"); err == nil {
 		qmdUpdated = true
 	}
 
-	rep := reportResult(taskModel.ID, "ingest", "ingest completed", nil, taskModel.Steps)
+	rep := reportResult(execution.ID, "ingest", "ingest completed", nil, execution.Steps)
 	rep.Inputs = []report.Field{
 		{Label: "input_type", Value: req.InputType},
 		{Label: "path", Value: normalizedPath},
@@ -197,9 +206,9 @@ func (s *IngestService) Run(ctx context.Context, taskModel *task.Task, traceID s
 		rep.NextActions = append(rep.NextActions, "可继续执行 admin/query 或 reflect 验证新来源是否已进入检索结果")
 	}
 	reportMarkdown := report.Markdown(rep)
-	reportPath := "wiki/outputs/ingest-report-" + nowDate() + "-" + slug + ".md"
-	reportDoc := buildReportDocument("Ingest Report", "ingest", taskModel.ID, reportMarkdown)
-	if _, err := s.executeTool(ctx, taskModel, env, "wiki.write_output", map[string]any{"path": reportPath, "content": reportDoc}, "write ingest report"); err != nil {
+	reportPath := "wiki/outputs/ingest/" + nowDate() + "-" + slug + "-ingest-report.md"
+	reportDoc := buildReportDocument("摄入报告", "ingest", execution.ID, reportMarkdown)
+	if _, err := s.executeTool(ctx, execution, env, "wiki.write_output", map[string]any{"path": reportPath, "content": reportDoc}, "write ingest report"); err != nil {
 		return nil, err
 	}
 	return map[string]any{
@@ -249,26 +258,26 @@ func (s *IngestService) analyzeIngestContent(ctx context.Context, normalizedPath
 	return parsed, nil
 }
 
-func (s *IngestService) upsertKnowledgePages(ctx context.Context, taskModel *task.Task, env *runtime.ExecEnv, sourceSlug string, analysis ingestLLMOutput) (pageChangeSet, pageChangeSet, []report.Artifact, error) {
-	concepts, conceptArtifacts, err := s.upsertConceptPages(ctx, taskModel, env, analysis.Concepts, sourceSlug)
+func (s *IngestService) upsertKnowledgePages(ctx context.Context, execution *Execution, env *runtime.ExecEnv, sourceSlug string, analysis ingestLLMOutput) (pageChangeSet, pageChangeSet, []report.Artifact, error) {
+	concepts, conceptArtifacts, err := s.upsertConceptPages(ctx, execution, env, analysis.Concepts, sourceSlug)
 	if err != nil {
 		return pageChangeSet{}, pageChangeSet{}, nil, err
 	}
-	entities, entityArtifacts, err := s.upsertEntityPages(ctx, taskModel, env, analysis.Entities, sourceSlug)
+	entities, entityArtifacts, err := s.upsertEntityPages(ctx, execution, env, analysis.Entities, sourceSlug)
 	if err != nil {
 		return pageChangeSet{}, pageChangeSet{}, nil, err
 	}
 	return concepts, entities, append(conceptArtifacts, entityArtifacts...), nil
 }
 
-func (s *IngestService) upsertConceptPages(ctx context.Context, taskModel *task.Task, env *runtime.ExecEnv, items []ingestConceptItem, sourceSlug string) (pageChangeSet, []report.Artifact, error) {
+func (s *IngestService) upsertConceptPages(ctx context.Context, execution *Execution, env *runtime.ExecEnv, items []ingestConceptItem, sourceSlug string) (pageChangeSet, []report.Artifact, error) {
 	changes := pageChangeSet{}
 	artifacts := []report.Artifact{}
 	for _, item := range items {
 		if item.Slug == "" {
 			continue
 		}
-		path, created, err := s.resolveOrCreateConceptPage(ctx, taskModel, env, item, sourceSlug)
+		path, created, err := s.resolveOrCreateConceptPage(ctx, execution, env, item, sourceSlug)
 		if err != nil {
 			return pageChangeSet{}, nil, err
 		}
@@ -282,14 +291,14 @@ func (s *IngestService) upsertConceptPages(ctx context.Context, taskModel *task.
 	return changes, artifacts, nil
 }
 
-func (s *IngestService) upsertEntityPages(ctx context.Context, taskModel *task.Task, env *runtime.ExecEnv, items []ingestEntityItem, sourceSlug string) (pageChangeSet, []report.Artifact, error) {
+func (s *IngestService) upsertEntityPages(ctx context.Context, execution *Execution, env *runtime.ExecEnv, items []ingestEntityItem, sourceSlug string) (pageChangeSet, []report.Artifact, error) {
 	changes := pageChangeSet{}
 	artifacts := []report.Artifact{}
 	for _, item := range items {
 		if item.Slug == "" {
 			continue
 		}
-		path, created, err := s.resolveOrCreateEntityPage(ctx, taskModel, env, item, sourceSlug)
+		path, created, err := s.resolveOrCreateEntityPage(ctx, execution, env, item, sourceSlug)
 		if err != nil {
 			return pageChangeSet{}, nil, err
 		}
@@ -303,22 +312,22 @@ func (s *IngestService) upsertEntityPages(ctx context.Context, taskModel *task.T
 	return changes, artifacts, nil
 }
 
-func (s *IngestService) resolveOrCreateConceptPage(ctx context.Context, taskModel *task.Task, env *runtime.ExecEnv, item ingestConceptItem, sourceSlug string) (string, bool, error) {
-	slugResult, err := s.executeTool(ctx, taskModel, env, "wiki.find_by_slug", map[string]any{"slug": item.Slug}, "find concept by slug "+item.Slug)
+func (s *IngestService) resolveOrCreateConceptPage(ctx context.Context, execution *Execution, env *runtime.ExecEnv, item ingestConceptItem, sourceSlug string) (string, bool, error) {
+	slugResult, err := s.executeTool(ctx, execution, env, "wiki.find_by_slug", map[string]any{"slug": item.Slug}, "find concept by slug "+item.Slug)
 	if err != nil {
 		return "", false, err
 	}
 	if path, _ := slugResult.Data["path"].(string); strings.HasPrefix(path, "wiki/concepts/") {
-		return s.patchConceptPage(ctx, taskModel, env, path, item, sourceSlug, false)
+		return s.patchConceptPage(ctx, execution, env, path, item, sourceSlug, false)
 	}
 	for _, alias := range conceptAliasCandidates(item) {
-		aliasResult, err := s.executeTool(ctx, taskModel, env, "wiki.find_by_alias", map[string]any{"alias": alias}, "find concept by alias "+alias)
+		aliasResult, err := s.executeTool(ctx, execution, env, "wiki.find_by_alias", map[string]any{"alias": alias}, "find concept by alias "+alias)
 		if err != nil {
 			return "", false, err
 		}
 		for _, path := range stringifyAnySlice(aliasResult.Data["matches"]) {
 			if strings.HasPrefix(path, "wiki/concepts/") {
-				return s.patchConceptPage(ctx, taskModel, env, path, item, sourceSlug, false)
+				return s.patchConceptPage(ctx, execution, env, path, item, sourceSlug, false)
 			}
 		}
 	}
@@ -331,19 +340,19 @@ func (s *IngestService) resolveOrCreateConceptPage(ctx context.Context, taskMode
 		"source_count":  1,
 		"confidence":    "low",
 	}
-	if _, err := s.executeTool(ctx, taskModel, env, "wiki.create_from_template", map[string]any{
+	if _, err := s.executeTool(ctx, execution, env, "wiki.create_from_template", map[string]any{
 		"template_path": "wiki/templates/concept-template.md",
 		"target_path":   path,
 		"frontmatter":   frontmatter,
 	}, "create concept page "+path); err != nil {
 		return "", false, err
 	}
-	return s.patchConceptPage(ctx, taskModel, env, path, item, sourceSlug, true)
+	return s.patchConceptPage(ctx, execution, env, path, item, sourceSlug, true)
 }
 
-func (s *IngestService) patchConceptPage(ctx context.Context, taskModel *task.Task, env *runtime.ExecEnv, path string, item ingestConceptItem, sourceSlug string, created bool) (string, bool, error) {
+func (s *IngestService) patchConceptPage(ctx context.Context, execution *Execution, env *runtime.ExecEnv, path string, item ingestConceptItem, sourceSlug string, created bool) (string, bool, error) {
 	sourceLink := fmt.Sprintf("- [[sources/%s]]", sourceSlug)
-	readResult, err := s.executeTool(ctx, taskModel, env, "wiki.read_page", map[string]any{"path": path}, "read concept page "+path)
+	readResult, err := s.executeTool(ctx, execution, env, "wiki.read_page", map[string]any{"path": path}, "read concept page "+path)
 	if err != nil {
 		return "", false, err
 	}
@@ -379,7 +388,7 @@ func (s *IngestService) patchConceptPage(ctx context.Context, taskModel *task.Ta
 	if !strings.Contains(rawContent, sourceSlug) {
 		ops = append(ops, map[string]any{"type": "append_section", "section": "## Evolution Log", "content": fmt.Sprintf("- %s（%d sources）：由 [[sources/%s]] 新增或强化该概念", nowDate(), maxInt(sourceCount, 1), sourceSlug)})
 	}
-	if _, err := s.executeTool(ctx, taskModel, env, "wiki.patch_page", map[string]any{
+	if _, err := s.executeTool(ctx, execution, env, "wiki.patch_page", map[string]any{
 		"path": path,
 		"ops":  toAnySlice(ops),
 	}, "patch concept page "+path); err != nil {
@@ -388,22 +397,22 @@ func (s *IngestService) patchConceptPage(ctx context.Context, taskModel *task.Ta
 	return path, created, nil
 }
 
-func (s *IngestService) resolveOrCreateEntityPage(ctx context.Context, taskModel *task.Task, env *runtime.ExecEnv, item ingestEntityItem, sourceSlug string) (string, bool, error) {
-	slugResult, err := s.executeTool(ctx, taskModel, env, "wiki.find_by_slug", map[string]any{"slug": item.Slug}, "find entity by slug "+item.Slug)
+func (s *IngestService) resolveOrCreateEntityPage(ctx context.Context, execution *Execution, env *runtime.ExecEnv, item ingestEntityItem, sourceSlug string) (string, bool, error) {
+	slugResult, err := s.executeTool(ctx, execution, env, "wiki.find_by_slug", map[string]any{"slug": item.Slug}, "find entity by slug "+item.Slug)
 	if err != nil {
 		return "", false, err
 	}
 	if path, _ := slugResult.Data["path"].(string); strings.HasPrefix(path, "wiki/entities/") {
-		return s.patchEntityPage(ctx, taskModel, env, path, item, sourceSlug, false)
+		return s.patchEntityPage(ctx, execution, env, path, item, sourceSlug, false)
 	}
 	for _, alias := range entityAliasCandidates(item) {
-		aliasResult, err := s.executeTool(ctx, taskModel, env, "wiki.find_by_alias", map[string]any{"alias": alias}, "find entity by alias "+alias)
+		aliasResult, err := s.executeTool(ctx, execution, env, "wiki.find_by_alias", map[string]any{"alias": alias}, "find entity by alias "+alias)
 		if err != nil {
 			return "", false, err
 		}
 		for _, path := range stringifyAnySlice(aliasResult.Data["matches"]) {
 			if strings.HasPrefix(path, "wiki/entities/") {
-				return s.patchEntityPage(ctx, taskModel, env, path, item, sourceSlug, false)
+				return s.patchEntityPage(ctx, execution, env, path, item, sourceSlug, false)
 			}
 		}
 	}
@@ -413,19 +422,19 @@ func (s *IngestService) resolveOrCreateEntityPage(ctx context.Context, taskModel
 		"aliases":     toAnyStrings(entityAliasCandidates(item)),
 		"entity_type": firstNonEmpty(item.EntityType, "other"),
 	}
-	if _, err := s.executeTool(ctx, taskModel, env, "wiki.create_from_template", map[string]any{
+	if _, err := s.executeTool(ctx, execution, env, "wiki.create_from_template", map[string]any{
 		"template_path": "wiki/templates/entity-template.md",
 		"target_path":   path,
 		"frontmatter":   frontmatter,
 	}, "create entity page "+path); err != nil {
 		return "", false, err
 	}
-	return s.patchEntityPage(ctx, taskModel, env, path, item, sourceSlug, true)
+	return s.patchEntityPage(ctx, execution, env, path, item, sourceSlug, true)
 }
 
-func (s *IngestService) patchEntityPage(ctx context.Context, taskModel *task.Task, env *runtime.ExecEnv, path string, item ingestEntityItem, sourceSlug string, created bool) (string, bool, error) {
+func (s *IngestService) patchEntityPage(ctx context.Context, execution *Execution, env *runtime.ExecEnv, path string, item ingestEntityItem, sourceSlug string, created bool) (string, bool, error) {
 	sourceLink := fmt.Sprintf("- [[sources/%s]]", sourceSlug)
-	readResult, err := s.executeTool(ctx, taskModel, env, "wiki.read_page", map[string]any{"path": path}, "read entity page "+path)
+	readResult, err := s.executeTool(ctx, execution, env, "wiki.read_page", map[string]any{"path": path}, "read entity page "+path)
 	if err != nil {
 		return "", false, err
 	}
@@ -447,7 +456,7 @@ func (s *IngestService) patchEntityPage(ctx context.Context, taskModel *task.Tas
 	if !strings.Contains(rawContent, sourceLink) {
 		ops = append(ops, map[string]any{"type": "append_section", "section": "## Sources", "content": sourceLink})
 	}
-	if _, err := s.executeTool(ctx, taskModel, env, "wiki.patch_page", map[string]any{
+	if _, err := s.executeTool(ctx, execution, env, "wiki.patch_page", map[string]any{
 		"path": path,
 		"ops":  toAnySlice(ops),
 	}, "patch entity page "+path); err != nil {

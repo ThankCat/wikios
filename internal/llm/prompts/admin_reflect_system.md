@@ -43,6 +43,18 @@ Stage 3（Gap Analysis）：
   "gaps": [],
   "contradictions": [],
   "low_risk_fixes": [],
+  "corrections": [
+    {
+      "path": "wiki/...",
+      "section": "## Summary 或 frontmatter",
+      "wrong": "错误文本",
+      "correct": "正确文本",
+      "reason": "为什么这是可被来源直接证明的纠错",
+      "risk_level": "low|high",
+      "replace_mode": "targeted|global",
+      "scope_paths": ["wiki/sources", "wiki/entities"]
+    }
+  ],
   "proposals": [],
   "output_files": []
 }

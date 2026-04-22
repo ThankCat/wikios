@@ -1,8 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "useDefineForClassFields": true,
-    "lib": ["DOM", "DOM.Iterable", "ES2021"],
+    "lib": [
+      "DOM",
+      "DOM.Iterable",
+      "ES2021"
+    ],
     "allowJs": false,
     "skipLibCheck": true,
     "esModuleInterop": true,
@@ -14,12 +17,39 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "jsx": "react-jsx",
-    "types": ["vite/client"],
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": [
+        "./src/*"
+      ]
     }
   },
-  "include": ["src"]
+  "include": [
+    "next-env.d.ts",
+    "src/app/**/*",
+    "src/components/**/*",
+    "src/features/admin/admin-chat.tsx",
+    "src/features/chat/user-chat.tsx",
+    "src/lib/**/*",
+    "src/types/**/*",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "src/App.tsx",
+    "src/main.tsx",
+    "src/routes/**/*",
+    "src/features/admin/AdminConsole.tsx",
+    "src/features/admin/AdminPanels.tsx",
+    "src/features/chat/ChatPanel.tsx",
+    "src/features/tasks/**/*",
+    "src/components/layout/**/*"
+  ]
 }

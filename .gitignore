@@ -5,5 +5,6 @@
 bin/
 coverage.out
 web/node_modules/
+web/.next/
 web/dist/
 web/*.tsbuildinfo

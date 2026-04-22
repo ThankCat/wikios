@@ -13,9 +13,10 @@ import (
 	"wikios/internal/api"
 	"wikios/internal/app/middleware"
 	"wikios/internal/config"
+	"wikios/internal/store"
 )
 
-func NewRouter(cfg *config.Config, handlers *api.Handlers) *gin.Engine {
+func NewRouter(cfg *config.Config, handlers *api.Handlers, dataStore *store.Store) *gin.Engine {
 	r := gin.New()
 	r.Use(
 		middleware.Trace(),
@@ -29,18 +30,18 @@ func NewRouter(cfg *config.Config, handlers *api.Handlers) *gin.Engine {
 
 	public := r.Group("/api/v1/public")
 	public.POST("/answer", handlers.PublicAnswer)
+	public.POST("/answer/stream", handlers.PublicAnswerStream)
+
+	adminAuth := r.Group("/api/v1/admin/auth")
+	adminAuth.POST("/login", handlers.AdminLogin)
 
 	admin := r.Group("/api/v1/admin")
-	admin.Use(middleware.AdminAuth(cfg.Auth.AdminBearerToken))
-	admin.POST("/ingest", handlers.AdminIngest)
-	admin.POST("/query", handlers.AdminQueryRun)
-	admin.POST("/lint", handlers.AdminLint)
-	admin.POST("/reflect", handlers.AdminReflect)
-	admin.POST("/repair/apply-low-risk", handlers.AdminRepairApplyLowRisk)
-	admin.POST("/repair/apply-proposal", handlers.AdminRepairApplyProposal)
-	admin.POST("/sync", handlers.AdminSync)
+	admin.Use(middleware.AdminSessionAuth(cfg.Auth, dataStore))
+	admin.POST("/auth/logout", handlers.AdminLogout)
+	admin.GET("/auth/me", handlers.AdminMe)
+	admin.POST("/chat", handlers.AdminChat)
 	admin.POST("/chat/stream", handlers.AdminChatStream)
-	admin.GET("/tasks/:id", handlers.AdminTaskStatus)
+	admin.POST("/upload", handlers.AdminUpload)
 
 	registerWebRoutes(r, cfg)
 

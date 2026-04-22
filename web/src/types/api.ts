@@ -1,16 +1,10 @@
-export type AppConfig = {
-  mountedWikiName: string;
-  webEnabled: boolean;
-};
-
 export type PublicSource = {
   path: string;
   title: string;
   confidence: string;
 };
 
-export type PublicAnswerResponse = {
-  answer: string;
+export type PublicAnswerDetails = {
   answer_type: string;
   answer_markdown: string;
   sources: PublicSource[];
@@ -19,12 +13,52 @@ export type PublicAnswerResponse = {
   trace_id: string;
 };
 
-export type TaskAccepted = {
-  task_id: string;
-  status: string;
+export type PublicAnswerResponse = {
+  answer: string;
+  details?: PublicAnswerDetails;
 };
 
-export type TaskStep = {
+export type PublicChatHistoryItem = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+export type PublicStreamEvent = {
+  type: string;
+  data: unknown;
+};
+
+export type AdminAttachment = {
+  path: string;
+  kind: string;
+  name?: string;
+};
+
+export type AdminChatRequest = {
+  message: string;
+  stream: boolean;
+  mode_hint?: string;
+  context?: Record<string, unknown>;
+  attachments?: AdminAttachment[];
+  history?: PublicChatHistoryItem[];
+};
+
+export type AdminChatResponse = {
+  mode: string;
+  reply: string;
+  details: Record<string, unknown>;
+  execution: {
+    id: string;
+    kind: string;
+    status: string;
+    steps: AdminExecutionStep[];
+    error?: string;
+    started_at: string;
+    ended_at?: string;
+  };
+};
+
+export type AdminExecutionStep = {
   name: string;
   tool?: string;
   status: string;
@@ -33,28 +67,17 @@ export type TaskStep = {
   duration_ms?: number;
 };
 
-export type TaskRecord = {
-  id: string;
-  type: string;
-  status: string;
-  result?: Record<string, unknown>;
-  error?: string;
-  steps: TaskStep[];
-  created_at: string;
-  updated_at: string;
-};
-
-export type AdminResult = Record<string, unknown>;
-
-export type AdminMode = "query" | "ingest" | "lint" | "reflect" | "repair" | "sync";
-
-export type AdminChatRequest = {
-  mode: AdminMode;
-  message: string;
-  options?: Record<string, unknown>;
-};
-
 export type AdminStreamEvent = {
   type: string;
   data: unknown;
+};
+
+export type AdminUser = {
+  id: string;
+  username: string;
+};
+
+export type UploadResponse = {
+  reply: string;
+  details: Record<string, unknown>;
 };

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -12,7 +13,7 @@ import (
 	"wikios/internal/retrieval"
 	"wikios/internal/runtime"
 	"wikios/internal/service"
-	"wikios/internal/task"
+	"wikios/internal/store"
 	"wikios/internal/tools"
 	"wikios/internal/wikiadapter"
 )
@@ -31,9 +32,16 @@ func New(cfg *config.Config) (*App, error) {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	store, err := task.OpenStore(cfg.TaskStore.SQLitePath)
+	dataStore, err := store.Open(cfg.Storage.SQLitePath)
 	if err != nil {
-		return nil, fmt.Errorf("open task store: %w", err)
+		return nil, fmt.Errorf("open sqlite store: %w", err)
+	}
+	if err := dataStore.EnsureDefaultAdmin(
+		context.Background(),
+		cfg.Auth.DefaultAdminUsername,
+		cfg.Auth.DefaultAdminPassword,
+	); err != nil {
+		return nil, fmt.Errorf("seed default admin: %w", err)
 	}
 
 	resolver := wikiadapter.NewPathResolver(cfg.MountedWiki.Root)
@@ -43,7 +51,6 @@ func New(cfg *config.Config) (*App, error) {
 		Resolver: resolver,
 	})
 	rt := runtime.NewRuntime(registry, runtime.NewPolicyEngine(), runtime.NewValidator(), runtime.NewAuditLogger())
-	taskManager := task.NewManager(store)
 	llmClient := llm.NewClient(cfg.LLM)
 	retriever := retrieval.NewQMDRetriever(rt)
 	deps := service.Deps{
@@ -51,7 +58,7 @@ func New(cfg *config.Config) (*App, error) {
 		Runtime:      rt,
 		LLM:          llmClient,
 		Retriever:    retriever,
-		TaskStore:    store,
+		Store:        dataStore,
 		PromptDir:    "internal/llm/prompts",
 		WorkspaceDir: cfg.Workspace.BaseDir,
 	}
@@ -63,11 +70,13 @@ func New(cfg *config.Config) (*App, error) {
 		service.NewReflectService(deps),
 		service.NewRepairService(deps),
 		service.NewSyncService(deps),
-		taskManager,
+		service.NewUploadService(deps),
+		dataStore,
+		cfg.Auth,
 	)
 
 	a := &App{cfg: cfg}
-	a.engine = NewRouter(cfg, handlers)
+	a.engine = NewRouter(cfg, handlers, dataStore)
 	return a, nil
 }
 

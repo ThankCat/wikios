@@ -16,7 +16,10 @@ llm:
   timeout_sec: 90
 
 auth:
-  admin_bearer_token: ${WIKIOS_ADMIN_TOKEN}
+  default_admin_username: ${WIKIOS_DEFAULT_ADMIN_USERNAME}
+  default_admin_password: ${WIKIOS_DEFAULT_ADMIN_PASSWORD}
+  session_cookie_name: wikios_admin_session
+  session_ttl_hours: 168
 
 retrieval:
   top_k: 5
@@ -31,7 +34,7 @@ sandbox:
   python_timeout_sec: 20
   qmd_timeout_sec: 30
 
-task_store:
+storage:
   sqlite_path: .workspace/service.db
 
 sync:

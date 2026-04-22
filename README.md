@@ -1,44 +1,47 @@
 # wikios
 
-LLM Wiki 微服务 V1。
+LLM Wiki 微服务与独立 Web 工作台。
 
-运行：
+## 启动
 
 ```bash
 cp .env.example .env
-go run ./cmd/wiki-server
+make dev
 ```
 
-服务启动时会自动加载项目根目录下的 `.env` 和 `.env.local`。
-如果当前 shell 已经设置了同名环境变量，shell 值优先，不会被 `.env` 覆盖。
+- API 默认启动在 `http://127.0.0.1:8080`
+- Web 默认启动在 `http://127.0.0.1:3000`
+- 用户页：`/chat`
+- 管理员登录页：`/admin/login`
 
-默认配置挂载 `/Users/chenhao/Project/knowledge-base`。
+服务启动时会自动加载项目根目录下的 `.env` 和 `.env.local`。如果当前 shell 已经设置了同名环境变量，shell 值优先。
 
-前端工作台位于 `web/`，构建产物默认输出到 `web/dist` 并由 Gin 同域挂载。
-
-也可以通过 `WIKIOS_CONFIG` 切换配置文件：
+## 常用命令
 
 ```bash
-WIKIOS_CONFIG=configs/config.prod.yaml go run ./cmd/wiki-server
+make dev
+make dev-api
+make dev-web
+make test
+make test-web
+make build
+make build-web
 ```
 
-前端构建：
+## 当前管理员默认账号
 
-```bash
-cd web
-bun install
-bun run build
-```
+- username: `admin`
+- password: `admin123`
 
-主要接口：
+可通过 `configs/config.prod.yaml` 或环境变量改成自己的值。
+
+## 主要接口
 
 - `GET /healthz`
 - `POST /api/v1/public/answer`
-- `POST /api/v1/admin/ingest`
-- `POST /api/v1/admin/query`
-- `POST /api/v1/admin/lint`
-- `POST /api/v1/admin/reflect`
-- `POST /api/v1/admin/repair/apply-low-risk`
-- `POST /api/v1/admin/repair/apply-proposal`
-- `POST /api/v1/admin/sync`
-- `GET /api/v1/admin/tasks/:id`
+- `POST /api/v1/admin/auth/login`
+- `POST /api/v1/admin/auth/logout`
+- `GET /api/v1/admin/auth/me`
+- `POST /api/v1/admin/chat`
+- `POST /api/v1/admin/chat/stream`
+- `POST /api/v1/admin/upload`

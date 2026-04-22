@@ -35,6 +35,25 @@
 
 输出：
 {
+  "summary": "",
+  "corrections": [
+    {
+      "path": "wiki/...",
+      "section": "## Summary 或 frontmatter",
+      "wrong": "错误文本",
+      "correct": "正确文本",
+      "reason": "raw 原文直接支持的更正依据",
+      "risk_level": "low|high",
+      "replace_mode": "targeted|global",
+      "scope_paths": ["wiki/sources", "wiki/entities"]
+    }
+  ],
+  "warnings": [],
   "applied_fixes": [],
   "proposals": []
 }
+
+补充要求：
+- 专有名词、品牌名、机构名、人名等统一纠错，优先输出 `replace_mode: "global"`
+- `scope_paths` 必须明确给出允许替换的 wiki 子目录范围
+- 如果你确认应该全库统一名称，不要只列出单个文件

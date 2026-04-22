@@ -13,7 +13,7 @@ import (
 	"wikios/internal/report"
 	"wikios/internal/retrieval"
 	"wikios/internal/runtime"
-	"wikios/internal/task"
+	"wikios/internal/store"
 )
 
 type Deps struct {
@@ -21,7 +21,7 @@ type Deps struct {
 	Runtime      *runtime.Runtime
 	LLM          llm.Client
 	Retriever    *retrieval.QMDRetriever
-	TaskStore    *task.Store
+	Store        *store.Store
 	PromptDir    string
 	WorkspaceDir string
 }
@@ -34,19 +34,19 @@ func newBaseService(deps Deps) baseService {
 	return baseService{deps: deps}
 }
 
-func (s *baseService) env(mode string, traceID string, taskID string, jobID string) *runtime.ExecEnv {
+func (s *baseService) env(mode string, traceID string, executionID string, jobID string) *runtime.ExecEnv {
 	return &runtime.ExecEnv{
 		WikiRoot:     s.deps.Config.MountedWiki.Root,
 		WorkspaceDir: s.deps.WorkspaceDir,
 		JobID:        jobID,
 		Mode:         mode,
 		TraceID:      traceID,
-		TaskID:       taskID,
+		TaskID:       executionID,
 		QMDIndex:     s.deps.Config.MountedWiki.QMDIndex,
 	}
 }
 
-func (s *baseService) executeTool(ctx context.Context, taskModel *task.Task, env *runtime.ExecEnv, name string, args map[string]any, stepName string) (runtime.ToolResult, error) {
+func (s *baseService) executeTool(ctx context.Context, execution *Execution, env *runtime.ExecEnv, name string, args map[string]any, stepName string) (runtime.ToolResult, error) {
 	start := time.Now()
 	emitStreamEvent(ctx, "step_start", map[string]any{
 		"name":  stepName,
@@ -54,7 +54,7 @@ func (s *baseService) executeTool(ctx context.Context, taskModel *task.Task, env
 		"input": args,
 	})
 	result, err := s.deps.Runtime.Execute(ctx, env, runtime.ToolCall{Name: name, Args: args})
-	step := task.Step{
+	step := Step{
 		Name:       stepName,
 		Tool:       name,
 		Input:      args,
@@ -76,9 +76,9 @@ func (s *baseService) executeTool(ctx context.Context, taskModel *task.Task, env
 			step.Output["error"] = err.Error()
 		}
 	}
-	taskModel.Steps = append(taskModel.Steps, step)
-	taskModel.UpdatedAt = time.Now()
-	_ = s.deps.TaskStore.SaveTask(ctx, taskModel)
+	if execution != nil {
+		execution.Steps = append(execution.Steps, step)
+	}
 	emitStreamEvent(ctx, "step_finish", step)
 	if err != nil {
 		return result, err
@@ -89,7 +89,7 @@ func (s *baseService) executeTool(ctx context.Context, taskModel *task.Task, env
 	return result, nil
 }
 
-func (s *baseService) executeLLM(ctx context.Context, taskModel *task.Task, model string, messages []llm.Message, stepName string) (string, error) {
+func (s *baseService) executeLLM(ctx context.Context, execution *Execution, model string, messages []llm.Message, stepName string) (string, error) {
 	start := time.Now()
 	emitStreamEvent(ctx, "prompt", map[string]any{
 		"name":     stepName,
@@ -103,13 +103,13 @@ func (s *baseService) executeLLM(ctx context.Context, taskModel *task.Task, mode
 		})
 	}
 	text, err := s.deps.LLM.StreamChat(ctx, model, messages, onDelta)
-	if taskModel == nil {
+	if execution == nil {
 		if err != nil {
 			return "", err
 		}
 		return text, nil
 	}
-	step := task.Step{
+	step := Step{
 		Name:       stepName,
 		Tool:       "llm.chat",
 		DurationMs: time.Since(start).Milliseconds(),
@@ -128,9 +128,7 @@ func (s *baseService) executeLLM(ctx context.Context, taskModel *task.Task, mode
 		step.Status = "FAILED"
 		step.Output = map[string]any{"error": err.Error()}
 	}
-	taskModel.Steps = append(taskModel.Steps, step)
-	taskModel.UpdatedAt = time.Now()
-	_ = s.deps.TaskStore.SaveTask(ctx, taskModel)
+	execution.Steps = append(execution.Steps, step)
 	emitStreamEvent(ctx, "llm_done", map[string]any{
 		"name": stepName,
 		"text": text,
@@ -208,7 +206,7 @@ func sourceConfidence(path string) string {
 	}
 }
 
-func reportResult(taskID string, taskType string, summary string, outputFiles []string, timeline []task.Step) report.Report {
+func reportResult(executionID string, taskType string, summary string, outputFiles []string, timeline []Step) report.Report {
 	events := make([]report.Event, 0, len(timeline))
 	for _, step := range timeline {
 		events = append(events, report.Event{
@@ -220,7 +218,7 @@ func reportResult(taskID string, taskType string, summary string, outputFiles []
 		})
 	}
 	return report.Report{
-		TaskID:      taskID,
+		TaskID:      executionID,
 		TaskType:    taskType,
 		Title:       strings.Title(taskType) + " Report",
 		Summary:     summary,
@@ -262,7 +260,7 @@ task_id: %s
 `, title, nowDate(), taskType, taskID, body)
 }
 
-func summarizeStepOutput(step task.Step) string {
+func summarizeStepOutput(step Step) string {
 	if step.Output == nil {
 		return ""
 	}

@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 20% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --primary: 222 47% 11%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 214 32% 94%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 214 32% 92%;
+    --muted-foreground: 215 16% 42%;
+    --accent: 214 95% 93%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 215 25% 86%;
+    --input: 215 25% 86%;
+    --ring: 222 47% 11%;
+    --radius: 1rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body {
+    @apply h-full bg-background text-foreground antialiased;
+  }
+
+  body {
+    background:
+      radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent 32%),
+      radial-gradient(circle at bottom right, rgba(15, 23, 42, 0.08), transparent 28%),
+      linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, 0.45);
+    border-radius: 999px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  .panel-glass {
+    @apply rounded-3xl border border-white/60 bg-white/85 shadow-soft backdrop-blur-md;
+  }
+
+  .chat-shell {
+    @apply grid h-screen w-full grid-cols-[280px_minmax(0,1fr)] gap-4 overflow-hidden p-4;
+  }
+
+  .chat-bubble-user {
+    @apply ml-auto max-w-[85%] rounded-[24px] rounded-br-md bg-foreground px-4 py-3 text-sm leading-6 text-white shadow-soft;
+  }
+
+  .chat-bubble-assistant {
+    @apply max-w-[85%] rounded-[24px] rounded-bl-md bg-white px-4 py-3 text-sm leading-6 text-foreground shadow-soft;
+  }
+}

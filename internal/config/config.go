@@ -22,7 +22,7 @@ type Config struct {
 	Retrieval   RetrievalConfig   `yaml:"retrieval"`
 	Workspace   WorkspaceConfig   `yaml:"workspace"`
 	Sandbox     SandboxConfig     `yaml:"sandbox"`
-	TaskStore   TaskStoreConfig   `yaml:"task_store"`
+	Storage     StorageConfig     `yaml:"storage"`
 	Sync        SyncConfig        `yaml:"sync"`
 	Web         WebConfig         `yaml:"web"`
 }
@@ -48,7 +48,10 @@ type LLMConfig struct {
 }
 
 type AuthConfig struct {
-	AdminBearerToken string `yaml:"admin_bearer_token"`
+	DefaultAdminUsername string `yaml:"default_admin_username"`
+	DefaultAdminPassword string `yaml:"default_admin_password"`
+	SessionCookieName    string `yaml:"session_cookie_name"`
+	SessionTTLHours      int    `yaml:"session_ttl_hours"`
 }
 
 type RetrievalConfig struct {
@@ -67,7 +70,7 @@ type SandboxConfig struct {
 	QMDTimeoutSec      int  `yaml:"qmd_timeout_sec"`
 }
 
-type TaskStoreConfig struct {
+type StorageConfig struct {
 	SQLitePath string `yaml:"sqlite_path"`
 }
 
@@ -121,8 +124,8 @@ func (c *Config) normalizeAndValidate() error {
 	if c.Workspace.DefaultTimeoutSec <= 0 {
 		c.Workspace.DefaultTimeoutSec = 20
 	}
-	if c.TaskStore.SQLitePath == "" {
-		c.TaskStore.SQLitePath = filepath.Join(c.Workspace.BaseDir, "service.db")
+	if c.Storage.SQLitePath == "" {
+		c.Storage.SQLitePath = filepath.Join(c.Workspace.BaseDir, "service.db")
 	}
 	if c.Sandbox.PythonTimeoutSec <= 0 {
 		c.Sandbox.PythonTimeoutSec = 20
@@ -134,7 +137,7 @@ func (c *Config) normalizeAndValidate() error {
 		c.LLM.TimeoutSec = 90
 	}
 	c.Workspace.BaseDir = filepath.Clean(c.Workspace.BaseDir)
-	c.TaskStore.SQLitePath = filepath.Clean(c.TaskStore.SQLitePath)
+	c.Storage.SQLitePath = filepath.Clean(c.Storage.SQLitePath)
 	c.MountedWiki.Root = filepath.Clean(c.MountedWiki.Root)
 	if c.MountedWiki.Root == "." || c.MountedWiki.Root == "" {
 		return errors.New("mounted_wiki.root is required")
@@ -167,6 +170,18 @@ func (c *Config) normalizeAndValidate() error {
 	if c.Web.Enabled == nil {
 		enabled := true
 		c.Web.Enabled = &enabled
+	}
+	if strings.TrimSpace(c.Auth.DefaultAdminUsername) == "" {
+		c.Auth.DefaultAdminUsername = "admin"
+	}
+	if strings.TrimSpace(c.Auth.DefaultAdminPassword) == "" {
+		c.Auth.DefaultAdminPassword = "admin123"
+	}
+	if strings.TrimSpace(c.Auth.SessionCookieName) == "" {
+		c.Auth.SessionCookieName = "wikios_admin_session"
+	}
+	if c.Auth.SessionTTLHours <= 0 {
+		c.Auth.SessionTTLHours = 24 * 7
 	}
 	c.Web.DistDir = filepath.Clean(c.Web.DistDir)
 	return nil
