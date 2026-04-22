@@ -46,18 +46,18 @@ func (s *AdminQueryService) Run(ctx context.Context, taskModel *task.Task, trace
 			continue
 		}
 		content, _ := readResult.Data["content"].(string)
-		pageContents = append(pageContents, "## "+page.Path+"\n\n"+content)
+		pageContents = append(pageContents, "## "+page.Path+"\n\n"+truncateForPrompt(content, 2400))
 		matched = append(matched, page.Path)
 	}
-	prompt, err := s.loadPrompt("admin_query_system.md")
+	prompt, err := s.loadPromptWithWikiAgent("admin_query_system.md")
 	if err != nil {
 		return nil, err
 	}
 	prompt += "\n\n你必须只返回一个 JSON 对象，不要输出代码块。"
-	llmText, err := s.deps.LLM.Chat(ctx, s.deps.Config.LLM.ModelAdmin, []llm.Message{
+	llmText, err := s.executeLLM(ctx, taskModel, s.deps.Config.LLM.ModelAdmin, []llm.Message{
 		{Role: "system", Content: prompt},
 		{Role: "user", Content: fmt.Sprintf("问题：%s\n\n页面：\n%s", req.Question, strings.Join(pageContents, "\n\n"))},
-	})
+	}, "llm admin query")
 	if err != nil {
 		return nil, err
 	}

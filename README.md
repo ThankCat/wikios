@@ -6,10 +6,11 @@ LLM Wiki 微服务 V1。
 
 ```bash
 cp .env.example .env
-export DEEPSEEK_API_KEY=...
-export WIKIOS_ADMIN_TOKEN=...
 go run ./cmd/wiki-server
 ```
+
+服务启动时会自动加载项目根目录下的 `.env` 和 `.env.local`。
+如果当前 shell 已经设置了同名环境变量，shell 值优先，不会被 `.env` 覆盖。
 
 默认配置挂载 `/Users/chenhao/Project/knowledge-base`。
 

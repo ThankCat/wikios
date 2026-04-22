@@ -7,7 +7,7 @@ import { usePersistentState } from "@/hooks/use-persistent-state";
 import { WorkspaceSidebar, type ViewKey } from "@/components/layout/WorkspaceSidebar";
 import { DetailPanel } from "@/components/layout/DetailPanel";
 import { ChatPanel, type ChatEntry } from "@/features/chat/ChatPanel";
-import { AdminPanels } from "@/features/admin/AdminPanels";
+import { AdminConsole } from "@/features/admin/AdminConsole";
 import { TaskCenter } from "@/features/tasks/TaskCenter";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -132,10 +132,10 @@ export function WorkspacePage({ mountedWikiName }: Props) {
             )}
 
             {state.currentView !== "chat" && state.currentView !== "tasks" && hasAdmin && (
-              <AdminPanels
+              <AdminConsole
                 token={adminToken}
-                view={state.currentView as Exclude<ViewKey, "chat" | "tasks">}
-                onTaskCreated={(task) => {
+                mode={state.currentView as Exclude<ViewKey, "chat" | "tasks">}
+                onTaskUpdate={(task) => {
                   updateTasks(task);
                   setSelectedTask(task);
                 }}

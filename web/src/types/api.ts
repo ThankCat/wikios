@@ -46,3 +46,15 @@ export type TaskRecord = {
 
 export type AdminResult = Record<string, unknown>;
 
+export type AdminMode = "query" | "ingest" | "lint" | "reflect" | "repair" | "sync";
+
+export type AdminChatRequest = {
+  mode: AdminMode;
+  message: string;
+  options?: Record<string, unknown>;
+};
+
+export type AdminStreamEvent = {
+  type: string;
+  data: unknown;
+};

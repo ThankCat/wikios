@@ -9,8 +9,8 @@ mounted_wiki:
 
 llm:
   provider: deepseek
-  model_public: deepseek-reasoner
-  model_admin: deepseek-reasoner
+  model_public: deepseek-chat
+  model_admin: deepseek-chat
   api_key: ${DEEPSEEK_API_KEY}
   base_url: https://api.deepseek.com/v1
   timeout_sec: 90

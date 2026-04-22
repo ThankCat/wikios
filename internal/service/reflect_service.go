@@ -47,15 +47,15 @@ func (s *ReflectService) Run(ctx context.Context, taskModel *task.Task, traceID 
 	counterEvidence := s.collectCounterEvidence(ctx, taskModel, env, req.Topic)
 	stageOneBlocks := s.collectStageOneBlocks(ctx, taskModel, env)
 	deepPages, deepBlocks := s.collectDeepReadBlocks(ctx, taskModel, env, req.Topic)
-	prompt, err := s.loadPrompt("admin_reflect_system.md")
+	prompt, err := s.loadPromptWithWikiAgent("admin_reflect_system.md")
 	if err != nil {
 		return nil, err
 	}
 	prompt += "\n\n你必须只返回一个 JSON 对象，不要输出代码块。"
-	llmText, err := s.deps.LLM.Chat(ctx, s.deps.Config.LLM.ModelAdmin, []llm.Message{
+	llmText, err := s.executeLLM(ctx, taskModel, s.deps.Config.LLM.ModelAdmin, []llm.Message{
 		{Role: "system", Content: prompt},
 		{Role: "user", Content: fmt.Sprintf("主题：%s\n\nStage 0 反证：\n%s\n\nStage 1 模式扫描：\n%s\n\nStage 2 深读页面：\n%s", req.Topic, counterEvidence, stageOneBlocks, strings.Join(deepBlocks, "\n\n"))},
-	})
+	}, "llm reflect")
 	if err != nil {
 		return nil, err
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,7 +29,52 @@ import (
 
 type mockLLM struct{}
 
-func (mockLLM) Chat(_ context.Context, _ string, _ []llm.Message) (string, error) {
+func (mockLLM) Chat(_ context.Context, _ string, messages []llm.Message) (string, error) {
+	if len(messages) > 0 && strings.Contains(messages[0].Content, "Wiki 摄入助手") {
+		return `{
+  "summary": "已根据 mounted wiki 的摄入规则完成结构化提取",
+  "source_title": "Customer 1-5",
+  "source_slug": "customer-1-5",
+  "key_points": ["测试来源要点一", "测试来源要点二"],
+  "concepts_affected": ["客户分层", "需求管理"],
+  "entities_affected": ["Customer 1-5"],
+  "concepts": [
+    {
+      "title": "客户分层",
+      "slug": "customer-segmentation",
+      "english_name": "Customer Segmentation",
+      "aliases": ["客户分层", "Customer Segmentation"],
+      "definition": "客户分层是按照客户价值、需求或服务策略对客户进行分类的方法，用于决定差异化服务方式。",
+      "key_points": ["可以帮助客服团队识别高价值客户", "不同层级客户适合不同响应策略"],
+      "contradictions": []
+    },
+    {
+      "title": "需求管理",
+      "slug": "demand-management",
+      "english_name": "Demand Management",
+      "aliases": ["需求管理", "Demand Management"],
+      "definition": "需求管理用于收集、整理和持续跟踪客户需求，确保知识库内容与客户问题保持一致。",
+      "key_points": ["需要持续记录高频问题", "应与知识库更新节奏联动"],
+      "contradictions": []
+    }
+  ],
+  "entities": [
+    {
+      "title": "Customer 1-5",
+      "slug": "customer-1-5",
+      "entity_type": "product",
+      "aliases": ["Customer 1-5"],
+      "description": "一个用于验证 ingest 链路的测试来源实体。",
+      "key_contributions": ["提供了客户服务知识整理的测试样本"]
+    }
+  ],
+  "contradictions": [],
+  "low_risk_fixes": [],
+  "high_risk_proposals": [],
+  "warnings": [],
+  "possibly_outdated": false
+}`, nil
+	}
 	return `{
   "answer": "mock answer",
   "matched_pages": ["wiki/sources/rules.md"],
@@ -37,6 +83,17 @@ func (mockLLM) Chat(_ context.Context, _ string, _ []llm.Message) (string, error
   "limitations": ["当前样本页较少，结论偏保守"],
   "output_file": ""
 }`, nil
+}
+
+func (mockLLM) StreamChat(_ context.Context, _ string, messages []llm.Message, onDelta func(string)) (string, error) {
+	text, err := mockLLM{}.Chat(context.Background(), "", messages)
+	if err != nil {
+		return "", err
+	}
+	if onDelta != nil && text != "" {
+		onDelta(text)
+	}
+	return text, nil
 }
 
 func TestAdminQueryTaskFlow(t *testing.T) {
@@ -97,7 +154,7 @@ func TestAdminQueryTaskFlow(t *testing.T) {
 	}
 	taskID := accepted["task_id"].(string)
 
-	var statusBody []byte
+	var finalTask task.Task
 	for range 40 {
 		time.Sleep(100 * time.Millisecond)
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tasks/"+taskID, nil)
@@ -107,13 +164,16 @@ func TestAdminQueryTaskFlow(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200 for task status, got %d", rec.Code)
 		}
-		statusBody = rec.Body.Bytes()
-		if bytes.Contains(statusBody, []byte(`"status":"SUCCESS"`)) {
+		if err := json.Unmarshal(rec.Body.Bytes(), &finalTask); err != nil {
+			t.Fatalf("decode task status: %v", err)
+		}
+		if finalTask.Status == task.StatusSuccess || finalTask.Status == task.StatusFailed {
 			break
 		}
 	}
-	if !bytes.Contains(statusBody, []byte(`"status":"SUCCESS"`)) {
-		t.Fatalf("task did not complete: %s", string(statusBody))
+	statusBody, _ := json.Marshal(finalTask)
+	if finalTask.Status != task.StatusSuccess {
+		t.Fatalf("task did not complete successfully: %s", string(statusBody))
 	}
 	if !bytes.Contains(statusBody, []byte(`"output_file"`)) {
 		t.Fatalf("expected output_file in task result: %s", string(statusBody))
@@ -141,6 +201,110 @@ func TestAdminQueryTaskFlow(t *testing.T) {
 	}
 }
 
+func TestAdminIngestAcceptsAbsoluteMountedPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	workspace := t.TempDir()
+	root := createFixtureWiki(t)
+	rawPath := filepath.Join(root, "raw", "articles", "customer1-5.md")
+	mustWrite(t, rawPath, "# Customer 1-5\n\n这是一个用于 ingest 的测试来源。\n\n包含若干关键事实。\n")
+	cfg := &config.Config{
+		Server:      config.ServerConfig{Mode: "debug"},
+		MountedWiki: config.MountedWikiConfig{Root: root, QMDIndex: "test-index"},
+		Auth:        config.AuthConfig{AdminBearerToken: "secret"},
+		Retrieval:   config.RetrievalConfig{TopK: 3},
+		Workspace:   config.WorkspaceConfig{BaseDir: workspace},
+		Sandbox:     config.SandboxConfig{QMDTimeoutSec: 1},
+		Sync:        config.SyncConfig{Remote: "origin", Branch: "main"},
+		LLM:         config.LLMConfig{ModelAdmin: "test", ModelPublic: "test"},
+		TaskStore:   config.TaskStoreConfig{SQLitePath: filepath.Join(workspace, "service.db")},
+	}
+	store, err := task.OpenStore(cfg.TaskStore.SQLitePath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	registry := runtime.NewRegistry()
+	tools.RegisterAll(registry, tools.Dependencies{Config: cfg, Resolver: wikiadapter.NewPathResolver(cfg.MountedWiki.Root)})
+	rt := runtime.NewRuntime(registry, runtime.NewPolicyEngine(), runtime.NewValidator(), runtime.NewAuditLogger())
+	deps := service.Deps{
+		Config:       cfg,
+		Runtime:      rt,
+		LLM:          mockLLM{},
+		Retriever:    retrieval.NewQMDRetriever(rt),
+		TaskStore:    store,
+		PromptDir:    "../../internal/llm/prompts",
+		WorkspaceDir: workspace,
+	}
+	handlers := api.NewHandlers(
+		service.NewPublicQueryService(deps),
+		service.NewAdminQueryService(deps),
+		service.NewIngestService(deps),
+		service.NewLintService(deps),
+		service.NewReflectService(deps),
+		service.NewRepairService(deps),
+		service.NewSyncService(deps),
+		task.NewManager(store),
+	)
+	router := app.NewRouter(cfg, handlers)
+
+	reqBody, _ := json.Marshal(service.IngestRequest{
+		InputType: "file",
+		Path:      rawPath,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/ingest", bytes.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var accepted map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode accepted: %v", err)
+	}
+	taskID := accepted["task_id"].(string)
+
+	var finalTask task.Task
+	for range 40 {
+		time.Sleep(100 * time.Millisecond)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tasks/"+taskID, nil)
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for task status, got %d", rec.Code)
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &finalTask); err != nil {
+			t.Fatalf("decode task status: %v", err)
+		}
+		if finalTask.Status == task.StatusSuccess || finalTask.Status == task.StatusFailed {
+			break
+		}
+	}
+	statusBody, _ := json.Marshal(finalTask)
+	if finalTask.Status != task.StatusSuccess {
+		t.Fatalf("ingest task did not complete: %s", string(statusBody))
+	}
+	if _, err := os.Stat(filepath.Join(root, "wiki", "sources", "customer-1-5.md")); err != nil {
+		t.Fatalf("expected ingested source page to exist: %v", err)
+	}
+	conceptPath := filepath.Join(root, "wiki", "concepts", "customer-segmentation.md")
+	content, err := os.ReadFile(conceptPath)
+	if err != nil {
+		t.Fatalf("expected concept page to exist: %v", err)
+	}
+	text := string(content)
+	if !strings.Contains(text, "title: 客户分层") {
+		t.Fatalf("expected concept title to be enriched, got: %s", text)
+	}
+	if !strings.Contains(text, "客户分层是按照客户价值") {
+		t.Fatalf("expected concept definition to be written, got: %s", text)
+	}
+	if !strings.Contains(text, "可以帮助客服团队识别高价值客户") {
+		t.Fatalf("expected concept key points to be written, got: %s", text)
+	}
+}
+
 func createFixtureWiki(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -153,6 +317,8 @@ func createFixtureWiki(t *testing.T) string {
 	mustWrite(t, filepath.Join(root, "wiki", "sources", "rules.md"), "---\ntype: source\ntitle: 规则\nprocessed: true\n---\n\n## Summary\n\n知识库系统规则说明。\n\n## Key Points\n\n- 规则一\n")
 	mustMkdirAll(t, filepath.Join(root, "wiki", "templates"))
 	mustWrite(t, filepath.Join(root, "wiki", "templates", "source-template.md"), "---\ntype: source\ntitle: \"\"\ndate: 2026-04-22\nprocessed: false\n---\n\n## Summary\n\n## Key Points\n\n## Concepts Extracted\n\n## Entities Extracted\n\n## Contradictions\n\n## My Notes\n")
+	mustWrite(t, filepath.Join(root, "wiki", "templates", "concept-template.md"), "---\ntype: concept\ntitle: \"\"\ndate: 2026-04-22\nupdated: 2026-04-22\ntags: []\nsource_count: 0\nconfidence: low\ndomain_volatility: medium\nlast_reviewed: 2026-04-22\naliases: []\n---\n\n## Definition\n\n## Key Points\n\n## My Position\n\n## Contradictions\n\n## Sources\n\n## Evolution Log\n")
+	mustWrite(t, filepath.Join(root, "wiki", "templates", "entity-template.md"), "---\ntype: entity\ntitle: \"\"\ndate: 2026-04-22\ntags: []\nentity_type: person\naliases: []\n---\n\n## Description\n\n## Key Contributions\n\n## Related Concepts\n\n## Sources\n")
 	mustMkdirAll(t, filepath.Join(root, "scripts"))
 	mustWrite(t, filepath.Join(root, "scripts", "lint.py"), "#!/usr/bin/env python3\nprint('Wrote lint report to wiki/outputs/lint-2026-04-22.md')\n")
 	run(t, root, "git", "init", "-b", "main")

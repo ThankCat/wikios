@@ -45,11 +45,41 @@
 输出内容（结构化）：
 {
   "summary": "本次 ingest 的核心变化",
-  "created_pages": [],
-  "updated_pages": [],
+  "source_title": "来源标题",
+  "source_slug": "英文小写连字符 slug",
+  "key_points": [],
   "concepts_affected": [],
   "entities_affected": [],
+  "concepts": [
+    {
+      "title": "概念中文名",
+      "slug": "english-kebab-slug",
+      "english_name": "English Name",
+      "aliases": ["概念中文名", "English Name", "其他别名"],
+      "definition": "一句定义，必须是可直接写入 concept 页的正文，而不是只给 slug。",
+      "key_points": ["概念的核心事实 1", "概念的核心事实 2"],
+      "contradictions": []
+    }
+  ],
+  "entities": [
+    {
+      "title": "实体名",
+      "slug": "entity-slug",
+      "entity_type": "person|org|product|location|other",
+      "aliases": ["别名"],
+      "description": "实体简介",
+      "key_contributions": ["该实体在来源中的关键作用"]
+    }
+  ],
+  "contradictions": [],
   "low_risk_fixes": [],
   "high_risk_proposals": [],
-  "qmd_updated": true/false
+  "warnings": [],
+  "possibly_outdated": false
 }
+
+补充要求：
+- `concepts` 和 `entities` 必须尽可能填写完整；不要只返回 `concepts_affected` / `entities_affected`
+- `definition` / `description` 必须是可直接落盘的自然语言，不要只写 slug、标签或单词
+- 如果来源里存在“适用场景 / 使用条件 / 优缺点 / 风险 / 前置条件”，优先写进 concept `key_points`
+- 如果没有足够证据创建 entity，可以返回空数组，但 concept 不应只剩下名称列表

@@ -149,6 +149,35 @@ func TestGitStatusCleanAndDirty(t *testing.T) {
 	}
 }
 
+func TestWikiSearchPagesMatchesChineseQuestionFallback(t *testing.T) {
+	root := createFixtureWiki(t)
+	mustWrite(t, filepath.Join(root, "wiki", "sources", "network.md"), "---\ntype: source\ntitle: 网络知识\ndate: 2026-04-22\n---\n\n## Summary\n\n静态IP适用于账号长期运营、白名单绑定、远程办公等需要稳定网络环境的场景。\n")
+	mustWrite(t, filepath.Join(root, "wiki", "concepts", "static-ip.md"), "---\ntype: concept\ntitle: static-ip\ndate: 2026-04-22\naliases:\n  - 静态IP\n  - static-ip\n---\n\n## Definition\n\n静态IP用于需要固定出口地址的网络场景。\n\n## Sources\n\n- [[sources/network]]\n")
+	cfg := testConfig(root, t.TempDir())
+	rt := newRuntime(cfg)
+	env := &runtime.ExecEnv{
+		WikiRoot:     root,
+		WorkspaceDir: cfg.Workspace.BaseDir,
+		Mode:         "admin",
+		QMDIndex:     cfg.MountedWiki.QMDIndex,
+	}
+	result, err := rt.Execute(context.Background(), env, runtime.ToolCall{
+		Name: "wiki.search_pages",
+		Args: map[string]any{"query": "静态IP适用什么场景？"},
+	})
+	if err != nil || !result.Success {
+		t.Fatalf("wiki.search_pages failed: %+v %v", result, err)
+	}
+	rawMatches, ok := result.Data["matches"].([]map[string]any)
+	if !ok || len(rawMatches) == 0 {
+		t.Fatalf("expected matches, got %+v", result.Data["matches"])
+	}
+	firstPath, _ := rawMatches[0]["path"].(string)
+	if firstPath != "wiki/sources/network.md" && firstPath != "wiki/concepts/static-ip.md" {
+		t.Fatalf("expected source or concept page to rank first, got %s", firstPath)
+	}
+}
+
 func newRuntime(cfg *config.Config) *runtime.Runtime {
 	registry := runtime.NewRegistry()
 	tools.RegisterAll(registry, tools.Dependencies{

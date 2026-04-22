@@ -66,7 +66,7 @@ func (s *PublicQueryService) Answer(ctx context.Context, traceID string, req Pub
 			continue
 		}
 		content, _ := result.Data["content"].(string)
-		contentBlocks = append(contentBlocks, fmt.Sprintf("## %s\n\n%s", page.Path, content))
+		contentBlocks = append(contentBlocks, fmt.Sprintf("## %s\n\n%s", page.Path, truncateForPrompt(content, 1800)))
 		sources = append(sources, SourceRef{
 			Path:       page.Path,
 			Title:      strings.TrimSuffix(filepath.Base(page.Path), filepath.Ext(page.Path)),
@@ -76,16 +76,16 @@ func (s *PublicQueryService) Answer(ctx context.Context, traceID string, req Pub
 	if len(contentBlocks) == 0 {
 		return nil, fmt.Errorf("no readable pages found")
 	}
-	systemPrompt, err := s.loadPrompt("public_answer_system.md")
+	systemPrompt, err := s.loadPromptWithWikiAgent("public_answer_system.md")
 	if err != nil {
 		return nil, err
 	}
 	systemPrompt += "\n\n你必须只返回一个 JSON 对象，不要输出代码块。"
 	userPrompt := fmt.Sprintf("用户问题：%s\n\n候选页面：\n%s", req.Question, strings.Join(contentBlocks, "\n\n"))
-	llmText, err := s.deps.LLM.Chat(ctx, s.deps.Config.LLM.ModelPublic, []llm.Message{
+	llmText, err := s.executeLLM(ctx, nil, s.deps.Config.LLM.ModelPublic, []llm.Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userPrompt},
-	})
+	}, "llm public answer")
 	if err != nil {
 		return nil, err
 	}

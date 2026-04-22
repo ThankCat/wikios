@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/google/uuid"
 
@@ -80,7 +81,8 @@ func (t *wikiSearchPagesTool) Validate(args map[string]any) error {
 }
 func (t *wikiSearchPagesTool) Execute(_ context.Context, _ *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
 	query, _ := requireString(args, "query")
-	query = strings.ToLower(query)
+	query = strings.ToLower(strings.TrimSpace(query))
+	terms := searchTerms(query)
 	var matches []map[string]any
 	err := filepath.Walk(filepath.Join(t.deps.Resolver.WikiRoot(), "wiki"), func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || !strings.HasSuffix(info.Name(), ".md") {
@@ -90,12 +92,13 @@ func (t *wikiSearchPagesTool) Execute(_ context.Context, _ *runtime.ExecEnv, arg
 		if err != nil {
 			return err
 		}
-		haystack := strings.ToLower(string(content))
-		score := strings.Count(haystack, query) + strings.Count(strings.ToLower(info.Name()), query)*2
+		haystack := normalizeSearchText(string(content))
+		rel, _ := filepath.Rel(t.deps.Resolver.WikiRoot(), path)
+		normalizedRel := normalizeSearchText(filepath.ToSlash(rel))
+		score := searchScore(haystack, normalizedRel, terms)
 		if score == 0 {
 			return nil
 		}
-		rel, _ := filepath.Rel(t.deps.Resolver.WikiRoot(), path)
 		matches = append(matches, map[string]any{
 			"path":  filepath.ToSlash(rel),
 			"score": score,
@@ -178,6 +181,149 @@ func (t *wikiFindByAliasTool) Execute(_ context.Context, _ *runtime.ExecEnv, arg
 	}
 	slices.Sort(matches)
 	return success(t.risk, map[string]any{"alias": alias, "matches": matches}), nil
+}
+
+func searchScore(haystack string, rel string, terms []string) int {
+	score := 0
+	for index, term := range terms {
+		if term == "" {
+			continue
+		}
+		weight := 6
+		if index > 0 {
+			weight = 3
+		}
+		score += strings.Count(haystack, term) * weight
+		score += strings.Count(rel, term) * (weight + 2)
+	}
+	switch {
+	case strings.Contains(rel, "wiki/sources/"):
+		score += 5
+	case strings.Contains(rel, "wiki/concepts/"):
+		score += 4
+	case strings.Contains(rel, "wiki/entities/"):
+		score += 3
+	case strings.Contains(rel, "wiki/synthesis/"):
+		score += 2
+	case strings.Contains(rel, "wiki/index.md"):
+		score -= 2
+	}
+	if score < 0 {
+		return 0
+	}
+	return score
+}
+
+func searchTerms(query string) []string {
+	normalized := normalizeSearchText(query)
+	if normalized == "" {
+		return nil
+	}
+	terms := []string{normalized}
+	segments := splitSearchSegments(normalized)
+	for _, segment := range segments {
+		if len([]rune(segment)) <= 1 {
+			continue
+		}
+		terms = append(terms, segment)
+		if isHanString(segment) {
+			terms = append(terms, hanNGrams(segment, 2)...)
+		}
+	}
+	return dedupeSearchTerms(terms)
+}
+
+func normalizeSearchText(text string) string {
+	var b strings.Builder
+	lastSpace := false
+	for _, r := range strings.ToLower(text) {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r), unicode.Is(unicode.Han, r):
+			b.WriteRune(r)
+			lastSpace = false
+		default:
+			if !lastSpace {
+				b.WriteRune(' ')
+				lastSpace = true
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func splitSearchSegments(text string) []string {
+	parts := strings.Fields(text)
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		var current strings.Builder
+		lastKind := 0
+		flush := func() {
+			if current.Len() == 0 {
+				return
+			}
+			out = append(out, current.String())
+			current.Reset()
+		}
+		for _, r := range part {
+			kind := searchRuneKind(r)
+			if lastKind != 0 && kind != lastKind {
+				flush()
+			}
+			current.WriteRune(r)
+			lastKind = kind
+		}
+		flush()
+	}
+	return out
+}
+
+func searchRuneKind(r rune) int {
+	switch {
+	case unicode.Is(unicode.Han, r):
+		return 1
+	case unicode.IsLetter(r), unicode.IsDigit(r):
+		return 2
+	default:
+		return 0
+	}
+}
+
+func isHanString(text string) bool {
+	for _, r := range text {
+		if !unicode.Is(unicode.Han, r) {
+			return false
+		}
+	}
+	return text != ""
+}
+
+func hanNGrams(text string, size int) []string {
+	runes := []rune(text)
+	if len(runes) <= size {
+		return nil
+	}
+	out := make([]string, 0, len(runes)-size+1)
+	for i := 0; i <= len(runes)-size; i++ {
+		out = append(out, string(runes[i:i+size]))
+	}
+	return out
+}
+
+func dedupeSearchTerms(terms []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(terms))
+	for _, term := range terms {
+		term = strings.TrimSpace(term)
+		if term == "" || seen[term] {
+			continue
+		}
+		seen[term] = true
+		out = append(out, term)
+	}
+	return out
 }
 
 func (t *wikiCreateFromTemplateTool) Validate(args map[string]any) error {

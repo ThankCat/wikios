@@ -39,6 +39,7 @@ func NewRouter(cfg *config.Config, handlers *api.Handlers) *gin.Engine {
 	admin.POST("/repair/apply-low-risk", handlers.AdminRepairApplyLowRisk)
 	admin.POST("/repair/apply-proposal", handlers.AdminRepairApplyProposal)
 	admin.POST("/sync", handlers.AdminSync)
+	admin.POST("/chat/stream", handlers.AdminChatStream)
 	admin.GET("/tasks/:id", handlers.AdminTaskStatus)
 
 	registerWebRoutes(r, cfg)

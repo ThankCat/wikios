@@ -73,6 +73,9 @@ export function TaskCenter({ token, tasks, onTaskUpdate, onSelectTask }: Props) 
                   {typeof task.result?.summary === "string" && (
                     <p className="mt-3 text-sm text-muted-foreground">{task.result.summary}</p>
                   )}
+                  {typeof task.error === "string" && task.error.trim() !== "" && (
+                    <p className="mt-3 text-sm text-rose-600">{task.error}</p>
+                  )}
                 </button>
               ))
             )}
@@ -82,4 +85,3 @@ export function TaskCenter({ token, tasks, onTaskUpdate, onSelectTask }: Props) 
     </Card>
   );
 }
-

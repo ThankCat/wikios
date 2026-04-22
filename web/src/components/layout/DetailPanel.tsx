@@ -56,6 +56,28 @@ export function DetailPanel({ mountedWikiName, selectedChat, selectedTask }: Pro
                     {formatJSON(selectedTask.result ?? {})}
                   </pre>
                 </div>
+                {typeof selectedTask.error === "string" && selectedTask.error.trim() !== "" && (
+                  <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                    {selectedTask.error}
+                  </div>
+                )}
+                {selectedTask.steps.length > 0 && (
+                  <div className="space-y-3">
+                    <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Steps</p>
+                    {selectedTask.steps.map((step, index) => (
+                      <div key={`${step.name}-${index}`} className="rounded-2xl border border-border p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="font-medium">{step.name}</p>
+                          <Badge variant={step.status === "SUCCESS" ? "success" : "danger"}>{step.status}</Badge>
+                        </div>
+                        {step.tool && <p className="mt-1 font-mono text-xs text-muted-foreground">{step.tool}</p>}
+                        {typeof step.output?.error === "string" && step.output.error.trim() !== "" && (
+                          <p className="mt-2 text-sm text-rose-600">{step.output.error}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {typeof selectedTask.result?.report === "string" && (
                   <div className="prose prose-slate max-w-none text-sm">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -97,4 +119,3 @@ export function DetailPanel({ mountedWikiName, selectedChat, selectedTask }: Pro
     </div>
   );
 }
-
