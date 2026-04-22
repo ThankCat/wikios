@@ -1,0 +1,42 @@
+server:
+  port: 8080
+  mode: debug
+
+mounted_wiki:
+  root: /Users/chenhao/Project/knowledge-base
+  name: default-wiki
+  qmd_index: zy-knowledge-base
+
+llm:
+  provider: deepseek
+  model_public: deepseek-reasoner
+  model_admin: deepseek-reasoner
+  api_key: ${DEEPSEEK_API_KEY}
+  base_url: https://api.deepseek.com/v1
+  timeout_sec: 90
+
+auth:
+  admin_bearer_token: ${WIKIOS_ADMIN_TOKEN}
+
+retrieval:
+  top_k: 5
+
+workspace:
+  base_dir: .workspace
+  max_file_size_mb: 10
+  default_timeout_sec: 20
+
+sandbox:
+  python_allow_network: false
+  python_timeout_sec: 20
+  qmd_timeout_sec: 30
+
+task_store:
+  sqlite_path: .workspace/service.db
+
+sync:
+  provider: github
+  enabled: true
+  remote: origin
+  branch: main
+

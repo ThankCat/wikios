@@ -1,0 +1,62 @@
+package service_test
+
+import (
+	"context"
+	"testing"
+
+	"wikios/internal/config"
+	"wikios/internal/llm"
+	"wikios/internal/retrieval"
+	"wikios/internal/runtime"
+	"wikios/internal/service"
+	"wikios/internal/task"
+	"wikios/internal/tools"
+	"wikios/internal/wikiadapter"
+)
+
+type mockLLM struct {
+	answer string
+}
+
+func (m mockLLM) Chat(_ context.Context, _ string, _ []llm.Message) (string, error) {
+	return m.answer, nil
+}
+
+func TestPublicAnswerUsesKnowledgeBase(t *testing.T) {
+	cfg := &config.Config{
+		MountedWiki: config.MountedWikiConfig{
+			Root:     "/Users/chenhao/Project/knowledge-base",
+			QMDIndex: "zy-knowledge-base",
+		},
+		Retrieval: config.RetrievalConfig{TopK: 3},
+		Workspace: config.WorkspaceConfig{BaseDir: t.TempDir()},
+		Sandbox:   config.SandboxConfig{QMDTimeoutSec: 30},
+		LLM:       config.LLMConfig{ModelPublic: "test"},
+	}
+	store, err := task.OpenStore(t.TempDir() + "/service.db")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	registry := runtime.NewRegistry()
+	tools.RegisterAll(registry, tools.Dependencies{
+		Config:   cfg,
+		Resolver: wikiadapter.NewPathResolver(cfg.MountedWiki.Root),
+	})
+	rt := runtime.NewRuntime(registry, runtime.NewPolicyEngine(), runtime.NewValidator(), runtime.NewAuditLogger())
+	svc := service.NewPublicQueryService(service.Deps{
+		Config:       cfg,
+		Runtime:      rt,
+		LLM:          mockLLM{answer: "知识库规则摘要"},
+		Retriever:    retrieval.NewQMDRetriever(rt),
+		TaskStore:    store,
+		PromptDir:    "../../internal/llm/prompts",
+		WorkspaceDir: cfg.Workspace.BaseDir,
+	})
+	resp, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "知识库系统规则是什么？"})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if resp.Answer == "" || len(resp.Sources) == 0 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
