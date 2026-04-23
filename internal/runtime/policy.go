@@ -21,10 +21,23 @@ func (p *PolicyEngine) Allow(env *ExecEnv, tool Tool, _ map[string]any) error {
 		if !adminAllowed(tool.Name()) {
 			return fmt.Errorf("tool %s is not allowed in admin mode", tool.Name())
 		}
+	case "admin_direct":
+		if !adminDirectAllowed(tool.Name()) {
+			return fmt.Errorf("tool %s is not allowed in admin_direct mode", tool.Name())
+		}
 	default:
 		return fmt.Errorf("unsupported mode %q", env.Mode)
 	}
 	return nil
+}
+
+func adminDirectAllowed(name string) bool {
+	switch name {
+	case "exec.shell":
+		return true
+	default:
+		return false
+	}
 }
 
 func publicAllowed(name string) bool {

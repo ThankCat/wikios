@@ -47,6 +47,27 @@ func (s *AdminQueryService) Run(ctx context.Context, execution *Execution, trace
 		pageContents = append(pageContents, "## "+page.Path+"\n\n"+truncateForPrompt(content, 2400))
 		matched = append(matched, page.Path)
 	}
+	if len(pageContents) == 0 {
+		result := map[string]any{
+			"summary":        "admin query completed without readable sources",
+			"answer":         "当前没有读取到可用来源内容，请检查检索结果或 source 路径。",
+			"matched_pages":  nil,
+			"source_paths":   nil,
+			"contradictions": []string{},
+			"limitations": []string{
+				"本次检索命中的页面均未成功读取，因此未继续调用 LLM 生成结论。",
+			},
+			"failed_pages": func() []string {
+				out := make([]string, 0, len(pages))
+				for _, page := range pages {
+					out = append(out, page.Path)
+				}
+				return out
+			}(),
+			"output_files": []string{},
+		}
+		return result, nil
+	}
 	prompt, err := s.loadPromptWithWikiAgent("admin_query_system.md")
 	if err != nil {
 		return nil, err

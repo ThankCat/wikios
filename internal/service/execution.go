@@ -10,9 +10,10 @@ import (
 type ExecutionStatus string
 
 const (
-	ExecutionSuccess ExecutionStatus = "SUCCESS"
-	ExecutionFailed  ExecutionStatus = "FAILED"
-	ExecutionRunning ExecutionStatus = "RUNNING"
+	ExecutionSuccess        ExecutionStatus = "SUCCESS"
+	ExecutionFailed         ExecutionStatus = "FAILED"
+	ExecutionRunning        ExecutionStatus = "RUNNING"
+	ExecutionPartialSuccess ExecutionStatus = "PARTIAL_SUCCESS"
 )
 
 type Step struct {

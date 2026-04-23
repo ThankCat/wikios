@@ -34,8 +34,9 @@ function asObject(value: unknown): Record<string, unknown> {
 export function MessageDetails({ details }: Props) {
   const object = asObject(details);
   const prompts = Array.isArray(object.prompts) ? object.prompts : [];
-  const steps = Array.isArray(object.steps) ? object.steps : [];
   const execution = asObject(object.execution);
+  const executionSteps = Array.isArray(execution.steps) ? execution.steps : [];
+  const steps = Array.isArray(object.steps) ? object.steps : executionSteps;
   const result = object.result ?? object;
 
   const availableTabs = useMemo(
@@ -218,7 +219,7 @@ function PanelBlock({ title, value }: { title: string; value: unknown }) {
 
 function CodeBlock({ value }: { value: unknown }) {
   return (
-    <pre className="overflow-x-auto rounded-xl bg-slate-950 px-4 py-3 text-xs leading-6 text-slate-100 shadow-inner">
+    <pre className="detail-code-scroll max-h-[28rem] overflow-auto rounded-xl bg-slate-950 px-4 py-3 text-xs leading-6 text-slate-100 shadow-inner">
       <code>{formatJSON(value)}</code>
     </pre>
   );

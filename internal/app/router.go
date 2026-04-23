@@ -19,6 +19,7 @@ import (
 func NewRouter(cfg *config.Config, handlers *api.Handlers, dataStore *store.Store) *gin.Engine {
 	r := gin.New()
 	r.Use(
+		middleware.LocalDevCORS(),
 		middleware.Trace(),
 		middleware.Logger(),
 		middleware.Recovery(),
@@ -42,6 +43,7 @@ func NewRouter(cfg *config.Config, handlers *api.Handlers, dataStore *store.Stor
 	admin.POST("/chat", handlers.AdminChat)
 	admin.POST("/chat/stream", handlers.AdminChatStream)
 	admin.POST("/upload", handlers.AdminUpload)
+	admin.POST("/upload/stream", handlers.AdminUploadStream)
 
 	registerWebRoutes(r, cfg)
 
@@ -88,10 +90,16 @@ func registerWebRoutes(r *gin.Engine, cfg *config.Config) {
 			})
 			return
 		}
-		target := filepath.Join(distDir, requested)
-		if fileExists(target) {
-			c.File(target)
-			return
+		candidates := []string{
+			filepath.Join(distDir, requested),
+			filepath.Join(distDir, requested+".html"),
+			filepath.Join(distDir, requested, "index.html"),
+		}
+		for _, target := range candidates {
+			if fileExists(target) {
+				c.File(target)
+				return
+			}
 		}
 
 		indexPath := filepath.Join(distDir, "index.html")

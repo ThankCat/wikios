@@ -46,6 +46,7 @@ func RegisterAll(registry *runtime.Registry, deps Dependencies) {
 		NewWikiUpdateQuestionsTool(deps),
 		NewExecQMDTool(deps),
 		NewExecPythonTool(deps),
+		NewExecShellTool(deps),
 		NewLintRunTool(deps),
 		NewRepairApplyLowRiskTool(deps),
 		NewRepairCreateHighRiskProposalTool(deps),

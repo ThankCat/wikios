@@ -7,38 +7,68 @@ import type {
   PublicAnswerResponse,
   PublicStreamEvent,
   UploadResponse,
+  UploadStreamEvent,
 } from "@/types/api";
 
+export class APIError extends Error {
+  status: number;
+  payload: unknown;
+
+  constructor(message: string, status: number, payload: unknown) {
+    super(message);
+    this.name = "APIError";
+    this.status = status;
+    this.payload = payload;
+  }
+}
+
 async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
-  const response = await fetch(input, {
+  const response = await fetch(normalizeInput(input), {
     credentials: "include",
     ...init,
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Request failed: ${response.status}`);
+    let payload: unknown = text;
+    let message = text || `Request failed: ${response.status}`;
+    try {
+      payload = JSON.parse(text);
+      const object = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
+      const errorObject =
+        object && object.error && typeof object.error === "object" ? (object.error as Record<string, unknown>) : null;
+      const payloadMessage = typeof errorObject?.message === "string" ? errorObject.message : "";
+      if (payloadMessage.trim() !== "") {
+        message = payloadMessage;
+      }
+    } catch {
+      // Keep plain text fallback.
+    }
+    throw new APIError(message, response.status, payload);
   }
   return (await response.json()) as T;
 }
 
 export const api = {
-  publicAnswer(question: string, history?: PublicChatHistoryItem[]) {
-    return request<PublicAnswerResponse>("/api/v1/public/answer", {
+  publicAnswer(question: string, history?: PublicChatHistoryItem[], signal?: AbortSignal) {
+    return request<PublicAnswerResponse>(apiURL("/api/v1/public/answer"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question, history }),
+      signal,
     });
   },
   async publicAnswerStream(
     question: string,
     history: PublicChatHistoryItem[] | undefined,
     onEvent: (event: PublicStreamEvent) => void,
+    signal?: AbortSignal,
   ) {
-    const response = await fetch("/api/v1/public/answer/stream", {
+    const response = await fetch(apiURL("/api/v1/public/answer/stream"), {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question, history }),
+      signal,
     });
     if (!response.ok) {
       const text = await response.text();
@@ -50,33 +80,35 @@ export const api = {
     await consumeSSE(response, onEvent);
   },
   login(username: string, password: string) {
-    return request<{ user: AdminUser }>("/api/v1/admin/auth/login", {
+    return request<{ user: AdminUser }>(apiURL("/api/v1/admin/auth/login"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
     });
   },
   logout() {
-    return request<{ ok: boolean }>("/api/v1/admin/auth/logout", {
+    return request<{ ok: boolean }>(apiURL("/api/v1/admin/auth/logout"), {
       method: "POST",
     });
   },
   me() {
-    return request<{ user: AdminUser }>("/api/v1/admin/auth/me");
+    return request<{ user: AdminUser }>(apiURL("/api/v1/admin/auth/me"));
   },
-  adminChat(payload: AdminChatRequest) {
-    return request<AdminChatResponse>("/api/v1/admin/chat", {
+  adminChat(payload: AdminChatRequest, signal?: AbortSignal) {
+    return request<AdminChatResponse>(apiURL("/api/v1/admin/chat"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal,
     });
   },
-  async adminChatStream(payload: AdminChatRequest, onEvent: (event: AdminStreamEvent) => void) {
-    const response = await fetch("/api/v1/admin/chat/stream", {
+  async adminChatStream(payload: AdminChatRequest, onEvent: (event: AdminStreamEvent) => void, signal?: AbortSignal) {
+    const response = await fetch(apiURL("/api/v1/admin/chat/stream"), {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal,
     });
     if (!response.ok) {
       const text = await response.text();
@@ -87,15 +119,65 @@ export const api = {
     }
     await consumeSSE(response, onEvent);
   },
-  upload(file: File) {
+  upload(file: File, signal?: AbortSignal) {
     const body = new FormData();
     body.append("file", file);
-    return request<UploadResponse>("/api/v1/admin/upload", {
+    return request<UploadResponse>(apiURL("/api/v1/admin/upload"), {
       method: "POST",
       body,
+      signal,
     });
   },
+  async uploadStream(file: File, onEvent: (event: UploadStreamEvent) => void, signal?: AbortSignal) {
+    const body = new FormData();
+    body.append("file", file);
+    const response = await fetch(apiURL("/api/v1/admin/upload/stream"), {
+      method: "POST",
+      credentials: "include",
+      body,
+      signal,
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `Request failed: ${response.status}`);
+    }
+    if (!response.body) {
+      throw new Error("stream body is unavailable");
+    }
+    await consumeSSE(response, onEvent);
+  },
 };
+
+export function isAbortError(error: unknown) {
+  return error instanceof DOMException ? error.name === "AbortError" : error instanceof Error && error.name === "AbortError";
+}
+
+function apiURL(path: string) {
+  const base = resolveAPIBaseURL();
+  if (!base) {
+    return path;
+  }
+  return `${base}${path}`;
+}
+
+function normalizeInput(input: RequestInfo) {
+  if (typeof input === "string") {
+    return input;
+  }
+  return input;
+}
+
+function resolveAPIBaseURL() {
+  const envBase = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
+  if (envBase) {
+    return envBase.replace(/\/$/, "");
+  }
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const { protocol, hostname } = window.location;
+  return `${protocol}//${hostname}:8080`;
+}
 
 async function consumeSSE(
   response: Response,

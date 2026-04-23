@@ -25,6 +25,7 @@ type Config struct {
 	Storage     StorageConfig     `yaml:"storage"`
 	Sync        SyncConfig        `yaml:"sync"`
 	Web         WebConfig         `yaml:"web"`
+	Upload      UploadConfig      `yaml:"upload"`
 }
 
 type ServerConfig struct {
@@ -84,6 +85,11 @@ type SyncConfig struct {
 type WebConfig struct {
 	Enabled *bool  `yaml:"enabled"`
 	DistDir string `yaml:"dist_dir"`
+}
+
+type UploadConfig struct {
+	MaxTextFileKB int `yaml:"max_text_file_kb"`
+	MaxTableRows  int `yaml:"max_table_rows"`
 }
 
 func Load(path string) (*Config, error) {
@@ -170,6 +176,12 @@ func (c *Config) normalizeAndValidate() error {
 	if c.Web.Enabled == nil {
 		enabled := true
 		c.Web.Enabled = &enabled
+	}
+	if c.Upload.MaxTextFileKB <= 0 {
+		c.Upload.MaxTextFileKB = 500
+	}
+	if c.Upload.MaxTableRows <= 0 {
+		c.Upload.MaxTableRows = 120
 	}
 	if strings.TrimSpace(c.Auth.DefaultAdminUsername) == "" {
 		c.Auth.DefaultAdminUsername = "admin"

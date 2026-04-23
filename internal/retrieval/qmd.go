@@ -90,12 +90,16 @@ func parseQMDQuery(stdout any) []RetrievedPage {
 	for _, item := range generic {
 		switch typed := item.(type) {
 		case string:
-			out = append(out, RetrievedPage{Path: filepath.ToSlash(typed), Score: 1})
+			path := normalizeRetrievedPath(typed)
+			if path == "" {
+				continue
+			}
+			out = append(out, RetrievedPage{Path: path, Score: 1})
 		case map[string]any:
 			path := ""
 			for _, key := range []string{"path", "file", "document", "source"} {
 				if s, ok := typed[key].(string); ok && s != "" {
-					path = filepath.ToSlash(s)
+					path = normalizeRetrievedPath(s)
 					break
 				}
 			}
@@ -110,4 +114,17 @@ func parseQMDQuery(stdout any) []RetrievedPage {
 		}
 	}
 	return out
+}
+
+func normalizeRetrievedPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	path = filepath.ToSlash(path)
+	if strings.HasPrefix(path, "qmd://") {
+		path = strings.TrimPrefix(path, "qmd://")
+		path = strings.TrimLeft(path, "/")
+	}
+	return path
 }

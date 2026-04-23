@@ -3,10 +3,12 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,12 +22,7 @@ import (
 
 type Handlers struct {
 	PublicQuery *service.PublicQueryService
-	AdminQuery  *service.AdminQueryService
-	Ingest      *service.IngestService
-	Lint        *service.LintService
-	Reflect     *service.ReflectService
-	Repair      *service.RepairService
-	Sync        *service.SyncService
+	DirectAdmin *service.DirectAdminService
 	Upload      *service.UploadService
 	Store       *store.Store
 	AuthConfig  config.AuthConfig
@@ -33,24 +30,14 @@ type Handlers struct {
 
 func NewHandlers(
 	publicQuery *service.PublicQueryService,
-	adminQuery *service.AdminQueryService,
-	ingest *service.IngestService,
-	lintSvc *service.LintService,
-	reflectSvc *service.ReflectService,
-	repairSvc *service.RepairService,
-	syncSvc *service.SyncService,
+	directAdmin *service.DirectAdminService,
 	uploadSvc *service.UploadService,
 	dataStore *store.Store,
 	authCfg config.AuthConfig,
 ) *Handlers {
 	return &Handlers{
 		PublicQuery: publicQuery,
-		AdminQuery:  adminQuery,
-		Ingest:      ingest,
-		Lint:        lintSvc,
-		Reflect:     reflectSvc,
-		Repair:      repairSvc,
-		Sync:        syncSvc,
+		DirectAdmin: directAdmin,
 		Upload:      uploadSvc,
 		Store:       dataStore,
 		AuthConfig:  authCfg,
@@ -85,17 +72,20 @@ type attachment struct {
 	Name string `json:"name"`
 }
 
+const chatHistoryLimit = 8
+
 type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
 type sseEmitter struct {
-	c *gin.Context
+	c  *gin.Context
+	mu *sync.Mutex
 }
 
 func (e *sseEmitter) Emit(event service.StreamEvent) {
-	writeSSE(e.c, event.Type, event.Data)
+	writeSSEWithLock(e.c, event.Type, event.Data, e.mu)
 }
 
 func (h *Handlers) PublicAnswer(c *gin.Context) {
@@ -208,35 +198,92 @@ func (h *Handlers) AdminMe(c *gin.Context) {
 }
 
 func (h *Handlers) AdminUpload(c *gin.Context) {
-	fileHeader, err := c.FormFile("file")
+	req, err := readUploadRequest(c)
 	if err != nil {
-		badRequest(c, fmt.Errorf("file is required"))
+		var validationErr service.ValidationError
+		if errors.As(err, &validationErr) {
+			badRequest(c, validationErr)
+			return
+		}
+		badRequest(c, err)
 		return
 	}
-	file, err := fileHeader.Open()
+	result, err := h.Upload.Save(c.Request.Context(), traceID(c), req)
 	if err != nil {
-		internalError(c, err)
-		return
-	}
-	defer file.Close()
-	data, err := io.ReadAll(file)
-	if err != nil {
-		internalError(c, err)
-		return
-	}
-	result, err := h.Upload.Save(c.Request.Context(), traceID(c), service.UploadRequest{
-		Filename:    fileHeader.Filename,
-		ContentType: fileHeader.Header.Get("Content-Type"),
-		Content:     data,
-	})
-	if err != nil {
+		var validationErr service.ValidationError
+		if errors.As(err, &validationErr) {
+			badRequest(c, validationErr)
+			return
+		}
+		var executionErr service.ExecutionError
+		if errors.As(err, &executionErr) {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": gin.H{
+					"code":    "INTERNAL_ERROR",
+					"message": executionErr.Error(),
+				},
+				"details": executionErr.Details,
+			})
+			return
+		}
 		internalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"reply":   adminDisplayReply("upload", result),
-		"details": result,
+		"reply":     adminDisplayReply("upload", result),
+		"details":   result,
+		"execution": result["execution"],
 	})
+}
+
+func (h *Handlers) AdminUploadStream(c *gin.Context) {
+	req, err := readUploadRequest(c)
+	if err != nil {
+		var validationErr service.ValidationError
+		if errors.As(err, &validationErr) {
+			badRequest(c, validationErr)
+			return
+		}
+		badRequest(c, err)
+		return
+	}
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	mu := &sync.Mutex{}
+	stopKeepalive := startSSEKeepalive(c, mu, 8*time.Second)
+	defer stopKeepalive()
+
+	streamCtx := service.WithStreamEmitter(c.Request.Context(), &sseEmitter{c: c, mu: mu})
+	_, execution, err := h.Upload.SaveStream(streamCtx, traceID(c), req)
+	if err != nil {
+		writeSSEWithLock(c, "error", gin.H{"message": err.Error()}, mu)
+		writeSSEWithLock(c, "done", gin.H{"execution": execution}, mu)
+		return
+	}
+	writeSSEWithLock(c, "done", gin.H{"execution": execution}, mu)
+}
+
+func readUploadRequest(c *gin.Context) (service.UploadRequest, error) {
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		return service.UploadRequest{}, fmt.Errorf("parse upload file: %w", err)
+	}
+	file, err := fileHeader.Open()
+	if err != nil {
+		return service.UploadRequest{}, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return service.UploadRequest{}, err
+	}
+	return service.UploadRequest{
+		Filename:    fileHeader.Filename,
+		ContentType: fileHeader.Header.Get("Content-Type"),
+		Content:     data,
+	}, nil
 }
 
 func (h *Handlers) AdminChat(c *gin.Context) {
@@ -277,78 +324,49 @@ func (h *Handlers) AdminChatStream(c *gin.Context) {
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	writeSSE(c, "meta", gin.H{
+	mu := &sync.Mutex{}
+	stopKeepalive := startSSEKeepalive(c, mu, 8*time.Second)
+	defer stopKeepalive()
+	writeSSEWithLock(c, "meta", gin.H{
 		"mode":         mode,
 		"execution_id": execution.ID,
 		"started_at":   execution.StartedAt.Format(time.RFC3339Nano),
-	})
-	streamCtx := service.WithStreamEmitter(c.Request.Context(), &sseEmitter{c: c})
+	}, mu)
+	streamCtx := service.WithStreamEmitter(c.Request.Context(), &sseEmitter{c: c, mu: mu})
 	result, err := h.runAdminConversation(streamCtx, traceID(c), execution, req, mode)
 	execution.EndedAt = time.Now()
 	if err != nil {
 		execution.Status = service.ExecutionFailed
 		execution.Error = err.Error()
-		writeSSE(c, "error", gin.H{"message": err.Error()})
-		writeSSE(c, "done", gin.H{"execution": execution})
+		writeSSEWithLock(c, "error", gin.H{"message": err.Error()}, mu)
+		writeSSEWithLock(c, "done", gin.H{"execution": execution}, mu)
 		return
 	}
 	execution.Status = service.ExecutionSuccess
-	writeSSE(c, "result", gin.H{
+	writeSSEWithLock(c, "result", gin.H{
 		"reply":     adminDisplayReply(mode, result),
 		"details":   result,
 		"execution": execution,
-	})
-	writeSSE(c, "done", gin.H{"execution": execution})
+	}, mu)
+	writeSSEWithLock(c, "done", gin.H{"execution": execution}, mu)
 }
 
 func (h *Handlers) runAdminConversation(ctx context.Context, trace string, execution *service.Execution, req adminChatRequest, mode string) (map[string]any, error) {
-	message := contextualizeMessage(req.Message, req.History)
-	switch mode {
-	case "ingest":
-		path := firstNonEmpty(stringOption(req.Context, "path"), attachmentPath(req.Attachments), strings.TrimSpace(req.Message))
-		return h.Ingest.Run(ctx, execution, trace, service.IngestRequest{
-			InputType:   "file",
-			Path:        path,
-			Interactive: false,
-		})
-	case "lint":
-		return h.Lint.Run(ctx, execution, trace, service.LintRequest{
-			WriteReport:    true,
-			AutoFixLowRisk: boolOption(req.Context, "auto_fix_low_risk", false),
-		})
-	case "reflect":
-		return h.Reflect.Run(ctx, execution, trace, service.ReflectRequest{
-			Topic:          firstNonEmpty(strings.TrimSpace(message), stringOption(req.Context, "topic")),
-			WriteReport:    true,
-			AutoFixLowRisk: boolOption(req.Context, "auto_fix_low_risk", false),
-		})
-	case "repair":
-		action := strings.TrimSpace(stringOption(req.Context, "action"))
-		if action == "proposal" {
-			return h.Repair.ApplyProposal(ctx, execution, trace, service.ApplyProposalRequest{
-				ProposalID: firstNonEmpty(stringOption(req.Context, "proposal_id"), strings.TrimSpace(req.Message)),
-			})
-		}
-		if action == "manual" {
-			return h.Repair.ApplyLowRisk(ctx, execution, trace, service.ApplyLowRiskRequest{
-				Path: stringOption(req.Context, "path"),
-				Ops:  anySliceOption(req.Context, "ops"),
-			})
-		}
-		return h.Repair.AutoDetect(ctx, execution, trace, service.AutoRepairRequest{
-			Topic: firstNonEmpty(strings.TrimSpace(message), stringOption(req.Context, "topic")),
-			Apply: boolOption(req.Context, "apply", true),
-		})
-	case "sync":
-		return h.Sync.Run(ctx, execution, trace, service.SyncRequest{
-			Message: firstNonEmpty(strings.TrimSpace(message), "chore: sync wiki updates"),
-		})
-	default:
-		return h.AdminQuery.Run(ctx, execution, trace, service.AdminQueryRequest{
-			Question:    firstNonEmpty(strings.TrimSpace(message), stringOption(req.Context, "question")),
-			WriteOutput: boolOption(req.Context, "write_output", false),
-		})
+	message := contextualizeMessage(req.Message, req.History, req.Context)
+	context := map[string]any{}
+	for key, value := range req.Context {
+		context[key] = value
 	}
+	if strings.TrimSpace(contextualizeMessage(req.Message, req.History, req.Context)) != "" {
+		context["question"] = firstNonEmpty(strings.TrimSpace(message), stringOption(req.Context, "question"))
+	}
+	return h.DirectAdmin.Run(ctx, execution, trace, service.DirectAdminRequest{
+		Message:     strings.TrimSpace(req.Message),
+		ModeHint:    mode,
+		History:     toServiceHistory(req.History),
+		Attachments: toDirectAdminAttachments(req.Attachments),
+		Context:     context,
+	})
 }
 
 func writeSSE(c *gin.Context, event string, data any) {
@@ -359,6 +377,35 @@ func writeSSE(c *gin.Context, event string, data any) {
 	_, _ = c.Writer.WriteString("event: " + event + "\n")
 	_, _ = c.Writer.WriteString("data: " + string(payload) + "\n\n")
 	c.Writer.Flush()
+}
+
+func writeSSEWithLock(c *gin.Context, event string, data any, mu *sync.Mutex) {
+	if mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	writeSSE(c, event, data)
+}
+
+func startSSEKeepalive(c *gin.Context, mu *sync.Mutex, interval time.Duration) func() {
+	stop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				writeSSEWithLock(c, "keepalive", gin.H{"ts": time.Now().Format(time.RFC3339Nano)}, mu)
+			case <-stop:
+				return
+			case <-c.Request.Context().Done():
+				return
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+	}
 }
 
 func detectAdminMode(message string, context map[string]any, attachments []attachment) string {
@@ -390,21 +437,21 @@ func detectAdminMode(message string, context map[string]any, attachments []attac
 func adminDisplayReply(mode string, result map[string]any) string {
 	switch mode {
 	case "query":
-		return stringValue(result, "answer")
+		return firstNonEmpty(stringValue(result, "reply"), stringValue(result, "answer"), stringValue(result, "summary"))
 	case "ingest":
-		return firstNonEmpty(stringValue(result, "summary"), "摄入完成")
+		return firstNonEmpty(stringValue(result, "reply"), stringValue(result, "summary"), "摄入完成")
 	case "lint":
-		return firstNonEmpty(stringValue(result, "summary"), "健康检查完成")
+		return firstNonEmpty(stringValue(result, "reply"), stringValue(result, "summary"), "健康检查完成")
 	case "reflect":
-		return firstNonEmpty(stringValue(result, "summary"), "反思分析完成")
+		return firstNonEmpty(stringValue(result, "reply"), stringValue(result, "summary"), "反思分析完成")
 	case "repair":
-		return firstNonEmpty(stringValue(result, "summary"), "修复完成")
+		return firstNonEmpty(stringValue(result, "reply"), stringValue(result, "summary"), "修复完成")
 	case "sync":
-		return "同步完成"
+		return firstNonEmpty(stringValue(result, "reply"), stringValue(result, "summary"), "同步完成")
 	case "upload":
-		return firstNonEmpty(stringValue(result, "summary"), "上传完成")
+		return firstNonEmpty(stringValue(result, "reply"), stringValue(result, "summary"), "上传完成")
 	default:
-		return firstNonEmpty(stringValue(result, "summary"), stringValue(result, "answer"))
+		return firstNonEmpty(stringValue(result, "reply"), stringValue(result, "summary"), stringValue(result, "answer"))
 	}
 }
 
@@ -449,6 +496,32 @@ func stringOption(options map[string]any, key string) string {
 	}
 	value, _ := raw.(string)
 	return value
+}
+
+func stringSliceOption(options map[string]any, key string) []string {
+	if options == nil {
+		return nil
+	}
+	raw, ok := options[key]
+	if !ok {
+		return nil
+	}
+	switch typed := raw.(type) {
+	case []string:
+		return typed
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			value, ok := item.(string)
+			if !ok || strings.TrimSpace(value) == "" {
+				continue
+			}
+			out = append(out, strings.TrimSpace(value))
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func anySliceOption(options map[string]any, key string) []any {
@@ -515,15 +588,35 @@ func toServiceHistory(items []chatMessage) []service.ChatMessage {
 	return history
 }
 
-func contextualizeMessage(message string, history []chatMessage) string {
+func toDirectAdminAttachments(items []attachment) []service.DirectAdminAttachment {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]service.DirectAdminAttachment, 0, len(items))
+	for _, item := range items {
+		out = append(out, service.DirectAdminAttachment{
+			Path: item.Path,
+			Kind: item.Kind,
+			Name: item.Name,
+		})
+	}
+	return out
+}
+
+func contextualizeMessage(message string, history []chatMessage, context map[string]any) string {
 	current := strings.TrimSpace(message)
 	if current == "" {
 		return current
 	}
+	sections := []string{}
+	state := summarizeSessionState(context)
+	if state != "" {
+		sections = append(sections, "会话状态：\n"+state)
+	}
 	turns := make([]string, 0, len(history))
 	start := 0
-	if len(history) > 6 {
-		start = len(history) - 6
+	if len(history) > chatHistoryLimit {
+		start = len(history) - chatHistoryLimit
 	}
 	for _, item := range history[start:] {
 		role := strings.TrimSpace(item.Role)
@@ -534,9 +627,61 @@ func contextualizeMessage(message string, history []chatMessage) string {
 		turns = append(turns, fmt.Sprintf("%s: %s", role, content))
 	}
 	if len(turns) == 0 {
-		return current
+		if len(sections) == 0 {
+			return current
+		}
+		return fmt.Sprintf("%s\n\n当前请求：%s", strings.Join(sections, "\n\n"), current)
 	}
-	return fmt.Sprintf("会话上下文：\n%s\n\n当前请求：%s", strings.Join(turns, "\n"), current)
+	sections = append(sections, "会话上下文：\n"+strings.Join(turns, "\n"))
+	return fmt.Sprintf("%s\n\n当前请求：%s", strings.Join(sections, "\n\n"), current)
+}
+
+func summarizeSessionState(context map[string]any) string {
+	if context == nil {
+		return ""
+	}
+	raw, ok := context["session_state"]
+	if !ok {
+		return ""
+	}
+	state, ok := raw.(map[string]any)
+	if !ok {
+		return ""
+	}
+	lines := []string{}
+	if value := strings.TrimSpace(stringOption(state, "lastMode")); value != "" {
+		lines = append(lines, "last_mode: "+value)
+	}
+	if value := strings.TrimSpace(stringOption(state, "lastSummary")); value != "" {
+		lines = append(lines, "last_summary: "+truncateContextValue(value, 300))
+	} else if value := strings.TrimSpace(stringOption(state, "lastReply")); value != "" {
+		lines = append(lines, "last_reply: "+truncateContextValue(value, 500))
+	}
+	if value := strings.TrimSpace(stringOption(state, "lastReportFile")); value != "" {
+		lines = append(lines, "last_report_file: "+value)
+	}
+	if values := stringSliceOption(state, "uploadedPaths"); len(values) > 0 {
+		lines = append(lines, "uploaded_paths: "+strings.Join(values, ", "))
+	}
+	if values := stringSliceOption(state, "lastOutputFiles"); len(values) > 0 {
+		lines = append(lines, "last_output_files: "+strings.Join(values, ", "))
+	}
+	if values := stringSliceOption(state, "lastCommands"); len(values) > 0 {
+		lines = append(lines, "last_commands: "+strings.Join(values, " | "))
+	}
+	if values := stringSliceOption(state, "lastArtifacts"); len(values) > 0 {
+		lines = append(lines, "last_artifacts: "+strings.Join(values, ", "))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func truncateContextValue(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 || len([]rune(text)) <= limit {
+		return text
+	}
+	runes := []rune(text)
+	return string(runes[:limit]) + "..."
 }
 
 func chunkText(text string, size int) []string {

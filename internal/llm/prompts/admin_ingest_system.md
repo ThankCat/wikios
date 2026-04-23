@@ -21,6 +21,15 @@
 - 更新 index / QUESTIONS / log
 - 执行 qmd update（或 qmd add + status）
 
+【FAQ 数据集兼容规则】
+- 若输入是 FAQ JSON 或 FAQ Markdown 表格，你必须先按统一 FAQ 结构理解数据，再输出结构化分析结果；不要把原始 JSON 字段名或表格列名直接当作最终知识表示。
+- FAQ JSON 默认识别信号：顶层对象存在 `faq` 数组；`types`、`sims`、`ws_info` 可能存在，也可能缺失。
+- `faq` 是标准问答主记录；`sims` 代表相似问法，必须视为主问法的变体，而不是独立来源页。
+- `answer` 可能包含 HTML；理解时按纯文本正文处理，不要把 HTML 标签当成知识点。
+- `condition_template` / `ws_info` 只作为元数据说明，不要把它们扩展成确定性的业务规则。
+- 对 FAQ 数据分段，`source_title` / `summary` / `key_points` 必须体现“FAQ 数据分段”语义，禁止从单条问答提取主题词覆盖整页语义。
+- 若某条 FAQ 的原问法只写“IP”，不得在输出中擅自收窄成“海外IP”“海外代理IP”“国外IP”等更窄表述，除非该条问答本身明确出现这些限定词。
+
 【交互模式】
 - 若请求中 interactive=true：你必须逐步与用户确认关键要点
 - 若 interactive=false：你必须自动执行完整 ingest 流程，并在报告中说明“非交互模式执行”
@@ -83,3 +92,4 @@
 - `definition` / `description` 必须是可直接落盘的自然语言，不要只写 slug、标签或单词
 - 如果来源里存在“适用场景 / 使用条件 / 优缺点 / 风险 / 前置条件”，优先写进 concept `key_points`
 - 如果没有足够证据创建 entity，可以返回空数组，但 concept 不应只剩下名称列表
+- 若输入是 FAQ 数据集，优先围绕“FAQ 中反复出现的稳定业务概念”提取 concept，不要把零碎问题本身当作 concept 标题

@@ -65,6 +65,24 @@ type pageChangeSet struct {
 	Updated []string
 }
 
+const faqAnalyzePromptRunes = 2800
+
+type faqSegmentRunResult struct {
+	Index             int
+	Title             string
+	Slug              string
+	Category          string
+	EntryCount        int
+	SourcePage        string
+	CreatedPages      []string
+	UpdatedPages      []string
+	ConceptsAffected  []string
+	EntitiesAffected  []string
+	LowRiskFixes      []string
+	HighRiskProposals []string
+	Warnings          []string
+}
+
 func NewIngestService(deps Deps) *IngestService {
 	return &IngestService{baseService: newBaseService(deps)}
 }
@@ -98,7 +116,17 @@ func (s *IngestService) Run(ctx context.Context, execution *Execution, traceID s
 		shaValue = fmt.Sprintf("%v", hashResult.Data["sha256"])
 	}
 	title := firstNonEmpty(strings.TrimSpace(req.TitleOverride), extractTitle(content, filepath.Base(normalizedPath)))
-	analysis, err := s.analyzeIngestContent(ctx, normalizedPath, req.Interactive, content, shaValue)
+	faqDataset, err := detectCanonicalFAQDataset(normalizedPath, title, content)
+	if err != nil {
+		return nil, err
+	}
+	if strings.HasSuffix(strings.ToLower(normalizedPath), ".json") && faqDataset == nil {
+		return nil, ValidationError{Message: "当前仅支持 FAQ JSON 导入，文件中未识别到顶层 faq 数组。"}
+	}
+	if faqDataset != nil {
+		return s.runStructuredFAQIngest(ctx, execution, env, normalizedPath, shaValue, faqDataset)
+	}
+	analysis, err := s.analyzeIngestContent(ctx, execution, normalizedPath, req.Interactive, content, shaValue)
 	if err != nil {
 		return nil, err
 	}
@@ -227,14 +255,310 @@ func (s *IngestService) Run(ctx context.Context, execution *Execution, traceID s
 	}, nil
 }
 
-func (s *IngestService) analyzeIngestContent(ctx context.Context, normalizedPath string, interactive bool, content string, sha256 string) (ingestLLMOutput, error) {
+func (s *IngestService) runStructuredFAQIngest(
+	ctx context.Context,
+	execution *Execution,
+	env *runtime.ExecEnv,
+	normalizedPath string,
+	shaValue string,
+	dataset *canonicalFAQDataset,
+) (map[string]any, error) {
+	segments := dataset.segments(faqSegmentSize)
+	if len(segments) == 0 {
+		return nil, ValidationError{Message: "FAQ 数据中没有可用于摄入的有效条目。"}
+	}
+
+	createdPages := []string{}
+	updatedPages := []string{"wiki/index.md", "wiki/log.md"}
+	allConcepts := []string{}
+	allEntities := []string{}
+	allLowRiskFixes := []string{}
+	allHighRiskProposals := []string{}
+	allWarnings := []string{}
+	completedSegments := []map[string]any{}
+	failedSegments := []map[string]any{}
+	artifacts := []report.Artifact{
+		{Kind: "system_page", Label: "index", Path: "wiki/index.md"},
+		{Kind: "system_page", Label: "log", Path: "wiki/log.md"},
+	}
+
+	for _, segment := range segments {
+		emitStreamEvent(ctx, "segment_start", map[string]any{
+			"index":       segment.Index,
+			"total":       segment.Total,
+			"title":       segment.title(),
+			"slug":        segment.slug(),
+			"category":    firstNonEmpty(strings.TrimSpace(segment.Tag), "未分类"),
+			"entry_count": len(segment.Entries),
+		})
+		segmentResult, pageArtifacts, err := s.ingestStructuredFAQSegment(ctx, execution, env, normalizedPath, shaValue, dataset, segment)
+		if err != nil {
+			failure := map[string]any{
+				"index":       segment.Index,
+				"total":       segment.Total,
+				"title":       segment.title(),
+				"slug":        segment.slug(),
+				"category":    firstNonEmpty(strings.TrimSpace(segment.Tag), "未分类"),
+				"entry_count": len(segment.Entries),
+				"error":       err.Error(),
+			}
+			failedSegments = append(failedSegments, failure)
+			allWarnings = append(allWarnings, fmt.Sprintf("第 %d 段摄入失败：%s", segment.Index, err.Error()))
+			emitStreamEvent(ctx, "segment_error", failure)
+			continue
+		}
+
+		completedSegments = append(completedSegments, map[string]any{
+			"index":               segmentResult.Index,
+			"total":               segment.Total,
+			"title":               segmentResult.Title,
+			"slug":                segmentResult.Slug,
+			"category":            segmentResult.Category,
+			"entry_count":         segmentResult.EntryCount,
+			"source_page":         segmentResult.SourcePage,
+			"created_pages":       segmentResult.CreatedPages,
+			"updated_pages":       segmentResult.UpdatedPages,
+			"concepts_affected":   segmentResult.ConceptsAffected,
+			"entities_affected":   segmentResult.EntitiesAffected,
+			"warnings":            segmentResult.Warnings,
+			"high_risk_proposals": segmentResult.HighRiskProposals,
+		})
+		emitStreamEvent(ctx, "segment_result", completedSegments[len(completedSegments)-1])
+
+		createdPages = append(createdPages, segmentResult.CreatedPages...)
+		updatedPages = append(updatedPages, segmentResult.UpdatedPages...)
+		artifacts = append(artifacts, pageArtifacts...)
+		allConcepts = append(allConcepts, segmentResult.ConceptsAffected...)
+		allEntities = append(allEntities, segmentResult.EntitiesAffected...)
+		allLowRiskFixes = append(allLowRiskFixes, segmentResult.LowRiskFixes...)
+		allHighRiskProposals = append(allHighRiskProposals, segmentResult.HighRiskProposals...)
+		allWarnings = append(allWarnings, segmentResult.Warnings...)
+	}
+
+	qmdUpdated := false
+	if len(completedSegments) > 0 {
+		if _, err := s.executeTool(ctx, execution, env, "exec.qmd", map[string]any{"subcommand": "update"}, "qmd update"); err == nil {
+			qmdUpdated = true
+		}
+	}
+
+	partialSuccess := len(failedSegments) > 0 && len(completedSegments) > 0
+	summary := fmt.Sprintf(
+		"已完成 FAQ 数据兼容摄入：共处理 %d 条标准问答，拆分为 %d 个 source segment，成功 %d 段，失败 %d 段。",
+		len(dataset.Entries),
+		len(segments),
+		len(completedSegments),
+		len(failedSegments),
+	)
+	if partialSuccess {
+		summary = fmt.Sprintf(
+			"FAQ 数据已部分摄入：共处理 %d 条标准问答，拆分为 %d 个 source segment，成功 %d 段，失败 %d 段。",
+			len(dataset.Entries),
+			len(segments),
+			len(completedSegments),
+			len(failedSegments),
+		)
+	}
+	if len(completedSegments) == 0 && len(failedSegments) > 0 {
+		summary = fmt.Sprintf(
+			"FAQ 数据摄入未完成：共处理 %d 条标准问答，拆分为 %d 个 source segment，但全部失败。",
+			len(dataset.Entries),
+			len(segments),
+		)
+	}
+
+	rep := reportResult(execution.ID, "ingest", summary, nil, execution.Steps)
+	rep.Inputs = []report.Field{
+		{Label: "input_type", Value: "file"},
+		{Label: "path", Value: normalizedPath},
+		{Label: "source_format", Value: dataset.Format},
+	}
+	rep.Outputs = []report.Field{
+		{Label: "source_title", Value: dataset.TitleBase},
+		{Label: "source_slug_base", Value: dataset.SlugBase},
+		{Label: "segment_total", Value: fmt.Sprintf("%d", len(segments))},
+		{Label: "segments_completed", Value: fmt.Sprintf("%d", len(completedSegments))},
+		{Label: "segments_failed", Value: fmt.Sprintf("%d", len(failedSegments))},
+		{Label: "source_pages", Value: joinOrNone(sourcePagePathsFromArtifacts(artifacts))},
+		{Label: "faq_entry_count", Value: fmt.Sprintf("%d", len(dataset.Entries))},
+		{Label: "concepts_affected", Value: joinOrNone(dedupeStrings(allConcepts))},
+		{Label: "entities_affected", Value: joinOrNone(dedupeStrings(allEntities))},
+		{Label: "qmd_updated", Value: fmt.Sprintf("%t", qmdUpdated)},
+	}
+	rep.Artifacts = dedupeArtifacts(artifacts)
+	rep.Findings = []report.Finding{
+		{Level: "low", Title: "FAQ 结构化摄入执行完成", Detail: fmt.Sprintf("已基于 %s 拆分 %d 个 FAQ source segment", dataset.Format, len(segments))},
+	}
+	for _, item := range failedSegments {
+		record := item
+		rep.Findings = append(rep.Findings, report.Finding{
+			Level:  "high",
+			Title:  fmt.Sprintf("分段失败：第 %v 段", record["index"]),
+			Detail: fmt.Sprintf("%v", record["error"]),
+		})
+	}
+	for _, warning := range dedupeStrings(allWarnings) {
+		rep.Findings = append(rep.Findings, report.Finding{Level: "medium", Title: "摄入提示", Detail: warning})
+	}
+	for _, note := range dataset.Notes {
+		rep.Findings = append(rep.Findings, report.Finding{Level: "low", Title: "FAQ 元数据", Detail: note})
+	}
+	for _, proposal := range dedupeStrings(allHighRiskProposals) {
+		rep.Findings = append(rep.Findings, report.Finding{Level: "high", Title: "高风险提案", Detail: proposal})
+	}
+	if len(failedSegments) > 0 {
+		rep.NextActions = append(rep.NextActions, "检查 failed_segments 中的失败段，必要时重试对应 segment 或修复模板/索引问题")
+	}
+	if !qmdUpdated && len(completedSegments) > 0 {
+		rep.Findings = append(rep.Findings, report.Finding{Level: "medium", Title: "QMD 未更新", Detail: "FAQ source 页面已落盘，但未成功刷新 qmd 索引"})
+		rep.NextActions = append(rep.NextActions, "手动执行 qmd update，确认 FAQ source segment 已进入索引")
+	} else if qmdUpdated {
+		rep.NextActions = append(rep.NextActions, "可继续执行 admin/query 或公共问答，验证 FAQ segment 检索与回答表现")
+	}
+	reportMarkdown := report.Markdown(rep)
+	reportPath := "wiki/outputs/ingest/" + nowDate() + "-" + dataset.SlugBase + "-ingest-report.md"
+	reportDoc := buildReportDocument("FAQ 数据摄入报告", "ingest", execution.ID, reportMarkdown)
+	if _, err := s.executeTool(ctx, execution, env, "wiki.write_output", map[string]any{"path": reportPath, "content": reportDoc}, "write ingest report"); err != nil {
+		return nil, err
+	}
+
+	return map[string]any{
+		"summary":             summary,
+		"source_title":        dataset.TitleBase,
+		"source_slug_base":    dataset.SlugBase,
+		"source_pages":        dedupeStrings(sourcePagePathsFromArtifacts(artifacts)),
+		"created_pages":       dedupeStrings(createdPages),
+		"updated_pages":       dedupeStrings(updatedPages),
+		"concepts_affected":   dedupeStrings(allConcepts),
+		"entities_affected":   dedupeStrings(allEntities),
+		"low_risk_fixes":      dedupeStrings(allLowRiskFixes),
+		"high_risk_proposals": dedupeStrings(allHighRiskProposals),
+		"warnings":            dedupeStrings(append(allWarnings, dataset.Notes...)),
+		"qmd_updated":         qmdUpdated,
+		"report":              reportMarkdown,
+		"report_file":         reportPath,
+		"output_files":        []string{reportPath},
+		"segments_total":      len(segments),
+		"segments_completed":  len(completedSegments),
+		"segments_failed":     len(failedSegments),
+		"segment_results":     completedSegments,
+		"failed_segments":     failedSegments,
+		"segments":            completedSegments,
+		"partial_success":     partialSuccess,
+	}, nil
+}
+
+func (s *IngestService) ingestStructuredFAQSegment(
+	ctx context.Context,
+	execution *Execution,
+	env *runtime.ExecEnv,
+	normalizedPath string,
+	shaValue string,
+	dataset *canonicalFAQDataset,
+	segment canonicalFAQSegment,
+) (faqSegmentRunResult, []report.Artifact, error) {
+	analysis := s.analyzeStructuredFAQSegment(ctx, execution, normalizedPath, shaValue, segment)
+	target := "wiki/sources/" + segment.slug() + ".md"
+	frontmatter := map[string]any{
+		"title":             segment.title(),
+		"date":              nowDate(),
+		"processed":         true,
+		"raw_file":          normalizedPath,
+		"raw_sha256":        shaValue,
+		"last_verified":     nowDate(),
+		"possibly_outdated": analysis.PossiblyOutdated,
+		"source_format":     dataset.Format,
+		"source_family":     dataset.Family,
+		"segment_index":     segment.Index,
+		"segment_total":     segment.Total,
+		"faq_entry_count":   len(segment.Entries),
+	}
+	if _, err := s.executeTool(ctx, execution, env, "wiki.create_from_template", map[string]any{
+		"template_path": "wiki/templates/source-template.md",
+		"target_path":   target,
+		"frontmatter":   frontmatter,
+	}, "create source page "+target); err != nil {
+		return faqSegmentRunResult{}, nil, err
+	}
+	readResult, err := s.executeTool(ctx, execution, env, "wiki.read_page", map[string]any{"path": target}, "read source page "+target)
+	if err != nil {
+		return faqSegmentRunResult{}, nil, err
+	}
+	rawContent, _ := readResult.Data["content"].(string)
+	keyPointsContent := bulletListOrPlaceholder(segment.keyPoints(), "待补充 FAQ 关键要点")
+	ops := []map[string]any{
+		{"type": "replace_section", "section": "## Summary", "content": segment.summary()},
+		{"type": "replace_section", "section": "## Concepts Extracted", "content": renderConceptExtractedSection(analysis)},
+		{"type": "replace_section", "section": "## Entities Extracted", "content": renderEntityExtractedSection(analysis)},
+		{"type": "replace_section", "section": "## Contradictions", "content": bulletListOrPlaceholder(analysis.Contradictions, "暂无明确矛盾")},
+		{"type": "replace_section", "section": "## My Notes", "content": bulletListOrPlaceholder(mergeStringLists(segment.notes(), analysis.Warnings), "FAQ 数据已自动规范化并分段摄入")},
+	}
+	if strings.Contains(rawContent, "## FAQ Entries") {
+		ops = append(ops,
+			map[string]any{"type": "replace_section", "section": "## Key Points", "content": keyPointsContent},
+			map[string]any{"type": "replace_section", "section": "## FAQ Entries", "content": renderFAQEntriesSection(segment.Entries)},
+		)
+	} else {
+		ops = append(ops,
+			map[string]any{
+				"type":    "replace_section",
+				"section": "## Key Points",
+				"content": keyPointsContent + "\n\n## FAQ Entries\n\n" + renderFAQEntriesSection(segment.Entries),
+			},
+		)
+	}
+	if _, err := s.executeTool(ctx, execution, env, "wiki.patch_page", map[string]any{
+		"path": target,
+		"ops":  toAnySlice(ops),
+	}, "patch source page "+target); err != nil {
+		return faqSegmentRunResult{}, nil, err
+	}
+
+	result := faqSegmentRunResult{
+		Index:             segment.Index,
+		Title:             segment.title(),
+		Slug:              segment.slug(),
+		Category:          firstNonEmpty(strings.TrimSpace(segment.Tag), "未分类"),
+		EntryCount:        len(segment.Entries),
+		SourcePage:        target,
+		CreatedPages:      []string{target},
+		UpdatedPages:      []string{"wiki/index.md", "wiki/log.md"},
+		ConceptsAffected:  conceptTitles(analysis),
+		EntitiesAffected:  entityTitles(analysis),
+		LowRiskFixes:      dedupeStrings(analysis.LowRiskFixes),
+		HighRiskProposals: dedupeStrings(analysis.HighRiskProposals),
+		Warnings:          dedupeStrings(analysis.Warnings),
+	}
+	artifacts := []report.Artifact{{Kind: "source_page", Label: "source page", Path: target}}
+
+	conceptChanges, entityChanges, pageArtifacts, err := s.upsertKnowledgePages(ctx, execution, env, segment.slug(), analysis)
+	if err != nil {
+		return faqSegmentRunResult{}, nil, err
+	}
+	result.CreatedPages = append(result.CreatedPages, conceptChanges.Created...)
+	result.CreatedPages = append(result.CreatedPages, entityChanges.Created...)
+	result.UpdatedPages = append(result.UpdatedPages, conceptChanges.Updated...)
+	result.UpdatedPages = append(result.UpdatedPages, entityChanges.Updated...)
+	artifacts = append(artifacts, pageArtifacts...)
+
+	_, _ = s.executeTool(ctx, execution, env, "wiki.update_index_entry", map[string]any{
+		"section": "## Sources",
+		"entry":   fmt.Sprintf("- %s | [[sources/%s]]", nowDate(), segment.slug()),
+	}, "update index")
+	_, _ = s.executeTool(ctx, execution, env, "wiki.append_log", map[string]any{
+		"line": fmt.Sprintf("%s | ingest | %s", nowDate(), segment.title()),
+	}, "append log")
+	return result, artifacts, nil
+}
+
+func (s *IngestService) analyzeIngestContent(ctx context.Context, execution *Execution, normalizedPath string, interactive bool, content string, sha256 string) (ingestLLMOutput, error) {
 	prompt, err := s.loadPromptWithWikiAgent("admin_ingest_system.md")
 	if err != nil {
 		return ingestLLMOutput{}, err
 	}
 	prompt += "\n\n你必须只返回一个 JSON 对象，不要输出代码块。"
 	userPrompt := fmt.Sprintf("input_type=file\ninteractive=%t\nraw_path=%s\nraw_sha256=%s\n\nraw_content:\n%s", interactive, normalizedPath, sha256, truncateForPrompt(content, 6000))
-	llmText, err := s.executeLLM(ctx, nil, s.deps.Config.LLM.ModelAdmin, []llm.Message{
+	llmText, err := s.executeLLM(ctx, execution, s.deps.Config.LLM.ModelAdmin, []llm.Message{
 		{Role: "system", Content: prompt},
 		{Role: "user", Content: userPrompt},
 	}, "llm ingest analyze")
@@ -247,6 +571,7 @@ func (s *IngestService) analyzeIngestContent(ctx context.Context, normalizedPath
 		parsed.KeyPoints = strings.Split(keyPoints(content), "\n")
 		parsed.Warnings = []string{"LLM 输出未通过 JSON 解析，已退化到本地摘要逻辑"}
 	}
+	parsed = normalizeAnalyzedIngestContent(normalizedPath, content, parsed)
 	parsed.Concepts = normalizedConcepts(parsed)
 	parsed.Entities = normalizedEntities(parsed)
 	if len(parsed.ConceptsAffected) == 0 {
@@ -256,6 +581,66 @@ func (s *IngestService) analyzeIngestContent(ctx context.Context, normalizedPath
 		parsed.EntitiesAffected = entityTitles(parsed)
 	}
 	return parsed, nil
+}
+
+func (s *IngestService) analyzeStructuredFAQSegment(
+	ctx context.Context,
+	execution *Execution,
+	normalizedPath string,
+	sha256 string,
+	segment canonicalFAQSegment,
+) ingestLLMOutput {
+	fallback := fallbackStructuredFAQAnalysis(segment, "")
+	prompt, err := s.loadPrompt("admin_ingest_faq_system.md")
+	if err != nil {
+		fallback.Warnings = dedupeStrings(append(fallback.Warnings, "FAQ 分段轻量分析 prompt 加载失败，已回退到本地规则分析。"))
+		return fallback
+	}
+	userPrompt := fmt.Sprintf(
+		"raw_path=%s\nraw_sha256=%s\nsource_format=%s\nsource_title=%s\nsource_slug=%s\nsegment_index=%d\nsegment_total=%d\nfaq_entry_count=%d\nsegment_category=%s\n\nfaq_segment_preview:\n%s",
+		normalizedPath,
+		sha256,
+		segment.Dataset.Format,
+		segment.title(),
+		segment.slug(),
+		segment.Index,
+		segment.Total,
+		len(segment.Entries),
+		firstNonEmpty(strings.TrimSpace(segment.Tag), "未分类"),
+		truncateForPrompt(segment.renderContent(), faqAnalyzePromptRunes),
+	)
+	llmText, err := s.executeLLM(ctx, execution, s.deps.Config.LLM.ModelAdmin, []llm.Message{
+		{Role: "system", Content: prompt},
+		{Role: "user", Content: userPrompt},
+	}, "llm ingest faq analyze")
+	if err != nil {
+		return fallbackStructuredFAQAnalysis(segment, err.Error())
+	}
+	parsed := ingestLLMOutput{}
+	if err := llm.DecodeJSONObject(llmText, &parsed); err != nil {
+		return fallbackStructuredFAQAnalysis(segment, "FAQ 分段 LLM 输出未通过 JSON 解析，已回退到本地规则分析。")
+	}
+	if strings.TrimSpace(parsed.Summary) == "" {
+		parsed.Summary = segment.summary()
+	}
+	if strings.TrimSpace(parsed.SourceTitle) == "" {
+		parsed.SourceTitle = segment.title()
+	}
+	if strings.TrimSpace(parsed.SourceSlug) == "" || !wikiadapter.IsValidSlug(strings.TrimSpace(parsed.SourceSlug)) {
+		parsed.SourceSlug = segment.slug()
+	}
+	if len(parsed.KeyPoints) == 0 {
+		parsed.KeyPoints = segment.keyPoints()
+	}
+	parsed.Concepts = normalizedConcepts(parsed)
+	parsed.Entities = normalizedEntities(parsed)
+	if len(parsed.ConceptsAffected) == 0 {
+		parsed.ConceptsAffected = conceptTitles(parsed)
+	}
+	if len(parsed.EntitiesAffected) == 0 {
+		parsed.EntitiesAffected = entityTitles(parsed)
+	}
+	return parsed
 }
 
 func (s *IngestService) upsertKnowledgePages(ctx context.Context, execution *Execution, env *runtime.ExecEnv, sourceSlug string, analysis ingestLLMOutput) (pageChangeSet, pageChangeSet, []report.Artifact, error) {
@@ -647,6 +1032,22 @@ func fallbackEntityDescription(title string, summary string) string {
 	return fmt.Sprintf("%s：%s", title, summary)
 }
 
+func fallbackStructuredFAQAnalysis(segment canonicalFAQSegment, reason string) ingestLLMOutput {
+	warnings := []string{}
+	if strings.TrimSpace(reason) != "" {
+		warnings = append(warnings, "FAQ 分段的 LLM 分析失败，已回退到本地规则分析；source 页仍会写入，但概念和实体提取可能不完整。")
+		warnings = append(warnings, "失败原因："+strings.TrimSpace(reason))
+	}
+	return ingestLLMOutput{
+		Summary:          segment.summary(),
+		SourceTitle:      segment.title(),
+		SourceSlug:       segment.slug(),
+		KeyPoints:        segment.keyPoints(),
+		Warnings:         dedupeStrings(warnings),
+		PossiblyOutdated: false,
+	}
+}
+
 func dedupeStrings(items []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(items))
@@ -796,4 +1197,152 @@ func toAnySlice(items []map[string]any) []any {
 		out = append(out, item)
 	}
 	return out
+}
+
+func normalizeAnalyzedIngestContent(normalizedPath string, content string, parsed ingestLLMOutput) ingestLLMOutput {
+	if !looksLikeKnowledgeBaseTable(content) {
+		return parsed
+	}
+	parsed.SourceTitle = deriveKnowledgeBaseSourceTitle(normalizedPath, content)
+	parsed.SourceSlug = deriveKnowledgeBaseSourceSlug(normalizedPath, content)
+	parsed.Summary = buildKnowledgeBaseSegmentSummary(normalizedPath, content)
+	parsed.Warnings = dedupeStrings(append(parsed.Warnings, "检测到多主题客服知识库表格，已改用分段标题和摘要，避免单条问答主题误导整页语义。"))
+	return parsed
+}
+
+func looksLikeKnowledgeBaseTable(content string) bool {
+	if !strings.Contains(content, "| 技能分类") || !strings.Contains(content, "| 标准问题") {
+		return false
+	}
+	categories := extractKnowledgeBaseCategories(content)
+	return len(categories) >= 2 && countKnowledgeBaseRows(content) >= 6
+}
+
+func extractKnowledgeBaseCategories(content string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "|") {
+			continue
+		}
+		cells := splitMarkdownTableRow(line)
+		if len(cells) == 0 {
+			continue
+		}
+		category := strings.TrimSpace(cells[0])
+		if category == "" || category == "技能分类" || looksLikeMarkdownSeparator(category) || seen[category] {
+			continue
+		}
+		seen[category] = true
+		out = append(out, category)
+	}
+	return out
+}
+
+func countKnowledgeBaseRows(content string) int {
+	count := 0
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "|") {
+			continue
+		}
+		cells := splitMarkdownTableRow(line)
+		if len(cells) < 2 || cells[0] == "技能分类" || looksLikeMarkdownSeparator(cells[0]) {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func splitMarkdownTableRow(line string) []string {
+	parts := strings.Split(line, "|")
+	if len(parts) < 3 {
+		return nil
+	}
+	out := make([]string, 0, len(parts)-2)
+	for _, part := range parts[1 : len(parts)-1] {
+		out = append(out, strings.TrimSpace(part))
+	}
+	return out
+}
+
+func looksLikeMarkdownSeparator(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	for _, r := range text {
+		if r != '-' && r != ':' {
+			return false
+		}
+	}
+	return true
+}
+
+func deriveKnowledgeBaseSourceTitle(normalizedPath string, content string) string {
+	label := strings.TrimSuffix(filepath.Base(normalizedPath), filepath.Ext(normalizedPath))
+	if strings.Contains(content, "四叶天") {
+		return fmt.Sprintf("四叶天代理IP客户服务知识库分段（%s）", label)
+	}
+	return fmt.Sprintf("客户服务知识库分段（%s）", label)
+}
+
+func deriveKnowledgeBaseSourceSlug(normalizedPath string, content string) string {
+	label := slugFromText(strings.TrimSuffix(filepath.Base(normalizedPath), filepath.Ext(normalizedPath)))
+	if label == "" {
+		label = "segment"
+	}
+	if strings.Contains(content, "四叶天") {
+		return "siyetian-customer-service-knowledge-base-" + label
+	}
+	return "customer-service-knowledge-base-" + label
+}
+
+func buildKnowledgeBaseSegmentSummary(normalizedPath string, content string) string {
+	label := strings.TrimSuffix(filepath.Base(normalizedPath), filepath.Ext(normalizedPath))
+	categories := extractKnowledgeBaseCategories(content)
+	if len(categories) > 4 {
+		categories = categories[:4]
+	}
+	categoryText := "多类客服问答"
+	if len(categories) > 0 {
+		categoryText = strings.Join(categories, "、")
+	}
+	subject := "客户服务知识库"
+	if strings.Contains(content, "四叶天") {
+		subject = "“四叶天”代理IP客户服务知识库"
+	}
+	return fmt.Sprintf(
+		"本次 ingest 处理的是%s的一个表格分段（%s），属于多主题客服问答集合，而不是单一主题 FAQ。该分段覆盖%s等分类。\n\n同一分段中既有带“海外IP”限定的问答，也有不带限定词的通用 IP / 登录问答；整理时不应把单条问答里的限定词上升为整页标题或整页结论。",
+		subject,
+		label,
+		categoryText,
+	)
+}
+
+func dedupeArtifacts(items []report.Artifact) []report.Artifact {
+	seen := map[string]bool{}
+	out := make([]report.Artifact, 0, len(items))
+	for _, item := range items {
+		key := item.Kind + "|" + item.Path
+		if item.Path == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, item)
+	}
+	return out
+}
+
+func sourcePagePathsFromArtifacts(items []report.Artifact) []string {
+	out := []string{}
+	for _, item := range items {
+		if item.Kind != "source_page" {
+			continue
+		}
+		out = append(out, item.Path)
+	}
+	return dedupeStrings(out)
 }

@@ -43,18 +43,21 @@ export function ConversationSidebar({ title, subtitle, variant, items, activeId,
             <div
               key={item.id}
               className={cn(
-                "flex items-center gap-2 rounded-2xl px-3 py-3 text-left text-sm transition",
+                "flex items-start gap-2 rounded-2xl px-3 py-3 text-left text-sm transition",
                 item.id === activeId ? "bg-foreground text-white" : "bg-white/60 text-foreground hover:bg-secondary",
               )}
             >
               <button type="button" onClick={() => onSelect(item.id)} className="min-w-0 flex-1 text-left">
-                <div className="truncate font-medium">{item.title}</div>
+                <div className="line-clamp-2 break-words pr-1 font-medium leading-5">{item.title}</div>
               </button>
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
-                className={cn("h-8 w-8 shrink-0 px-0", item.id === activeId ? "hover:bg-white/10" : "hover:bg-white")}
+                className={cn(
+                  "mt-0.5 h-8 w-8 shrink-0 self-start px-0",
+                  item.id === activeId ? "hover:bg-white/10" : "hover:bg-white",
+                )}
                 onClick={() => onDelete(item.id)}
               >
                 <Trash2 className="h-4 w-4" />

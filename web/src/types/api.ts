@@ -72,6 +72,16 @@ export type AdminStreamEvent = {
   data: unknown;
 };
 
+export type UploadExecution = {
+  id: string;
+  kind: string;
+  status: string;
+  steps: AdminExecutionStep[];
+  error?: string;
+  started_at: string;
+  ended_at?: string;
+};
+
 export type AdminUser = {
   id: string;
   username: string;
@@ -80,4 +90,10 @@ export type AdminUser = {
 export type UploadResponse = {
   reply: string;
   details: Record<string, unknown>;
+  execution?: UploadExecution;
+};
+
+export type UploadStreamEvent = {
+  type: string;
+  data: unknown;
 };

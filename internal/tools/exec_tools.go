@@ -14,6 +14,7 @@ import (
 type hashSHA256Tool struct{ baseTool }
 type execQMDTool struct{ baseTool }
 type execPythonTool struct{ baseTool }
+type execShellTool struct{ baseTool }
 type lintRunTool struct{ baseTool }
 
 func NewHashSHA256Tool(deps Dependencies) runtime.Tool {
@@ -24,6 +25,9 @@ func NewExecQMDTool(deps Dependencies) runtime.Tool {
 }
 func NewExecPythonTool(deps Dependencies) runtime.Tool {
 	return &execPythonTool{baseTool{name: "exec.python", risk: runtime.RiskMedium, deps: deps}}
+}
+func NewExecShellTool(deps Dependencies) runtime.Tool {
+	return &execShellTool{baseTool{name: "exec.shell", risk: runtime.RiskHigh, deps: deps}}
 }
 func NewLintRunTool(deps Dependencies) runtime.Tool {
 	return &lintRunTool{baseTool{name: "lint.run", risk: runtime.RiskLow, deps: deps}}
@@ -97,16 +101,48 @@ func (t *execQMDTool) Execute(ctx context.Context, env *runtime.ExecEnv, args ma
 		}
 		cmdArgs = append(cmdArgs, "multi-get", pattern, "-l", limit)
 	}
-	stdout, stderr, exitCode, err := runCommand(runCtx, env.WikiRoot, "qmd", cmdArgs, nil)
+	stdout, stderr, exitCode, err := runCommand(runCtx, env.WikiRoot, "qmd", cmdArgs, qmdEnv())
 	if err != nil {
 		return failure(t.risk, "EXEC_FAILED", err), nil
 	}
-	return success(t.risk, map[string]any{
+	data := map[string]any{
 		"subcommand": subcommand,
 		"stdout":     stdout,
 		"stderr":     stderr,
 		"exit_code":  exitCode,
-	}), nil
+	}
+	if exitCode != 0 {
+		return runtime.ToolResult{
+			Success:   false,
+			RiskLevel: t.risk,
+			Data:      data,
+			Error: &runtime.ToolError{
+				Code:    "EXEC_FAILED",
+				Message: fmt.Sprintf("qmd %s exited with code %d", subcommand, exitCode),
+			},
+		}, nil
+	}
+	return success(t.risk, data), nil
+}
+
+func qmdEnv() []string {
+	path := os.Getenv("PATH")
+	preferred := []string{
+		"/opt/homebrew/opt/node@24/bin",
+	}
+	segments := make([]string, 0, len(preferred)+1)
+	for _, item := range preferred {
+		if strings.TrimSpace(item) == "" {
+			continue
+		}
+		if stat, err := os.Stat(item); err == nil && stat.IsDir() {
+			segments = append(segments, item)
+		}
+	}
+	if strings.TrimSpace(path) != "" {
+		segments = append(segments, path)
+	}
+	return []string{"PATH=" + strings.Join(segments, ":")}
 }
 
 func (t *execPythonTool) Validate(args map[string]any) error {
@@ -152,6 +188,40 @@ func (t *execPythonTool) Execute(ctx context.Context, env *runtime.ExecEnv, args
 		"stderr":    stderr,
 		"exit_code": exitCode,
 		"path":      target,
+	}), nil
+}
+
+func (t *execShellTool) Validate(args map[string]any) error {
+	_, err := requireString(args, "command")
+	return err
+}
+func (t *execShellTool) Execute(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+	command, _ := requireString(args, "command")
+	timeoutSec := t.deps.Config.Workspace.DefaultTimeoutSec
+	if timeoutSec <= 0 {
+		timeoutSec = 120
+	}
+	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+	cwd := env.WikiRoot
+	if strings.TrimSpace(cwd) == "" {
+		cwd = t.deps.Resolver.WikiRoot()
+	}
+	envs := []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"WIKI_ROOT=" + cwd,
+	}
+	stdout, stderr, exitCode, err := runCommand(runCtx, cwd, "zsh", []string{"-lc", command}, envs)
+	if err != nil {
+		return failure(t.risk, "EXEC_FAILED", err), nil
+	}
+	return success(t.risk, map[string]any{
+		"command":   command,
+		"cwd":       cwd,
+		"stdout":    stdout,
+		"stderr":    stderr,
+		"exit_code": exitCode,
 	}), nil
 }
 

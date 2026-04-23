@@ -46,3 +46,7 @@ sync:
 web:
   enabled: true
   dist_dir: web/dist
+
+upload:
+  max_text_file_kb: 500
+  max_table_rows: 120

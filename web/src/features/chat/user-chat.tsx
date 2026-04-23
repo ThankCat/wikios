@@ -1,20 +1,26 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { SendHorizontal, Trash2 } from "lucide-react";
+import { PanelLeft, PanelLeftClose, SendHorizontal, Trash2 } from "lucide-react";
 
+import { ChatDetailDrawer } from "@/components/chat/chat-detail-drawer";
 import { ConversationSidebar, type ConversationItem } from "@/components/chat/conversation-sidebar";
 import { MessageCard } from "@/components/chat/message-card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
-import { api } from "@/lib/api";
+import { api, isAbortError } from "@/lib/api";
+import { createId } from "@/lib/id";
+import { cn } from "@/lib/utils";
 import type { PublicAnswerResponse, PublicStreamEvent } from "@/types/api";
+
+type MessageStatus = "pending" | "streaming" | "done" | "error" | "cancelled";
 
 type UserMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  status?: MessageStatus;
   details?: unknown;
 };
 
@@ -26,6 +32,9 @@ type UserConversation = {
 };
 
 const storageKey = "wikios.user.chat";
+const sidebarStorageKey = "wikios.user.sidebar.open";
+const drawerWidthStorageKey = "wikios.user.detail.width";
+const HISTORY_LIMIT = 8;
 
 export function UserChat() {
   const [conversations, setConversations] = useState<UserConversation[]>([]);
@@ -33,7 +42,13 @@ export function UserChat() {
   const [composer, setComposer] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [selectedDetailId, setSelectedDetailId] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [drawerWidth, setDrawerWidth] = useState(420);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const activeRequestRef = useRef<AbortController | null>(null);
+  const activeAssistantIdRef = useRef("");
+  const [busyLabel, setBusyLabel] = useState("");
 
   useEffect(() => {
     const raw = localStorage.getItem(storageKey);
@@ -53,6 +68,17 @@ export function UserChat() {
   }, []);
 
   useEffect(() => {
+    const raw = localStorage.getItem(sidebarStorageKey);
+    if (raw === "0") {
+      setSidebarOpen(false);
+    }
+    const savedWidth = Number(localStorage.getItem(drawerWidthStorageKey) ?? "");
+    if (Number.isFinite(savedWidth) && savedWidth >= 320 && savedWidth <= 960) {
+      setDrawerWidth(savedWidth);
+    }
+  }, []);
+
+  useEffect(() => {
     if (conversations.length === 0) {
       return;
     }
@@ -62,48 +88,120 @@ export function UserChat() {
     return () => window.clearTimeout(timer);
   }, [conversations]);
 
+  useEffect(() => {
+    localStorage.setItem(sidebarStorageKey, sidebarOpen ? "1" : "0");
+  }, [sidebarOpen]);
+
+  useEffect(() => {
+    localStorage.setItem(drawerWidthStorageKey, String(drawerWidth));
+  }, [drawerWidth]);
+
   const activeConversation = useMemo(
     () => conversations.find((item) => item.id === activeId) ?? conversations[0],
     [activeId, conversations],
+  );
+  const selectedDetail = useMemo(
+    () => activeConversation?.messages.find((message) => message.id === selectedDetailId && message.details) ?? null,
+    [activeConversation, selectedDetailId],
   );
 
   useEffect(() => {
     viewportRef.current?.scrollTo({ top: viewportRef.current.scrollHeight, behavior: "smooth" });
   }, [activeConversation?.messages]);
 
+  function startDrawerResize() {
+    const handleMove = (event: MouseEvent) => {
+      const nextWidth = Math.min(960, Math.max(320, window.innerWidth - event.clientX));
+      setDrawerWidth(nextWidth);
+    };
+    const handleUp = () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+  }
+
   async function sendMessage() {
     const question = composer.trim();
-    if (!question || !activeConversation) {
+    if (!question || !activeConversation || busy) {
       return;
     }
     setError("");
     setComposer("");
     setBusy(true);
-    const userMessage: UserMessage = { id: crypto.randomUUID(), role: "user", content: question };
+    setBusyLabel("正在生成回答...");
+    const userMessage: UserMessage = { id: createId(), role: "user", content: question };
     appendMessage(activeConversation.id, userMessage);
     const history = conversationHistory(activeConversation.messages);
+    const controller = new AbortController();
+    activeRequestRef.current = controller;
     if (activeConversation.stream) {
-      const assistantId = crypto.randomUUID();
-      appendMessage(activeConversation.id, { id: assistantId, role: "assistant", content: "" });
+      const assistantId = createId();
+      activeAssistantIdRef.current = assistantId;
+      appendMessage(activeConversation.id, { id: assistantId, role: "assistant", content: "", status: "streaming" });
       try {
-        await api.publicAnswerStream(question, history, (event) => handleStreamEvent(activeConversation.id, assistantId, event));
+        await api.publicAnswerStream(
+          question,
+          history,
+          (event) => handleStreamEvent(activeConversation.id, assistantId, event),
+          controller.signal,
+        );
         renameConversation(activeConversation.id, question);
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : "请求失败");
+        if (isAbortError(reason)) {
+          patchMessage(activeConversation.id, assistantId, {
+            content: (prev) => prev || "已停止生成。",
+            status: "cancelled",
+          });
+        } else {
+          setError(reason instanceof Error ? reason.message : "请求失败");
+          patchMessage(activeConversation.id, assistantId, {
+            content: "暂时无法处理这条请求，请稍后再试。",
+            status: "error",
+          });
+        }
       } finally {
+        activeRequestRef.current = null;
+        activeAssistantIdRef.current = "";
         setBusy(false);
+        setBusyLabel("");
       }
       return;
     }
+    const assistantId = createId();
+    activeAssistantIdRef.current = assistantId;
+    appendMessage(activeConversation.id, { id: assistantId, role: "assistant", content: "", status: "pending" });
     try {
-      const response = await api.publicAnswer(question, history);
-      applyPublicResponse(activeConversation.id, response);
+      const response = await api.publicAnswer(question, history, controller.signal);
+      applyPublicResponse(activeConversation.id, assistantId, response);
       renameConversation(activeConversation.id, question);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "请求失败");
+      if (isAbortError(reason)) {
+        patchMessage(activeConversation.id, assistantId, {
+          content: "已取消本次请求。",
+          status: "cancelled",
+        });
+      } else {
+        setError(reason instanceof Error ? reason.message : "请求失败");
+        patchMessage(activeConversation.id, assistantId, {
+          content: "暂时无法处理这条请求，请稍后再试。",
+          status: "error",
+        });
+      }
     } finally {
+      activeRequestRef.current = null;
+      activeAssistantIdRef.current = "";
       setBusy(false);
+      setBusyLabel("");
     }
+  }
+
+  function stopActiveRequest() {
+    activeRequestRef.current?.abort();
+    activeRequestRef.current = null;
+    setBusy(false);
+    setBusyLabel("");
   }
 
   function handleStreamEvent(conversationId: string, messageId: string, event: PublicStreamEvent) {
@@ -111,6 +209,7 @@ export function UserChat() {
       const data = (event.data ?? {}) as Record<string, unknown>;
       patchMessage(conversationId, messageId, {
         content: (prev) => `${prev}${String(data.delta ?? "")}`,
+        status: "streaming",
       });
       return;
     }
@@ -118,6 +217,7 @@ export function UserChat() {
       const data = (event.data ?? {}) as Record<string, unknown>;
       patchMessage(conversationId, messageId, {
         content: String(data.answer ?? ""),
+        status: "done",
         details: data.details,
       });
       return;
@@ -127,21 +227,30 @@ export function UserChat() {
       setError(String(data.message ?? "请求失败"));
       patchMessage(conversationId, messageId, {
         content: "暂时无法处理这条请求，请稍后再试。",
+        status: "error",
         details: data,
       });
       setBusy(false);
+      setBusyLabel("");
+      activeRequestRef.current = null;
+      activeAssistantIdRef.current = "";
       return;
     }
     if (event.type === "done") {
+      patchMessage(conversationId, messageId, {
+        status: "done",
+      });
       setBusy(false);
+      setBusyLabel("");
+      activeRequestRef.current = null;
+      activeAssistantIdRef.current = "";
     }
   }
 
-  function applyPublicResponse(conversationId: string, response: PublicAnswerResponse) {
-    appendMessage(conversationId, {
-      id: crypto.randomUUID(),
-      role: "assistant",
+  function applyPublicResponse(conversationId: string, messageId: string, response: PublicAnswerResponse) {
+    patchMessage(conversationId, messageId, {
       content: response.answer,
+      status: "done",
       details: response.details,
     });
   }
@@ -165,7 +274,7 @@ export function UserChat() {
   function patchMessage(
     conversationId: string,
     messageId: string,
-    updates: { content?: string | ((prev: string) => string); details?: unknown },
+    updates: { content?: string | ((prev: string) => string); status?: MessageStatus; details?: unknown },
   ) {
     setConversations((current) =>
       current.map((conversation) => {
@@ -183,6 +292,7 @@ export function UserChat() {
             return {
               ...message,
               content: nextContent,
+              status: updates.status ?? message.status,
               details: updates.details ?? message.details,
             };
           }),
@@ -195,6 +305,7 @@ export function UserChat() {
     const next = createConversation("新会话");
     setConversations((current) => [next, ...current]);
     setActiveId(next.id);
+    setSelectedDetailId("");
     setError("");
   }
 
@@ -209,6 +320,9 @@ export function UserChat() {
       if (activeId === id) {
         setActiveId(remaining[0].id);
       }
+      if (selectedDetailId && id === activeId) {
+        setSelectedDetailId("");
+      }
       return remaining;
     });
   }
@@ -219,84 +333,117 @@ export function UserChat() {
   }));
 
   return (
-    <div className="chat-shell">
-      <ConversationSidebar
-        title="用户对话"
-        subtitle="面向客户的知识库问答测试页"
-        variant="user"
-        items={sidebarItems}
-        activeId={activeConversation?.id ?? ""}
-        onSelect={setActiveId}
-        onCreate={createNewConversation}
-        onDelete={deleteConversation}
-      />
-      <section className="panel-glass flex h-full min-h-0 flex-col overflow-hidden">
-        <header className="border-b px-6 py-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h1 className="text-lg font-semibold">知识库客服对话</h1>
-              <p className="mt-1 text-sm text-muted-foreground">仅展示可直接面向客户的回答内容。</p>
+    <div className={cn("chat-shell", !sidebarOpen && "chat-shell-collapsed")}>
+      {sidebarOpen ? (
+        <ConversationSidebar
+          title="用户对话"
+          subtitle="面向客户的知识库问答测试页"
+          variant="user"
+          items={sidebarItems}
+          activeId={activeConversation?.id ?? ""}
+          onSelect={setActiveId}
+          onCreate={createNewConversation}
+          onDelete={deleteConversation}
+        />
+      ) : null}
+      <section className="panel-glass relative flex h-full min-h-0 flex-col overflow-hidden">
+          <header className="border-b px-6 py-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <Button type="button" variant="ghost" size="sm" onClick={() => setSidebarOpen((value) => !value)}>
+                  {sidebarOpen ? <PanelLeftClose className="mr-2 h-4 w-4" /> : <PanelLeft className="mr-2 h-4 w-4" />}
+                  {sidebarOpen ? "隐藏会话" : "显示会话"}
+                </Button>
+                <div>
+                <h1 className="text-lg font-semibold">知识库客服对话</h1>
+                <p className="mt-1 text-sm text-muted-foreground">仅展示可直接面向客户的回答内容。</p>
+                </div>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => activeConversation && deleteConversation(activeConversation.id)}>
+                <Trash2 className="mr-2 h-4 w-4" />
+                删除会话
+              </Button>
             </div>
-            <Button variant="ghost" size="sm" onClick={() => activeConversation && deleteConversation(activeConversation.id)}>
-              <Trash2 className="mr-2 h-4 w-4" />
-              删除会话
-            </Button>
-          </div>
-        </header>
-        <ScrollArea ref={viewportRef} className="min-h-0 flex-1 px-6 py-5">
-          <div className="mx-auto flex max-w-3xl flex-col gap-4">
-            {activeConversation?.messages.map((message) => (
-              <MessageCard
-                key={message.id}
-                role={message.role}
-                content={message.content}
-                details={message.role === "assistant" ? message.details : undefined}
-              />
-            ))}
-          </div>
-        </ScrollArea>
-        <div className="border-t px-6 py-5">
-          <div className="mx-auto max-w-3xl">
-            <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={Boolean(activeConversation?.stream)}
-                  onChange={(event) => {
-                    setConversations((current) =>
-                      current.map((item) =>
-                        item.id === activeConversation?.id ? { ...item, stream: event.target.checked } : item,
-                      ),
-                    );
+          </header>
+          <ScrollArea viewportRef={viewportRef} className="min-h-0 flex-1 px-6 py-5">
+            <div className="mx-auto flex max-w-3xl flex-col gap-4 pb-8">
+              {activeConversation?.messages.map((message) => (
+                <MessageCard
+                  key={message.id}
+                  id={message.id}
+                  role={message.role}
+                  content={message.content}
+                  pending={message.status === "pending" || message.status === "streaming"}
+                  statusText={messageStatusText(message)}
+                  details={message.role === "assistant" ? message.details : undefined}
+                  selected={selectedDetailId === message.id}
+                  onInspect={({ id }) => {
+                    setSelectedDetailId(id);
                   }}
                 />
-                流式返回
-              </label>
-              <span>{error || "按 Enter 发送，Shift + Enter 换行"}</span>
+              ))}
             </div>
-            <div className="rounded-[28px] border bg-white p-3 shadow-soft">
-              <Textarea
-                value={composer}
-                onChange={(event) => setComposer(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    void sendMessage();
-                  }
-                }}
-                className="min-h-[88px] resize-none border-0 bg-transparent p-2 shadow-none focus-visible:ring-0"
-                placeholder="请输入客户问题"
-              />
-              <div className="mt-3 flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">会话支持多轮上下文。</span>
-                <Button onClick={() => void sendMessage()} disabled={busy}>
-                  <SendHorizontal className="mr-2 h-4 w-4" />
-                  {busy ? "发送中" : "发送"}
-                </Button>
+          </ScrollArea>
+          <div className="border-t px-6 py-5">
+            <div className="mx-auto max-w-3xl">
+              <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(activeConversation?.stream)}
+                    onChange={(event) => {
+                      setConversations((current) =>
+                        current.map((item) =>
+                          item.id === activeConversation?.id ? { ...item, stream: event.target.checked } : item,
+                        ),
+                      );
+                    }}
+                  />
+                  流式返回
+                </label>
+                <span>{error || busyLabel || "按 Enter 发送，Shift + Enter 换行"}</span>
+              </div>
+              <div className="rounded-[28px] border bg-white p-3 shadow-soft">
+                <Textarea
+                  value={composer}
+                  onChange={(event) => setComposer(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (busy) {
+                      return;
+                    }
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      void sendMessage();
+                    }
+                  }}
+                  className="min-h-[88px] resize-none border-0 bg-transparent p-2 shadow-none focus-visible:ring-0"
+                  placeholder="请输入客户问题"
+                />
+                <div className="mt-3 flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">{busy ? "回答生成中，可随时停止。" : "会话支持多轮上下文。"}</span>
+                  <div className="flex items-center gap-2">
+                    {busy ? (
+                      <Button type="button" variant="outline" onClick={stopActiveRequest}>
+                        停止
+                      </Button>
+                    ) : null}
+                    <Button onClick={() => void sendMessage()} disabled={busy}>
+                      <SendHorizontal className="mr-2 h-4 w-4" />
+                      {busy ? "发送中" : "发送"}
+                    </Button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        <ChatDetailDrawer
+          title="消息详情"
+          open={Boolean(selectedDetail)}
+          width={drawerWidth}
+          selected={selectedDetail ? { role: selectedDetail.role, content: selectedDetail.content, details: selectedDetail.details } : null}
+          onClear={() => setSelectedDetailId("")}
+          onResizeStart={startDrawerResize}
+        />
       </section>
     </div>
   );
@@ -304,7 +451,7 @@ export function UserChat() {
 
 function createConversation(title: string): UserConversation {
   return {
-    id: crypto.randomUUID(),
+    id: createId(),
     title,
     messages: [],
     stream: true,
@@ -314,6 +461,24 @@ function createConversation(title: string): UserConversation {
 function conversationHistory(messages: UserMessage[]) {
   return messages
     .filter((message) => message.content.trim() !== "")
-    .slice(-8)
+    .slice(-HISTORY_LIMIT)
     .map((message) => ({ role: message.role, content: message.content }));
+}
+
+function messageStatusText(message: UserMessage) {
+  if (message.role !== "assistant") {
+    return "";
+  }
+  switch (message.status) {
+    case "pending":
+      return "正在处理请求...";
+    case "streaming":
+      return "正在生成回答...";
+    case "cancelled":
+      return "本次会话已停止。";
+    case "error":
+      return "本次请求失败。";
+    default:
+      return "";
+  }
 }
