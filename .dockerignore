@@ -1,0 +1,14 @@
+.DS_Store
+.git
+.gitignore
+.env
+.env.local
+.workspace
+bin
+coverage.out
+data
+knowledge-base
+web/node_modules
+web/.next
+web/dist
+web/*.tsbuildinfo

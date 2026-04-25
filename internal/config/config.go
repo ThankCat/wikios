@@ -179,8 +179,8 @@ func (c *Config) normalizeAndValidate() error {
 	if !info.IsDir() {
 		return fmt.Errorf("mounted_wiki.root is not a directory: %s", c.MountedWiki.Root)
 	}
-	if c.MountedWiki.QMDIndex == "" {
-		return errors.New("mounted_wiki.qmd_index is required")
+	if strings.TrimSpace(c.MountedWiki.QMDIndex) == "" {
+		c.MountedWiki.QMDIndex = firstEnv("WIKIOS_QMD_INDEX", "zy-knowledge-base")
 	}
 	if c.LLM.BaseURL == "" {
 		return errors.New("llm.base_url is required")

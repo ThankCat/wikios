@@ -5,7 +5,7 @@ server:
 mounted_wiki:
   root: /data/wiki-repo
   name: default-wiki
-  qmd_index: zy-knowledge-base
+  qmd_index: ${WIKIOS_QMD_INDEX}
 
 llm:
   provider: deepseek
