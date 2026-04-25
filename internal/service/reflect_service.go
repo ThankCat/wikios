@@ -47,7 +47,7 @@ func (s *ReflectService) Run(ctx context.Context, execution *Execution, traceID 
 	counterEvidence := s.collectCounterEvidence(ctx, execution, env, req.Topic)
 	stageOneBlocks := s.collectStageOneBlocks(ctx, execution, env)
 	deepPages, deepBlocks := s.collectDeepReadBlocks(ctx, execution, env, req.Topic)
-	prompt, err := s.loadPromptWithWikiAgent("admin_reflect_system.md")
+	prompt, err := s.loadPromptWithWikiSections("admin_reflect_system.md", "REFLECT 相关规则", "## REFLECT 操作规范")
 	if err != nil {
 		return nil, err
 	}

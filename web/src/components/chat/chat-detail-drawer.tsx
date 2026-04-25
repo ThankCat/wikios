@@ -5,6 +5,8 @@ import { GripVertical, X } from "lucide-react";
 
 import { MessageDetails } from "@/components/chat/message-details";
 import { Button } from "@/components/ui/button";
+import { ScrollJumpControls } from "@/components/ui/scroll-jump-controls";
+import { useScrollFollow } from "@/lib/use-scroll-follow";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -21,6 +23,9 @@ type Props = {
 };
 
 export function ChatDetailDrawer({ title, open, width, selected, onClear, onResizeStart }: Props) {
+  const messageScroll = useScrollFollow<HTMLDivElement>([open, selected?.content]);
+  const detailScroll = useScrollFollow<HTMLDivElement>([open, selected?.details]);
+
   useEffect(() => {
     if (!open) {
       return;
@@ -76,26 +81,45 @@ export function ChatDetailDrawer({ title, open, width, selected, onClear, onResi
         </header>
         <div className="flex min-h-0 flex-1 flex-col">
           {selected ? (
-            <>
-              <div className="shrink-0 border-b bg-slate-50/65 p-5">
-                <section className="rounded-2xl border border-slate-200 bg-white p-4">
-                  <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                    当前消息
-                  </div>
-                  <div className="mb-3 flex items-center gap-2 text-xs text-slate-500">
-                    <span className="rounded-full bg-slate-100 px-2 py-1">
-                      {selected.role === "assistant" ? "Assistant" : "User"}
-                    </span>
-                  </div>
-                  <div className="detail-scroll max-h-44 overflow-y-auto whitespace-pre-wrap pr-2 text-sm leading-6 text-slate-900">
-                    {selected.content}
-                  </div>
-                </section>
+            <div className="relative min-h-0 flex-1">
+              <div ref={detailScroll.viewportRef} className="detail-scroll h-full overflow-y-auto px-5 pb-5">
+                <MessageDetails
+                  details={selected.details ?? {}}
+                  leadingContent={
+                    <section className="rounded-2xl border border-slate-200 bg-white p-4">
+                      <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                        当前消息
+                      </div>
+                      <div className="mb-3 flex items-center gap-2 text-xs text-slate-500">
+                        <span className="rounded-full bg-slate-100 px-2 py-1">
+                          {selected.role === "assistant" ? "Assistant" : "User"}
+                        </span>
+                      </div>
+                      <div className="relative">
+                        <div
+                          ref={messageScroll.viewportRef}
+                          className="detail-scroll max-h-44 overflow-y-auto whitespace-pre-wrap pr-2 text-sm leading-6 text-slate-900"
+                        >
+                          {selected.content}
+                        </div>
+                        <ScrollJumpControls
+                          show={messageScroll.showControls}
+                          onTop={() => messageScroll.scrollToTop()}
+                          onBottom={() => messageScroll.scrollToBottom()}
+                          className="bottom-2 right-2"
+                        />
+                      </div>
+                    </section>
+                  }
+                />
               </div>
-              <div className="detail-scroll min-h-0 flex-1 overflow-y-auto px-5 py-5">
-                <MessageDetails details={selected.details ?? {}} />
-              </div>
-            </>
+              <ScrollJumpControls
+                show={detailScroll.showControls}
+                onTop={() => detailScroll.scrollToTop()}
+                onBottom={() => detailScroll.scrollToBottom()}
+                className="bottom-4 right-5"
+              />
+            </div>
           ) : (
             <div className="detail-scroll min-h-0 flex-1 overflow-y-auto p-5">
               <div className="rounded-2xl border border-dashed border-slate-300 bg-white/70 p-6 text-sm leading-6 text-slate-500">

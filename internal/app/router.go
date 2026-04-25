@@ -42,8 +42,17 @@ func NewRouter(cfg *config.Config, handlers *api.Handlers, dataStore *store.Stor
 	admin.GET("/auth/me", handlers.AdminMe)
 	admin.POST("/chat", handlers.AdminChat)
 	admin.POST("/chat/stream", handlers.AdminChatStream)
+	admin.POST("/context/estimate", handlers.AdminContextEstimate)
+	admin.GET("/wiki/tree", handlers.AdminWikiTree)
+	admin.GET("/wiki/file", handlers.AdminWikiFile)
+	admin.GET("/wiki/download", handlers.AdminWikiDownload)
+	admin.GET("/sync/status", handlers.AdminSyncStatus)
+	admin.POST("/sync/commit", handlers.AdminSyncCommit)
+	admin.POST("/sync/push", handlers.AdminSyncPush)
 	admin.POST("/upload", handlers.AdminUpload)
 	admin.POST("/upload/stream", handlers.AdminUploadStream)
+	admin.GET("/public-intents", handlers.AdminGetPublicIntents)
+	admin.PUT("/public-intents", handlers.AdminUpdatePublicIntents)
 
 	registerWebRoutes(r, cfg)
 

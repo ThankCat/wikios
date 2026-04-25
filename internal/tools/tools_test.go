@@ -131,6 +131,32 @@ func TestExecRestrictionsAndRepair(t *testing.T) {
 	}
 }
 
+func TestExecShellPrefersConfiguredQMDNodePath(t *testing.T) {
+	root := createFixtureWiki(t)
+	preferredNodeDir := t.TempDir()
+	t.Setenv("WIKIOS_QMD_NODE_BIN", preferredNodeDir)
+	cfg := testConfig(root, t.TempDir())
+	rt := newRuntime(cfg)
+	env := &runtime.ExecEnv{
+		WikiRoot:     root,
+		WorkspaceDir: cfg.Workspace.BaseDir,
+		Mode:         "admin_direct",
+		QMDIndex:     cfg.MountedWiki.QMDIndex,
+	}
+	result, err := rt.Execute(context.Background(), env, runtime.ToolCall{
+		Name: "exec.shell",
+		Args: map[string]any{"command": "printf '%s' \"$PATH\""},
+	})
+	if err != nil || !result.Success {
+		t.Fatalf("exec.shell failed: %+v %v", result, err)
+	}
+	stdout, _ := result.Data["stdout"].(string)
+	firstPath := strings.Split(stdout, ":")[0]
+	if firstPath != preferredNodeDir {
+		t.Fatalf("expected preferred qmd node path first, got %q in %q", firstPath, stdout)
+	}
+}
+
 func TestGitStatusCleanAndDirty(t *testing.T) {
 	root := createFixtureWiki(t)
 	cfg := testConfig(root, t.TempDir())

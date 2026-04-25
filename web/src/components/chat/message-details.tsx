@@ -1,12 +1,15 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { ReactNode, useMemo, useState } from "react";
 import { Braces, Cog, FileJson2, MessageSquareQuote } from "lucide-react";
 
+import { ScrollJumpControls } from "@/components/ui/scroll-jump-controls";
+import { useScrollFollow } from "@/lib/use-scroll-follow";
 import { cn, formatJSON } from "@/lib/utils";
 
 type Props = {
   details: unknown;
+  leadingContent?: ReactNode;
 };
 
 type DetailTab = "prompt" | "tools" | "execution" | "result";
@@ -31,7 +34,7 @@ function asObject(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-export function MessageDetails({ details }: Props) {
+export function MessageDetails({ details, leadingContent }: Props) {
   const object = asObject(details);
   const prompts = Array.isArray(object.prompts) ? object.prompts : [];
   const execution = asObject(object.execution);
@@ -60,8 +63,8 @@ export function MessageDetails({ details }: Props) {
   const resolvedTab = availableTabs.some((tab) => tab.id === activeTab) ? activeTab : (availableTabs[0]?.id ?? "result");
 
   return (
-    <div className="mt-3 space-y-3 text-left">
-      <div className="flex flex-wrap gap-2">
+    <div className="space-y-3 text-left">
+      <div className="sticky top-0 z-10 flex flex-wrap gap-2 border-b border-slate-200 bg-white/95 py-3 backdrop-blur">
         {availableTabs.map((tab) => {
           const Icon = tab.icon;
           const active = resolvedTab === tab.id;
@@ -84,6 +87,8 @@ export function MessageDetails({ details }: Props) {
         })}
       </div>
 
+      {leadingContent}
+
       {resolvedTab === "prompt" ? <PromptPanel prompts={prompts} /> : null}
       {resolvedTab === "tools" ? <ToolsPanel steps={steps} /> : null}
       {resolvedTab === "execution" ? <ExecutionPanel execution={execution} /> : null}
@@ -99,14 +104,17 @@ function PromptPanel({ prompts }: { prompts: unknown[] }) {
         const data = asObject(prompt);
         const messages = Array.isArray(data.messages) ? data.messages : [];
         return (
-          <section key={index} className="rounded-2xl border border-slate-200 bg-white p-3">
-            <div className="mb-3 flex items-center justify-between gap-3">
+          <details key={index} className="rounded-2xl border border-slate-200 bg-white p-3">
+            <summary className="mb-3 flex cursor-pointer items-center justify-between gap-3">
               <div>
                 <div className="text-xs font-semibold text-slate-900">{String(data.name ?? `Prompt ${index + 1}`)}</div>
-                <div className="mt-1 text-[11px] text-slate-500">model: {String(data.model ?? "unknown")}</div>
+                <div className="mt-1 text-[11px] text-slate-500">
+                  model: {String(data.model ?? "unknown")}
+                  {data.created_at ? ` · ${formatDateTime(String(data.created_at))}` : ""}
+                </div>
               </div>
               <div className="rounded-full bg-slate-100 px-2 py-1 text-[11px] text-slate-600">{messages.length} messages</div>
-            </div>
+            </summary>
             <div className="space-y-2">
               {messages.map((message, messageIndex) => {
                 const item = asObject(message);
@@ -120,7 +128,7 @@ function PromptPanel({ prompts }: { prompts: unknown[] }) {
                 );
               })}
             </div>
-          </section>
+          </details>
         );
       })}
     </div>
@@ -134,11 +142,14 @@ function ToolsPanel({ steps }: { steps: unknown[] }) {
         const item = asObject(step);
         const status = String(item.status ?? "UNKNOWN");
         return (
-          <section key={index} className="rounded-2xl border border-slate-200 bg-white p-3">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <details key={index} className="rounded-2xl border border-slate-200 bg-white p-3">
+            <summary className="mb-3 flex cursor-pointer flex-wrap items-center justify-between gap-2">
               <div className="min-w-0">
                 <div className="truncate text-sm font-semibold text-slate-900">{String(item.name ?? `Step ${index + 1}`)}</div>
-                <div className="mt-1 text-[11px] text-slate-500">{String(item.tool ?? "tool.unknown")}</div>
+                <div className="mt-1 text-[11px] text-slate-500">
+                  {String(item.tool ?? "tool.unknown")}
+                  {item.started_at ? ` · ${formatDateTime(String(item.started_at))}` : ""}
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 {item.duration_ms ? (
@@ -157,12 +168,12 @@ function ToolsPanel({ steps }: { steps: unknown[] }) {
                   {status}
                 </span>
               </div>
-            </div>
+            </summary>
             <div className="grid gap-3 md:grid-cols-2">
               <PanelBlock title="Input" value={item.input ?? {}} />
               <PanelBlock title="Output" value={item.output ?? {}} />
             </div>
-          </section>
+          </details>
         );
       })}
     </div>
@@ -218,10 +229,24 @@ function PanelBlock({ title, value }: { title: string; value: unknown }) {
 }
 
 function CodeBlock({ value }: { value: unknown }) {
+  const formatted = formatJSON(value);
+  const codeScroll = useScrollFollow<HTMLPreElement>([formatted]);
+
   return (
-    <pre className="detail-code-scroll max-h-[28rem] overflow-auto rounded-xl bg-slate-950 px-4 py-3 text-xs leading-6 text-slate-100 shadow-inner">
-      <code>{formatJSON(value)}</code>
-    </pre>
+    <div className="relative">
+      <pre
+        ref={codeScroll.viewportRef}
+        className="detail-code-scroll max-h-[28rem] overflow-auto rounded-xl bg-slate-950 px-4 py-3 text-xs leading-6 text-slate-100 shadow-inner"
+      >
+        <code>{formatted}</code>
+      </pre>
+      <ScrollJumpControls
+        show={codeScroll.showControls}
+        onTop={() => codeScroll.scrollToTop()}
+        onBottom={() => codeScroll.scrollToBottom()}
+        className="bottom-3 right-3"
+      />
+    </div>
   );
 }
 
@@ -230,4 +255,13 @@ function displayValue(value: unknown) {
     return value;
   }
   return formatJSON(value);
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const pad = (num: number) => String(num).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }

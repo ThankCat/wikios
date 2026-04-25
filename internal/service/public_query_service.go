@@ -32,17 +32,7 @@ type SourceRef struct {
 }
 
 type PublicAnswerResponse struct {
-	Answer  string               `json:"answer"`
-	Details *PublicAnswerDetails `json:"details,omitempty"`
-}
-
-type PublicAnswerDetails struct {
-	AnswerType     string      `json:"answer_type"`
-	AnswerMarkdown string      `json:"answer_markdown"`
-	Sources        []SourceRef `json:"sources"`
-	Confidence     float64     `json:"confidence"`
-	Notes          string      `json:"notes,omitempty"`
-	TraceID        string      `json:"trace_id"`
+	Answer string `json:"answer"`
 }
 
 type PublicQueryService struct {
@@ -67,17 +57,14 @@ func NewPublicQueryService(deps Deps) *PublicQueryService {
 }
 
 func (s *PublicQueryService) Answer(ctx context.Context, traceID string, req PublicAnswerRequest) (*PublicAnswerResponse, error) {
+	if intent, ok := s.matchPublicIntent(req.Question); ok {
+		return &PublicAnswerResponse{
+			Answer: intent.Response,
+		}, nil
+	}
 	if unsupported, ok := unsupportedPublicReply(req.Question); ok {
 		return &PublicAnswerResponse{
 			Answer: unsupported,
-			Details: &PublicAnswerDetails{
-				AnswerType:     "text",
-				AnswerMarkdown: unsupported,
-				Sources:        nil,
-				Confidence:     1,
-				Notes:          "用户请求超出客服问答范围，已返回前台安全拒答。",
-				TraceID:        traceID,
-			},
 		}, nil
 	}
 	env := s.env("public", traceID, "", "")
@@ -95,7 +82,7 @@ func (s *PublicQueryService) Answer(ctx context.Context, traceID string, req Pub
 	contentBlocks := make([]string, 0, len(pages))
 	sources := make([]SourceRef, 0, len(pages))
 	seenPaths := map[string]bool{}
-	relatedSourcePaths := make([]string, 0, len(pages))
+	relatedEvidencePaths := make([]string, 0, len(pages))
 	for _, page := range pages {
 		if !isPublicReadableEvidence(page.Path) {
 			continue
@@ -104,26 +91,18 @@ func (s *PublicQueryService) Answer(ctx context.Context, traceID string, req Pub
 		if !ok {
 			continue
 		}
-		relatedSourcePaths = append(relatedSourcePaths, linkedSourcePathsFromContent(content)...)
+		relatedEvidencePaths = append(relatedEvidencePaths, linkedPublicEvidencePathsFromContent(content)...)
 	}
-	for _, sourcePath := range dedupeSourcePaths(relatedSourcePaths) {
-		s.readPublicEvidencePage(ctx, env, sourcePath, req.Question, seenPaths, &contentBlocks, &sources)
+	for _, evidencePath := range dedupeEvidencePaths(relatedEvidencePaths) {
+		s.readPublicEvidencePage(ctx, env, evidencePath, req.Question, seenPaths, &contentBlocks, &sources)
 	}
-	if len(contentBlocks) == 0 || !hasSourceEvidence(sources) {
-		fallback := genericPublicFallback(req.Question)
+	if len(contentBlocks) == 0 || !hasPublicEvidence(sources) {
+		fallback := s.publicFallback(req.Question)
 		return &PublicAnswerResponse{
 			Answer: fallback,
-			Details: &PublicAnswerDetails{
-				AnswerType:     "text",
-				AnswerMarkdown: fallback,
-				Sources:        nil,
-				Confidence:     1,
-				Notes:          "当前没有命中可直接作答的 source 页，已返回前台安全话术。",
-				TraceID:        traceID,
-			},
 		}, nil
 	}
-	systemPrompt, err := s.loadPromptWithWikiAgent("public_answer_system.md")
+	systemPrompt, err := s.loadPromptWithWikiQueryGuide("public_answer_system.md")
 	if err != nil {
 		return nil, err
 	}
@@ -147,41 +126,23 @@ func (s *PublicQueryService) Answer(ctx context.Context, traceID string, req Pub
 		parsed.AnswerMarkdown = llmText
 	}
 	mergedSources := mergePromptSources(parsed.Sources, dedupeSources(sources))
-	confidence := parsed.Confidence
-	if confidence <= 0 || confidence > 1 {
-		confidence = confidenceFromSources(mergedSources)
-	}
 	answerMarkdown := strings.TrimSpace(parsed.AnswerMarkdown)
 	if answerMarkdown == "" {
 		answerMarkdown = llmText
 	}
-	answerType := parsed.AnswerType
-	if answerType == "" {
-		answerType = "text"
-	}
-	if normalized, changed := normalizeBrandedPublicAnswer(answerMarkdown, hasSourceEvidence(mergedSources)); changed {
+	if normalized, changed := normalizeBrandedPublicAnswer(answerMarkdown, hasPublicEvidence(mergedSources)); changed {
 		answerMarkdown = normalized
 	}
-	if leaked, ok := sanitizePublicAnswer(answerMarkdown, req.Question); ok {
+	if leaked, ok := sanitizePublicAnswer(answerMarkdown, req.Question, s.publicFallback(req.Question)); ok {
 		answerMarkdown = leaked
 		mergedSources = nil
-		confidence = 1
 	}
-	if !hasSourceEvidence(mergedSources) {
-		answerMarkdown = genericPublicFallback(req.Question)
+	if !hasPublicEvidence(mergedSources) {
+		answerMarkdown = s.publicFallback(req.Question)
 		mergedSources = nil
-		confidence = 1
 	}
 	return &PublicAnswerResponse{
 		Answer: answerMarkdown,
-		Details: &PublicAnswerDetails{
-			AnswerType:     answerType,
-			AnswerMarkdown: answerMarkdown,
-			Sources:        mergedSources,
-			Confidence:     confidence,
-			Notes:          strings.TrimSpace(parsed.Notes),
-			TraceID:        traceID,
-		},
 	}, nil
 }
 
@@ -215,7 +176,7 @@ func (s *PublicQueryService) readPublicEvidencePage(
 		if strings.TrimSpace(doc.Body) != "" {
 			body = strings.TrimSpace(doc.Body)
 		}
-		if isStructuredFAQSource(doc.Frontmatter) {
+		if isStructuredFAQEvidence(doc.Frontmatter, path) {
 			preview = buildFAQEvidencePreview(body, question)
 		}
 	}
@@ -232,7 +193,10 @@ func (s *PublicQueryService) readPublicEvidencePage(
 	return body, true
 }
 
-func isStructuredFAQSource(frontmatter map[string]any) bool {
+func isStructuredFAQEvidence(frontmatter map[string]any, path string) bool {
+	if strings.HasPrefix(path, "wiki/faq/") {
+		return true
+	}
 	if frontmatter == nil {
 		return false
 	}
@@ -268,6 +232,20 @@ func formatConversationHistory(history []ChatMessage) string {
 	return "最近对话上下文：\n" + strings.Join(lines, "\n") + "\n\n"
 }
 
+func (s *PublicQueryService) matchPublicIntent(question string) (PublicIntentResult, bool) {
+	if s.deps.PublicIntents == nil {
+		return PublicIntentResult{}, false
+	}
+	return s.deps.PublicIntents.Match(question)
+}
+
+func (s *PublicQueryService) publicFallback(question string) string {
+	if s.deps.PublicIntents == nil {
+		return genericPublicFallback(question)
+	}
+	return s.deps.PublicIntents.Fallback(question)
+}
+
 func unsupportedPublicReply(question string) (string, bool) {
 	text := strings.TrimSpace(question)
 	if text == "" {
@@ -290,7 +268,7 @@ func unsupportedPublicReply(question string) (string, bool) {
 	return "", false
 }
 
-func sanitizePublicAnswer(answer string, question string) (string, bool) {
+func sanitizePublicAnswer(answer string, question string, fallback string) (string, bool) {
 	lower := strings.ToLower(answer)
 	if containsAny(lower,
 		"wiki/index.md",
@@ -308,6 +286,17 @@ func sanitizePublicAnswer(answer string, question string) (string, bool) {
 		return "当前无法直接处理这类系统操作。如需处理资料或系统配置，请联系管理员。", true
 	}
 	if containsAny(lower,
+		"目前知识库",
+		"当前知识库",
+		"知识库里",
+		"知识库中",
+		"知识库没有",
+		"知识库暂无",
+		"资料库",
+		"当前资料",
+		"现有资料",
+		"检索结果",
+		"没有专门针对",
 		"当前知识库中尚未收录",
 		"由于当前知识库中尚未收录",
 		"知识库当前",
@@ -327,6 +316,9 @@ func sanitizePublicAnswer(answer string, question string) (string, bool) {
 		"一般有以下几种方式",
 		"根据客服知识库",
 	) {
+		if strings.TrimSpace(fallback) != "" {
+			return strings.TrimSpace(fallback), true
+		}
 		return genericPublicFallback(question), true
 	}
 	if containsAny(strings.ToLower(question), "删除资料库", "删除知识库", "删库") {
@@ -394,17 +386,17 @@ func genericPublicFallback(question string) string {
 	lower := strings.ToLower(strings.TrimSpace(question))
 	switch {
 	case containsAny(lower, "关机", "重启", "开机", "启动"):
-		return "您好，这项操作我这边暂时没有准确资料，建议您先参考设备说明或联系对应支持人员处理。"
+		return "您好，这项操作我这边暂时还不能准确确认，建议您先参考设备说明或联系对应支持人员处理。"
 	case containsAny(lower, "安装", "下载", "设置", "配置", "登录"):
 		return "您好，这方面我这边暂时没有可直接确认的操作说明，您可以补充一下具体场景，我再为您确认。"
 	default:
-		return "您好，这个问题我这边暂时没有准确资料，您可以补充一下具体场景，我再为您确认。"
+		return "您好，这个问题我这边暂时还不能准确确认，您可以补充一下具体场景，我再为您确认。"
 	}
 }
 
 func isPublicReadableEvidence(path string) bool {
 	switch {
-	case strings.HasPrefix(path, "wiki/sources/"):
+	case strings.HasPrefix(path, "wiki/faq/"):
 		return true
 	case strings.HasPrefix(path, "wiki/concepts/"):
 		return true
@@ -415,9 +407,9 @@ func isPublicReadableEvidence(path string) bool {
 	}
 }
 
-func hasSourceEvidence(sources []SourceRef) bool {
+func hasPublicEvidence(sources []SourceRef) bool {
 	for _, source := range sources {
-		if strings.HasPrefix(source.Path, "wiki/sources/") {
+		if strings.HasPrefix(source.Path, "wiki/faq/") {
 			return true
 		}
 	}
@@ -426,7 +418,7 @@ func hasSourceEvidence(sources []SourceRef) bool {
 
 var wikilinkPattern = regexp.MustCompile(`\[\[([^\]]+)\]\]`)
 
-func linkedSourcePathsFromContent(content string) []string {
+func linkedPublicEvidencePathsFromContent(content string) []string {
 	matches := wikilinkPattern.FindAllStringSubmatch(content, -1)
 	if len(matches) == 0 {
 		return nil
@@ -439,15 +431,17 @@ func linkedSourcePathsFromContent(content string) []string {
 		target := strings.TrimSpace(match[1])
 		target = strings.TrimPrefix(target, "wiki/")
 		target = strings.TrimPrefix(target, "./")
-		if !strings.HasPrefix(target, "sources/") {
-			continue
+		switch {
+		case strings.HasPrefix(target, "faq/"):
+			paths = append(paths, "wiki/"+strings.TrimSuffix(target, ".md")+".md")
+		case !strings.Contains(target, "/") && wikiadapter.IsValidSlug(strings.TrimSuffix(target, ".md")):
+			paths = append(paths, "wiki/faq/"+strings.TrimSuffix(target, ".md")+".md")
 		}
-		paths = append(paths, "wiki/"+strings.TrimSuffix(target, ".md")+".md")
 	}
 	return paths
 }
 
-func dedupeSourcePaths(in []string) []string {
+func dedupeEvidencePaths(in []string) []string {
 	if len(in) == 0 {
 		return nil
 	}

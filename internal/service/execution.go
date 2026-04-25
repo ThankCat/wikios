@@ -23,6 +23,8 @@ type Step struct {
 	Input      map[string]any `json:"input,omitempty"`
 	Output     map[string]any `json:"output,omitempty"`
 	DurationMs int64          `json:"duration_ms,omitempty"`
+	StartedAt  time.Time      `json:"started_at,omitempty"`
+	EndedAt    time.Time      `json:"ended_at,omitempty"`
 }
 
 type Execution struct {

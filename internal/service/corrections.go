@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -12,6 +13,8 @@ import (
 	"wikios/internal/runtime"
 	"wikios/internal/wikiadapter"
 )
+
+var plainWikiLinkPattern = regexp.MustCompile(`\[\[([a-z0-9]+(?:-[a-z0-9]+)*)\]\]`)
 
 type correctionDetectionOutput struct {
 	Summary     string                 `json:"summary"`
@@ -64,11 +67,11 @@ func (s *baseService) detectBackedCorrections(ctx context.Context, execution *Ex
 	if len(candidates) == 0 {
 		return correctionDetectionOutput{}, nil
 	}
-	prompt, err := s.loadPromptWithWikiAgent("admin_repair_system.md")
+	prompt, err := s.loadPromptWithWikiSections("admin_repair_system.md", "REPAIR 相关规则", "## REPAIR 操作规范")
 	if err != nil {
 		return correctionDetectionOutput{}, err
 	}
-	prompt += "\n\n你现在处于原始来源核验模式。只允许识别由 raw 原文直接支持的字面事实纠错，尤其是专有名词、机构名、人名、产品名、数字、日期。不要推测，不要总结泛泛问题。你必须只返回 JSON，不要输出代码块。"
+	prompt += "\n\n你现在只负责把 server 提供的候选材料整理为 REPAIR JSON 输出。具体修复边界与可执行范围以 AGENT.md 为准。你必须只返回 JSON，不要输出代码块。"
 	userPrompt := buildCorrectionPrompt(topic, candidates)
 	llmText, err := s.executeLLM(ctx, execution, s.deps.Config.LLM.ModelAdmin, []llm.Message{
 		{Role: "system", Content: prompt},
@@ -176,7 +179,7 @@ func (s *baseService) collectPagesReferencingSource(ctx context.Context, executi
 			return nil
 		}
 		content, _ := readResult.Data["content"].(string)
-		if rel == sourcePath || strings.Contains(content, "[[sources/"+sourceSlug+"]]") {
+		if rel == sourcePath || strings.Contains(content, "[[sources/"+sourceSlug+"]]") || strings.Contains(content, "[["+sourceSlug+"]]") {
 			seen[rel] = true
 			targets = append(targets, correctionTargetPage{Path: rel, Content: content})
 		}
@@ -268,7 +271,7 @@ func buildCorrectionPrompt(topic string, candidates []correctionSourceCandidate)
 		))
 	}
 	return fmt.Sprintf(
-		"topic: %s\n\n请基于 raw 原文校验派生 wiki 页面，只输出可以被 raw 明确证明的字面纠错。优先处理专有名词错写、机构名、人名、产品名、数字和日期。对于品牌名/实体名/专有名词统一修复，优先输出 replace_mode=global，并明确 scope_paths。输出 JSON 格式：{\"summary\":\"\",\"corrections\":[{\"path\":\"wiki/...\",\"section\":\"frontmatter 或 ## Summary\",\"wrong\":\"错误文本或字段行\",\"correct\":\"正确文本或字段行\",\"reason\":\"依据 raw 的简短说明\",\"risk_level\":\"low|high\",\"replace_mode\":\"targeted|global\",\"scope_paths\":[\"wiki/sources\",\"wiki/entities\"]}],\"warnings\":[]}\n\n%s",
+		"topic: %s\n\nmounted wiki 的 AGENT.md 是 REPAIR 规则的唯一来源。请按 AGENT.md 判断候选材料，并只输出 server 可解析 JSON：{\"summary\":\"\",\"corrections\":[{\"path\":\"\",\"section\":\"\",\"wrong\":\"\",\"correct\":\"\",\"reason\":\"\",\"risk_level\":\"\",\"replace_mode\":\"\",\"scope_paths\":[]}],\"warnings\":[]}\n\n%s",
 		topic,
 		strings.Join(blocks, "\n\n"),
 	)
@@ -571,6 +574,15 @@ func extractSourceLinks(content string) []string {
 			matches = append(matches, slug)
 		}
 		rest = rest[end+2:]
+	}
+	for _, match := range plainWikiLinkPattern.FindAllStringSubmatch(content, -1) {
+		if len(match) != 2 {
+			continue
+		}
+		slug := strings.TrimSpace(match[1])
+		if wikiadapter.IsValidSlug(slug) {
+			matches = append(matches, slug)
+		}
 	}
 	return dedupeStrings(matches)
 }

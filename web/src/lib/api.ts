@@ -3,11 +3,18 @@ import type {
   AdminChatResponse,
   AdminStreamEvent,
   AdminUser,
+  ContextEstimateResponse,
   PublicChatHistoryItem,
   PublicAnswerResponse,
+  PublicIntentsResponse,
   PublicStreamEvent,
+  SyncCommitResponse,
+  SyncPushResponse,
+  SyncStatusResponse,
   UploadResponse,
   UploadStreamEvent,
+  WikiFileResponse,
+  WikiTreeResponse,
 } from "@/types/api";
 
 export class APIError extends Error {
@@ -94,11 +101,58 @@ export const api = {
   me() {
     return request<{ user: AdminUser }>(apiURL("/api/v1/admin/auth/me"));
   },
+  getPublicIntents() {
+    return request<PublicIntentsResponse>(apiURL("/api/v1/admin/public-intents"));
+  },
+  updatePublicIntents(source: string, signal?: AbortSignal) {
+    return request<PublicIntentsResponse>(apiURL("/api/v1/admin/public-intents"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source }),
+      signal,
+    });
+  },
   adminChat(payload: AdminChatRequest, signal?: AbortSignal) {
     return request<AdminChatResponse>(apiURL("/api/v1/admin/chat"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal,
+    });
+  },
+  estimateAdminContext(payload: AdminChatRequest, signal?: AbortSignal) {
+    return request<ContextEstimateResponse>(apiURL("/api/v1/admin/context/estimate"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal,
+    });
+  },
+  wikiTree(path = "", signal?: AbortSignal) {
+    return request<WikiTreeResponse>(apiURL(`/api/v1/admin/wiki/tree?path=${encodeURIComponent(path)}`), { signal });
+  },
+  wikiFile(path: string, signal?: AbortSignal) {
+    return request<WikiFileResponse>(apiURL(`/api/v1/admin/wiki/file?path=${encodeURIComponent(path)}`), { signal });
+  },
+  wikiDownloadURL(path: string) {
+    return apiURL(`/api/v1/admin/wiki/download?path=${encodeURIComponent(path)}`);
+  },
+  syncStatus(signal?: AbortSignal) {
+    return request<SyncStatusResponse>(apiURL("/api/v1/admin/sync/status"), { signal });
+  },
+  syncCommit(paths: string[], message: string, signal?: AbortSignal) {
+    return request<SyncCommitResponse>(apiURL("/api/v1/admin/sync/commit"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths, message }),
+      signal,
+    });
+  },
+  syncPush(remote: string, branch: string, signal?: AbortSignal) {
+    return request<SyncPushResponse>(apiURL("/api/v1/admin/sync/push"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ remote, branch }),
       signal,
     });
   },

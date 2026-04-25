@@ -22,19 +22,9 @@ func (s *SyncService) Run(ctx context.Context, execution *Execution, traceID str
 	if err != nil {
 		return nil, err
 	}
-	commit, err := s.executeTool(ctx, execution, env, "git.commit", map[string]any{
-		"message": req.Message,
-	}, "git commit")
-	if err != nil {
-		return nil, err
-	}
-	push, err := s.executeTool(ctx, execution, env, "git.push", nil, "git push")
-	if err != nil {
-		return nil, err
-	}
 	return map[string]any{
-		"status": status.Data["stdout"],
-		"commit": commit.Data,
-		"push":   push.Data,
+		"status":  status.Data["stdout"],
+		"summary": "同步已改为 server API 流程：先查看变更、选择文件、提交，再确认推送。",
+		"message": req.Message,
 	}, nil
 }

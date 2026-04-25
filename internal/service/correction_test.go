@@ -20,7 +20,7 @@ import (
 type correctionLLM struct{}
 
 func (correctionLLM) Chat(_ context.Context, _ string, messages []llm.Message) (string, error) {
-	if len(messages) > 0 && strings.Contains(messages[0].Content, "原始来源核验模式") {
+	if len(messages) > 1 && strings.Contains(messages[1].Content, "\"corrections\"") && strings.Contains(messages[1].Content, "### Derived Wiki Pages") {
 		return `{
   "summary": "检测到 raw 可验证的品牌名纠错",
   "corrections": [

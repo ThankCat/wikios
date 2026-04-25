@@ -32,6 +32,9 @@ type canonicalFAQEntry struct {
 	Category         string
 	Question         string
 	SimilarQuestions []string
+	Keywords         []string
+	Tags             []string
+	QuickReplies     []string
 	Answer           string
 	ConditionNotes   []string
 }
@@ -45,10 +48,14 @@ type canonicalFAQSegment struct {
 }
 
 func detectCanonicalFAQDataset(path string, titleHint string, content string) (*canonicalFAQDataset, error) {
+	return detectCanonicalFAQDatasetWithProfile(path, titleHint, content, nil)
+}
+
+func detectCanonicalFAQDatasetWithProfile(path string, titleHint string, content string, profile *knowledgeProfile) (*canonicalFAQDataset, error) {
 	if dataset, ok, err := parseFAQJSONDataset(path, titleHint, content); ok || err != nil {
 		return dataset, err
 	}
-	if dataset, ok := parseFAQMarkdownDataset(path, titleHint, content); ok {
+	if dataset, ok := parseFAQMarkdownDatasetWithProfile(path, titleHint, content, profile); ok {
 		return dataset, nil
 	}
 	return nil, nil
@@ -106,6 +113,16 @@ func parseFAQJSONDataset(path string, titleHint string, content string) (*canoni
 		}
 	}
 
+	format := strings.TrimSpace(stringifyAny(root["source_format"]))
+	if format == "" {
+		format = strings.TrimSpace(stringifyAny(root["format"]))
+	}
+	switch format {
+	case "faq-xlsx", "faq-json", "faq-markdown-table":
+	default:
+		format = "faq-json"
+	}
+
 	entries := make([]canonicalFAQEntry, 0, len(rawFAQ))
 	categoryOrder := []string{}
 	seenCategories := map[string]bool{}
@@ -136,7 +153,10 @@ func parseFAQJSONDataset(path string, titleHint string, content string) (*canoni
 			ID:               strings.TrimSpace(stringifyAny(record["id"])),
 			Category:         category,
 			Question:         question,
-			SimilarQuestions: dedupeStrings(append(splitFAQVariants(stringifyAny(record["similar_questions"])), simMap[strings.TrimSpace(stringifyAny(record["id"]))]...)),
+			SimilarQuestions: dedupeStrings(append(splitFAQAny(record["similar_questions"]), simMap[strings.TrimSpace(stringifyAny(record["id"]))]...)),
+			Keywords:         splitFAQAny(firstNonNil(record["keywords"], record["keyword"])),
+			Tags:             splitFAQAny(firstNonNil(record["tags"], record["tag"])),
+			QuickReplies:     splitFAQAny(firstNonNil(record["quick_replies"], record["quick_reply"], record["shortcuts"])),
 			Answer:           answer,
 			ConditionNotes:   conditionNotes,
 		}
@@ -157,7 +177,7 @@ func parseFAQJSONDataset(path string, titleHint string, content string) (*canoni
 	}
 	titleBase := firstNonEmpty(strings.TrimSpace(titleHint), strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), "FAQ 数据")
 	return &canonicalFAQDataset{
-		Format:        "faq-json",
+		Format:        format,
 		Family:        faqSourceFamily,
 		TitleBase:     titleBase,
 		SlugBase:      stableFAQSlugBase(titleBase, path),
@@ -169,6 +189,10 @@ func parseFAQJSONDataset(path string, titleHint string, content string) (*canoni
 }
 
 func parseFAQMarkdownDataset(path string, titleHint string, content string) (*canonicalFAQDataset, bool) {
+	return parseFAQMarkdownDatasetWithProfile(path, titleHint, content, nil)
+}
+
+func parseFAQMarkdownDatasetWithProfile(path string, titleHint string, content string, profile *knowledgeProfile) (*canonicalFAQDataset, bool) {
 	lines := strings.Split(content, "\n")
 	tableLines := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -183,7 +207,7 @@ func parseFAQMarkdownDataset(path string, titleHint string, content string) (*ca
 	if len(headers) < 2 {
 		return nil, false
 	}
-	indexMap := faqHeaderIndexMap(headers)
+	indexMap := faqHeaderIndexMapWithProfile(headers, profile, "faq_markdown_table")
 	if indexMap["question"] < 0 || indexMap["answer"] < 0 {
 		return nil, false
 	}
@@ -214,6 +238,9 @@ func parseFAQMarkdownDataset(path string, titleHint string, content string) (*ca
 			Category:         category,
 			Question:         strings.TrimSpace(question),
 			SimilarQuestions: splitFAQVariants(cellAt(cells, indexMap["similar"])),
+			Keywords:         splitFAQVariants(cellAt(cells, indexMap["keywords"])),
+			Tags:             splitFAQVariants(cellAt(cells, indexMap["tags"])),
+			QuickReplies:     splitFAQVariants(cellAt(cells, indexMap["quick_replies"])),
 			Answer:           answer,
 			ConditionNotes:   conditionNotes,
 		})
@@ -239,29 +266,69 @@ func parseFAQMarkdownDataset(path string, titleHint string, content string) (*ca
 }
 
 func faqHeaderIndexMap(headers []string) map[string]int {
+	return faqHeaderIndexMapWithProfile(headers, nil, "")
+}
+
+func faqHeaderIndexMapWithProfile(headers []string, profile *knowledgeProfile, adapterName string) map[string]int {
 	indexMap := map[string]int{
-		"category":   -1,
-		"question":   -1,
-		"similar":    -1,
-		"answer":     -1,
-		"conditions": -1,
+		"category":      -1,
+		"question":      -1,
+		"similar":       -1,
+		"answer":        -1,
+		"conditions":    -1,
+		"keywords":      -1,
+		"tags":          -1,
+		"quick_replies": -1,
 	}
+	aliases := faqHeaderAliases(profile, adapterName)
 	for i, header := range headers {
 		normalized := strings.ToLower(strings.TrimSpace(header))
-		switch normalized {
-		case "技能分类", "分类", "category", "type", "问题分类":
-			indexMap["category"] = i
-		case "标准问题", "标准问法", "问题", "question":
-			indexMap["question"] = i
-		case "相似问法", "相似问题", "同义问法", "similar", "similar_questions":
-			indexMap["similar"] = i
-		case "回复内容", "回复", "答案", "answer", "answer_text":
-			indexMap["answer"] = i
-		case "命中条件", "条件", "conditions", "condition_template":
-			indexMap["conditions"] = i
+		for field, names := range aliases {
+			for _, name := range names {
+				if normalized == strings.ToLower(strings.TrimSpace(name)) {
+					indexMap[field] = i
+				}
+			}
 		}
 	}
 	return indexMap
+}
+
+func faqHeaderAliases(profile *knowledgeProfile, adapterName string) map[string][]string {
+	aliases := map[string][]string{
+		"category":      {"技能分类", "分类", "category", "type", "问题分类"},
+		"question":      {"标准问题", "标准问法", "问题", "question"},
+		"similar":       {"相似问法", "相似问题", "同义问法", "similar", "similar_questions"},
+		"answer":        {"回复内容", "回复", "答案", "answer", "answer_text"},
+		"conditions":    {"命中条件", "条件", "conditions", "condition_template"},
+		"keywords":      {"关键词", "关键字", "keywords", "keyword"},
+		"tags":          {"标签", "标记", "tags", "tag", "labels"},
+		"quick_replies": {"快捷短语", "快捷回复", "快捷指令", "quick_replies", "quick_reply", "shortcuts"},
+	}
+	if profile == nil {
+		return aliases
+	}
+	adapter := profile.InputAdapters.FAQMarkdownTable
+	if adapterName == "faq_xlsx" {
+		adapter = profile.InputAdapters.FAQXLSX
+	}
+	mergeAliasField := func(profileField string, internalField string) {
+		if values := adapter.RequiredFields[profileField]; len(values) > 0 {
+			aliases[internalField] = dedupeStrings(append(aliases[internalField], values...))
+		}
+		if values := adapter.OptionalFields[profileField]; len(values) > 0 {
+			aliases[internalField] = dedupeStrings(append(aliases[internalField], values...))
+		}
+	}
+	mergeAliasField("original_category", "category")
+	mergeAliasField("question", "question")
+	mergeAliasField("similar_questions", "similar")
+	mergeAliasField("answer", "answer")
+	mergeAliasField("condition_notes", "conditions")
+	mergeAliasField("keywords", "keywords")
+	mergeAliasField("tags", "tags")
+	mergeAliasField("quick_replies", "quick_replies")
+	return aliases
 }
 
 func cellAt(cells []string, index int) string {
@@ -345,6 +412,35 @@ func splitFAQVariants(raw string) []string {
 	return dedupeStrings(out)
 }
 
+func splitFAQAny(raw any) []string {
+	switch typed := raw.(type) {
+	case nil:
+		return nil
+	case []string:
+		return dedupeStrings(typed)
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text := strings.TrimSpace(stringifyAny(item))
+			if text != "" {
+				out = append(out, text)
+			}
+		}
+		return dedupeStrings(out)
+	default:
+		return splitFAQVariants(stringifyAny(typed))
+	}
+}
+
+func firstNonNil(values ...any) any {
+	for _, value := range values {
+		if strings.TrimSpace(stringifyAny(value)) != "" {
+			return value
+		}
+	}
+	return nil
+}
+
 func renderConditionTemplateNotes(raw any) []string {
 	if raw == nil {
 		return nil
@@ -393,6 +489,90 @@ func compactJSON(raw any) string {
 		return ""
 	}
 	return string(data)
+}
+
+func renderFAQDatasetAsJSON(dataset *canonicalFAQDataset) string {
+	if dataset == nil {
+		return ""
+	}
+	categoryIDs := map[string]string{}
+	types := make([]map[string]any, 0, len(dataset.CategoryOrder))
+	for _, category := range dataset.CategoryOrder {
+		category = firstNonEmpty(strings.TrimSpace(category), "未分类")
+		if _, ok := categoryIDs[category]; ok {
+			continue
+		}
+		typeID := fmt.Sprintf("type-%02d", len(categoryIDs)+1)
+		categoryIDs[category] = typeID
+		types = append(types, map[string]any{"id": typeID, "category": category})
+	}
+	faq := make([]map[string]any, 0, len(dataset.Entries))
+	for index, entry := range dataset.Entries {
+		category := firstNonEmpty(strings.TrimSpace(entry.Category), "未分类")
+		typeID := categoryIDs[category]
+		if typeID == "" {
+			typeID = fmt.Sprintf("type-%02d", len(categoryIDs)+1)
+			categoryIDs[category] = typeID
+			types = append(types, map[string]any{"id": typeID, "category": category})
+		}
+		faq = append(faq, map[string]any{
+			"id":                firstNonEmpty(entry.ID, fmt.Sprintf("faq-%04d", index+1)),
+			"type_id":           typeID,
+			"category":          category,
+			"question":          entry.Question,
+			"similar_questions": entry.SimilarQuestions,
+			"keywords":          entry.Keywords,
+			"tags":              entry.Tags,
+			"quick_replies":     entry.QuickReplies,
+			"answer":            entry.Answer,
+			"condition_notes":   entry.ConditionNotes,
+		})
+	}
+	payload := map[string]any{
+		"source_format":  dataset.Format,
+		"source_family":  dataset.Family,
+		"title":          dataset.TitleBase,
+		"slug_base":      dataset.SlugBase,
+		"raw_path":       dataset.RawPath,
+		"types":          types,
+		"faq":            faq,
+		"operator_notes": dataset.Notes,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(raw) + "\n"
+}
+
+func renderFAQSegmentAsJSON(segment canonicalFAQSegment) string {
+	entries := make([]map[string]any, 0, len(segment.Entries))
+	for index, entry := range segment.Entries {
+		entries = append(entries, map[string]any{
+			"id":                firstNonEmpty(entry.ID, fmt.Sprintf("faq-%04d", index+1)),
+			"category":          firstNonEmpty(strings.TrimSpace(entry.Category), "未分类"),
+			"question":          entry.Question,
+			"similar_questions": entry.SimilarQuestions,
+			"keywords":          entry.Keywords,
+			"answer":            entry.Answer,
+			"condition_notes":   entry.ConditionNotes,
+		})
+	}
+	payload := map[string]any{
+		"source_format":    segment.Dataset.Format,
+		"source_title":     segment.title(),
+		"source_slug":      segment.slug(),
+		"segment_index":    segment.Index,
+		"segment_total":    segment.Total,
+		"segment_category": firstNonEmpty(strings.TrimSpace(segment.Tag), "未分类"),
+		"faq_entry_count":  len(segment.Entries),
+		"faq":              entries,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 func summarizeWSInfo(raw any) string {
@@ -522,6 +702,7 @@ func (s canonicalFAQSegment) summary() string {
 func (s canonicalFAQSegment) keyPoints() []string {
 	withSimilar := 0
 	withConditions := 0
+	withKeywords := 0
 	for _, entry := range s.Entries {
 		if len(entry.SimilarQuestions) > 0 {
 			withSimilar++
@@ -529,11 +710,17 @@ func (s canonicalFAQSegment) keyPoints() []string {
 		if len(entry.ConditionNotes) > 0 {
 			withConditions++
 		}
+		if len(entry.Keywords) > 0 {
+			withKeywords++
+		}
 	}
 	points := []string{
 		fmt.Sprintf("当前分段包含 %d 条标准 FAQ，分类标签为 %s。", len(s.Entries), firstNonEmpty(strings.TrimSpace(s.Tag), "未分类")),
 		fmt.Sprintf("其中 %d 条 FAQ 带有相似问法，已并入对应主问法结构。", withSimilar),
 		"原始 answer 中的 HTML 标签已转为纯文本，便于检索、摘要和客服回答复用。",
+	}
+	if withKeywords > 0 {
+		points = append(points, fmt.Sprintf("其中 %d 条 FAQ 带有关键词，已作为检索辅助信息保留。", withKeywords))
 	}
 	if withConditions > 0 {
 		points = append(points, fmt.Sprintf("其中 %d 条 FAQ 带有条件逻辑；本期仅保留为元数据，不直接参与回答决策。", withConditions))
@@ -562,34 +749,94 @@ func (s canonicalFAQSegment) renderContent() string {
 }
 
 func renderFAQEntriesSection(entries []canonicalFAQEntry) string {
+	return renderFAQEntriesSectionWithProfile(entries, nil, nil, nil, "")
+}
+
+func renderFAQEntriesSectionWithProfile(entries []canonicalFAQEntry, profile *knowledgeProfile, relatedConcepts []string, relatedEntities []string, sourceArchivePath string) string {
 	if len(entries) == 0 {
 		return "暂无 FAQ 条目。"
 	}
+	fields := profile.faqEntryFields()
 	parts := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		block := []string{"### " + entry.Question, ""}
-		if strings.TrimSpace(entry.Category) != "" {
-			block = append(block, "分类："+entry.Category, "")
+		heading := strings.TrimSpace(entry.Question)
+		if strings.TrimSpace(entry.ID) != "" && containsString(fields, "id") {
+			heading = strings.TrimSpace(entry.ID) + " · " + heading
 		}
-		if len(entry.SimilarQuestions) > 0 {
-			block = append(block, "相似问法：")
-			for _, item := range entry.SimilarQuestions {
-				block = append(block, "- "+item)
+		block := []string{"### " + heading, ""}
+		for _, field := range fields {
+			switch field {
+			case "id":
+				if strings.TrimSpace(entry.ID) != "" {
+					block = append(block, "- ID："+entry.ID)
+				}
+			case "question":
+				block = append(block, "- 标准问法："+entry.Question)
+			case "original_category":
+				if strings.TrimSpace(entry.Category) != "" {
+					block = append(block, "- 原始分类："+entry.Category)
+				}
+			case "similar_questions":
+				appendFAQListField(&block, "相似问法", entry.SimilarQuestions)
+			case "keywords":
+				appendFAQListField(&block, "关键词", entry.Keywords)
+			case "tags":
+				appendFAQListField(&block, "标签", entry.Tags)
+			case "quick_replies":
+				appendFAQListField(&block, "快捷短语", entry.QuickReplies)
+			case "answer":
+				block = append(block, "", "#### 回复", "", firstNonEmpty(entry.Answer, "暂无标准回复。"))
+			case "condition_notes":
+				appendFAQListField(&block, "条件元数据", entry.ConditionNotes)
+			case "related_concepts":
+				appendFAQLinkField(&block, "相关概念", relatedConcepts)
+			case "related_entities":
+				appendFAQLinkField(&block, "相关实体", relatedEntities)
+			case "source_archive":
+				if strings.TrimSpace(sourceArchivePath) != "" {
+					block = append(block, "- 来源归档："+sourceArchivePath)
+				}
 			}
-			block = append(block, "")
-		}
-		block = append(block, "回复：")
-		block = append(block, firstNonEmpty(entry.Answer, "暂无标准回复。"), "")
-		if len(entry.ConditionNotes) > 0 {
-			block = append(block, "条件元数据：")
-			for _, item := range entry.ConditionNotes {
-				block = append(block, "- "+item)
-			}
-			block = append(block, "")
 		}
 		parts = append(parts, strings.TrimRight(strings.Join(block, "\n"), "\n"))
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func appendFAQListField(block *[]string, label string, items []string) {
+	items = trimStringSlice(items, 0)
+	if len(items) == 0 {
+		return
+	}
+	*block = append(*block, "- "+label+"：")
+	for _, item := range items {
+		*block = append(*block, "  - "+item)
+	}
+}
+
+func appendFAQLinkField(block *[]string, label string, slugs []string) {
+	slugs = dedupeStrings(slugs)
+	if len(slugs) == 0 {
+		return
+	}
+	links := make([]string, 0, len(slugs))
+	for _, slug := range slugs {
+		if strings.TrimSpace(slug) != "" {
+			links = append(links, "[["+strings.TrimSpace(slug)+"]]")
+		}
+	}
+	if len(links) > 0 {
+		*block = append(*block, "- "+label+"："+strings.Join(links, "、"))
+	}
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func buildFAQEvidencePreview(body string, question string) string {
@@ -742,6 +989,16 @@ func stringifyAny(value any) string {
 		return ""
 	case string:
 		return typed
+	case []string:
+		return strings.Join(typed, "\n")
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text := strings.TrimSpace(stringifyAny(item)); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
 	default:
 		return fmt.Sprintf("%v", typed)
 	}

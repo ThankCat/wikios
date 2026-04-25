@@ -132,6 +132,7 @@ func (t *wikiFindBySlugTool) Execute(_ context.Context, _ *runtime.ExecEnv, args
 	paths := []string{
 		"wiki/concepts/" + slug + ".md",
 		"wiki/entities/" + slug + ".md",
+		"wiki/faq/" + slug + ".md",
 		"wiki/sources/" + slug + ".md",
 		"wiki/synthesis/" + slug + ".md",
 	}
@@ -197,6 +198,8 @@ func searchScore(haystack string, rel string, terms []string) int {
 		score += strings.Count(rel, term) * (weight + 2)
 	}
 	switch {
+	case strings.Contains(rel, "wiki/faq/"):
+		score += 7
 	case strings.Contains(rel, "wiki/sources/"):
 		score += 5
 	case strings.Contains(rel, "wiki/concepts/"):
@@ -498,7 +501,12 @@ func (t *wikiUpdateIndexEntryTool) Execute(_ context.Context, _ *runtime.ExecEnv
 		Content: entry,
 	}})
 	if err != nil {
-		return failure(t.risk, "PATCH_FAILED", err), nil
+		if strings.Contains(err.Error(), "section not found") {
+			base := strings.TrimRight(string(content), "\n")
+			patched = base + "\n\n" + strings.TrimSpace(section) + "\n\n" + strings.TrimSpace(entry) + "\n"
+		} else {
+			return failure(t.risk, "PATCH_FAILED", err), nil
+		}
 	}
 	if err := writeFile(abs, patched); err != nil {
 		return failure(t.risk, "WRITE_FAILED", err), nil

@@ -38,15 +38,21 @@ func (m *mockLLM) StreamChat(_ context.Context, _ string, messages []llm.Message
 func newPublicQueryTestService(t *testing.T, answer string) (*service.PublicQueryService, *mockLLM) {
 	t.Helper()
 	root := createPublicFixtureWiki(t)
+	intentPath := filepath.Join(t.TempDir(), "public_intents.yaml")
+	if err := os.WriteFile(intentPath, []byte(defaultPublicIntentTestYAML()), 0o644); err != nil {
+		t.Fatalf("write public intents: %v", err)
+	}
+	enabled := true
 	cfg := &config.Config{
 		MountedWiki: config.MountedWikiConfig{
 			Root:     root,
 			QMDIndex: "missing-index-for-test",
 		},
-		Retrieval: config.RetrievalConfig{TopK: 3},
-		Workspace: config.WorkspaceConfig{BaseDir: t.TempDir()},
-		Sandbox:   config.SandboxConfig{QMDTimeoutSec: 1},
-		LLM:       config.LLMConfig{ModelPublic: "test"},
+		Retrieval:     config.RetrievalConfig{TopK: 3},
+		Workspace:     config.WorkspaceConfig{BaseDir: t.TempDir()},
+		Sandbox:       config.SandboxConfig{QMDTimeoutSec: 1},
+		LLM:           config.LLMConfig{ModelPublic: "test"},
+		PublicIntents: config.PublicIntentsConfig{Enabled: &enabled, Path: intentPath},
 	}
 	dataStore, err := store.Open(filepath.Join(t.TempDir(), "service.db"))
 	if err != nil {
@@ -59,22 +65,63 @@ func newPublicQueryTestService(t *testing.T, answer string) (*service.PublicQuer
 	})
 	rt := runtime.NewRuntime(registry, runtime.NewPolicyEngine(), runtime.NewValidator(), runtime.NewAuditLogger())
 	mock := &mockLLM{answer: answer}
+	publicIntents := service.NewPublicIntentManager(cfg.PublicIntents)
 	svc := service.NewPublicQueryService(service.Deps{
-		Config:       cfg,
-		Runtime:      rt,
-		LLM:          mock,
-		Retriever:    retrieval.NewQMDRetriever(rt),
-		Store:        dataStore,
-		PromptDir:    "../../internal/llm/prompts",
-		WorkspaceDir: cfg.Workspace.BaseDir,
+		Config:        cfg,
+		Runtime:       rt,
+		LLM:           mock,
+		Retriever:     retrieval.NewQMDRetriever(rt),
+		Store:         dataStore,
+		PublicIntents: publicIntents,
+		PromptDir:     "../../internal/llm/prompts",
+		WorkspaceDir:  cfg.Workspace.BaseDir,
 	})
 	return svc, mock
+}
+
+func defaultPublicIntentTestYAML() string {
+	return `version: 1
+fallbacks:
+  generic: 您好，这个问题我这边暂时还不能准确确认，您可以补充一下具体场景，我再为您确认。
+  operation: 您好，这方面我这边暂时没有可直接确认的操作说明，您可以补充一下具体场景，我再为您确认。
+  device_operation: 您好，这项操作我这边暂时还不能准确确认，建议您先参考设备说明或联系对应支持人员处理。
+rules:
+  - name: admin_unsupported
+    enabled: true
+    priority: 100
+    category: safety
+    match:
+      contains: [删除知识库, 删除资料库, 删库]
+    response: 这个请求不属于对外客服问答范围。如需处理系统或资料管理操作，请联系管理员。
+  - name: identity
+    enabled: true
+    priority: 80
+    category: service_identity
+    match:
+      exact: [你是谁, 你能做什么]
+      contains: [你是谁, 你能做什么]
+    response: 您好，我是四叶天代理IP客服，主要为您解答动态IP、静态IP、套餐选择和使用相关问题。
+`
 }
 
 func createPublicFixtureWiki(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	mustWritePublicFixture(t, filepath.Join(root, "AGENT.md"), "# AGENT\n\n## INGEST 操作规范\n\n- 先规范化再摄入。\n")
+	mustWritePublicFixture(t, filepath.Join(root, "AGENT.md"), `# AGENT
+
+## INGEST 操作规范
+
+- 先规范化再摄入。
+
+## QUERY 操作规范
+
+- Step Q1：执行 qmd query。
+- Step Q2：优先读取 wiki/faq 页面。
+
+## LINT 操作规范
+
+- 执行健康检查。
+`)
 	mustWritePublicFixture(t, filepath.Join(root, "wiki/index.md"), "# index\n")
 	mustWritePublicFixture(t, filepath.Join(root, "wiki/sources/rules.md"), `---
 title: Knowledge Base Rules
@@ -84,8 +131,9 @@ title: Knowledge Base Rules
 
 知识库系统规则用于约束摄入、命名和来源维护。
 `)
-	mustWritePublicFixture(t, filepath.Join(root, "wiki/sources/customer-qa.md"), `---
+	mustWritePublicFixture(t, filepath.Join(root, "wiki/faq/customer-qa.md"), `---
 title: Customer QA
+type: faq
 source_family: faq-dataset
 ---
 
@@ -100,8 +148,9 @@ source_family: faq-dataset
 回复：
 账号运营、白名单绑定和远程办公。
 `)
-	mustWritePublicFixture(t, filepath.Join(root, "wiki/sources/wechat-login.md"), `---
+	mustWritePublicFixture(t, filepath.Join(root, "wiki/faq/wechat-login.md"), `---
 title: 微信登录限制
+type: faq
 source_family: faq-dataset
 ---
 
@@ -130,7 +179,7 @@ title: 静态IP
 
 ## Sources
 
-- [[sources/customer-qa]]
+- [[customer-qa]]
 `)
 	return root
 }
@@ -149,7 +198,7 @@ func TestPublicAnswerUsesKnowledgeBase(t *testing.T) {
 	svc, _ := newPublicQueryTestService(t, `{
   "answer_type": "text",
   "answer_markdown": "知识库规则摘要",
-  "sources": [{"path":"wiki/sources/rules.md","confidence":"medium"}],
+  "sources": [{"path":"wiki/faq/customer-qa.md","confidence":"high"}],
   "confidence": 0.82,
   "notes": "基于命中来源生成"
 }`)
@@ -157,28 +206,33 @@ func TestPublicAnswerUsesKnowledgeBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("answer: %v", err)
 	}
-	if resp.Answer == "" || resp.Details == nil || resp.Details.AnswerType != "text" || len(resp.Details.Sources) == 0 || resp.Details.Notes == "" {
+	if resp.Answer == "" {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
 
-func TestPublicAnswerInjectsMountedWikiAgent(t *testing.T) {
+func TestPublicAnswerInjectsOnlyMountedWikiQueryGuide(t *testing.T) {
 	svc, mock := newPublicQueryTestService(t, `{
-  "answer_type": "text",
-  "answer_markdown": "知识库规则摘要",
-  "sources": [{"path":"wiki/sources/rules.md","confidence":"medium"}],
+	  "answer_type": "text",
+	  "answer_markdown": "知识库规则摘要",
+  "sources": [{"path":"wiki/faq/customer-qa.md","confidence":"high"}],
   "confidence": 0.82,
   "notes": "基于命中来源生成"
 }`)
-	_, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "知识库系统规则是什么？"})
+	_, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "静态IP的使用场景是什么？"})
 	if err != nil {
 		t.Fatalf("answer: %v", err)
 	}
 	if len(mock.lastMessages) == 0 {
 		t.Fatalf("expected llm messages to be captured")
 	}
-	if !strings.Contains(mock.lastMessages[0].Content, "## INGEST 操作规范") {
-		t.Fatalf("expected mounted AGENT.md content to be injected into system prompt")
+	if !strings.Contains(mock.lastMessages[0].Content, "## QUERY 操作规范") {
+		t.Fatalf("expected mounted QUERY guide to be injected into system prompt")
+	}
+	for _, leakedSection := range []string{"## INGEST 操作规范", "## LINT 操作规范"} {
+		if strings.Contains(mock.lastMessages[0].Content, leakedSection) {
+			t.Fatalf("expected public prompt to omit %s, got %s", leakedSection, mock.lastMessages[0].Content)
+		}
 	}
 }
 
@@ -186,7 +240,7 @@ func TestPublicAnswerIncludesConversationHistory(t *testing.T) {
 	svc, mock := newPublicQueryTestService(t, `{
   "answer_type": "text",
   "answer_markdown": "知识库规则摘要",
-  "sources": [{"path":"wiki/sources/rules.md","confidence":"medium"}],
+  "sources": [{"path":"wiki/faq/customer-qa.md","confidence":"high"}],
   "confidence": 0.82,
   "notes": "基于命中来源生成"
 }`)
@@ -202,6 +256,20 @@ func TestPublicAnswerIncludesConversationHistory(t *testing.T) {
 	}
 	if len(mock.lastMessages) < 2 || !strings.Contains(mock.lastMessages[1].Content, "静态IP是什么？") {
 		t.Fatalf("expected conversation history in user prompt, got %+v", mock.lastMessages)
+	}
+}
+
+func TestPublicAnswerHandlesIdentityQuestionWithoutKnowledgeGap(t *testing.T) {
+	svc, _ := newPublicQueryTestService(t, "")
+	resp, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "你是谁"})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if !strings.Contains(resp.Answer, "四叶天代理IP客服") {
+		t.Fatalf("expected branded customer-service identity, got %+v", resp)
+	}
+	if strings.Contains(resp.Answer, "资料") || strings.Contains(resp.Answer, "知识库") || strings.Contains(resp.Answer, "准确资料") {
+		t.Fatalf("expected no internal knowledge-gap wording, got %+v", resp)
 	}
 }
 
@@ -303,6 +371,28 @@ func TestPublicAnswerSanitizesKnowledgeGapTalk(t *testing.T) {
 	}
 }
 
+func TestPublicAnswerSanitizesKnowledgeBaseGapWording(t *testing.T) {
+	svc, _ := newPublicQueryTestService(t, `{
+  "answer_type": "text",
+  "answer_markdown": "您是想了解如何用我们的代理 IP 配合 AI 工具使用吧？目前知识库里没有专门针对“如何使用AI”的详细说明。不过如果您是用在外网AI工具的代理切换、数据采集等场景，可以告诉我您具体用的哪个 AI 工具、做什么操作，我先帮您匹配对应的使用方式。",
+  "sources": [{"path":"wiki/faq/customer-qa.md","confidence":"high"}],
+  "confidence": 0.7,
+  "notes": ""
+}`)
+	resp, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "如何使用AI"})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	for _, leaked := range []string{"知识库", "资料库", "检索结果", "没有专门针对"} {
+		if strings.Contains(resp.Answer, leaked) {
+			t.Fatalf("expected internal wording %q to be sanitized, got %+v", leaked, resp)
+		}
+	}
+	if !strings.Contains(resp.Answer, "暂时还不能准确确认") {
+		t.Fatalf("expected configured safe fallback, got %+v", resp)
+	}
+}
+
 func TestPublicAnswerRejectsNeutralVendorTone(t *testing.T) {
 	cfg := &config.Config{
 		MountedWiki: config.MountedWikiConfig{
@@ -327,7 +417,7 @@ func TestPublicAnswerRejectsNeutralVendorTone(t *testing.T) {
 	mock := &mockLLM{answer: `{
   "answer_type": "text",
   "answer_markdown": "您好，关于查看海外IP的使用情况和连通状态，根据我们客服知识库的信息，通常有以下几种方式：通过服务商提供的管理后台查看，或者使用 ping、traceroute 等工具检测。",
-  "sources": [{"path":"wiki/sources/siyetian-proxy-ip-faq.md","confidence":"medium"}],
+  "sources": [{"path":"wiki/faq/siyetian-proxy-ip-faq.md","confidence":"high"}],
   "confidence": 0.7,
   "notes": ""
 }`}
@@ -356,7 +446,7 @@ func TestPublicAnswerUsesSourceBackedStaticIPAnswer(t *testing.T) {
 	svc, _ := newPublicQueryTestService(t, `{
   "answer_type": "list",
   "answer_markdown": "您好，静态IP适合长期固定网络环境的场景，比如账号运营、白名单绑定和远程办公。",
-  "sources": [{"path":"wiki/concepts/static-ip.md","confidence":"medium"}],
+  "sources": [{"path":"wiki/faq/customer-qa.md","confidence":"high"}],
   "confidence": 0.9,
   "notes": "基于静态IP概念页和其关联来源整理。"
 }`)
@@ -365,20 +455,7 @@ func TestPublicAnswerUsesSourceBackedStaticIPAnswer(t *testing.T) {
 		t.Fatalf("answer: %v", err)
 	}
 	if !strings.Contains(resp.Answer, "账号运营") {
-		t.Fatalf("expected source-backed static IP answer, got %+v", resp)
-	}
-	if resp.Details == nil || len(resp.Details.Sources) == 0 {
-		t.Fatalf("expected merged sources, got %+v", resp)
-	}
-	foundSource := false
-	for _, source := range resp.Details.Sources {
-		if strings.HasPrefix(source.Path, "wiki/sources/") {
-			foundSource = true
-			break
-		}
-	}
-	if !foundSource {
-		t.Fatalf("expected related source page to be backfilled, got %+v", resp.Details.Sources)
+		t.Fatalf("expected FAQ-backed static IP answer, got %+v", resp)
 	}
 }
 
@@ -386,7 +463,7 @@ func TestPublicAnswerStripsRoboticServicePreamble(t *testing.T) {
 	svc, _ := newPublicQueryTestService(t, `{
   "answer_type": "text",
   "answer_markdown": "您好，根据我们的服务说明，不可以用于微信登录业务。",
-  "sources": [{"path":"wiki/sources/wechat-login.md","confidence":"high"}],
+  "sources": [{"path":"wiki/faq/wechat-login.md","confidence":"high"}],
   "confidence": 0.92,
   "notes": ""
 }`)
@@ -399,5 +476,25 @@ func TestPublicAnswerStripsRoboticServicePreamble(t *testing.T) {
 	}
 	if !strings.Contains(resp.Answer, "不可以用于微信登录业务") {
 		t.Fatalf("expected core answer to remain, got %+v", resp)
+	}
+}
+
+func TestPublicPromptDoesNotCarryFixedPreIntentFallback(t *testing.T) {
+	raw, err := os.ReadFile("../../internal/llm/prompts/public_answer_system.md")
+	if err != nil {
+		t.Fatalf("read public prompt: %v", err)
+	}
+	text := string(raw)
+	for _, banned := range []string{
+		"您好，这个问题我这边暂时没有准确资料",
+		"删除知识库、修改系统、管理页面",
+		"面向终端客户回答时，必须额外遵守以下风格规则",
+	} {
+		if strings.Contains(text, banned) {
+			t.Fatalf("public prompt still contains migrated pre-intent wording %q", banned)
+		}
+	}
+	if !strings.Contains(text, "wiki/faq/xxx.md") {
+		t.Fatalf("expected FAQ evidence output rule to remain")
 	}
 }

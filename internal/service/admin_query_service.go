@@ -68,7 +68,7 @@ func (s *AdminQueryService) Run(ctx context.Context, execution *Execution, trace
 		}
 		return result, nil
 	}
-	prompt, err := s.loadPromptWithWikiAgent("admin_query_system.md")
+	prompt, err := s.loadPromptWithWikiSections("admin_query_system.md", "QUERY 相关规则", "## QUERY 操作规范")
 	if err != nil {
 		return nil, err
 	}

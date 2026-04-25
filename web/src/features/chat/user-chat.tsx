@@ -3,14 +3,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PanelLeft, PanelLeftClose, SendHorizontal, Trash2 } from "lucide-react";
 
-import { ChatDetailDrawer } from "@/components/chat/chat-detail-drawer";
 import { ConversationSidebar, type ConversationItem } from "@/components/chat/conversation-sidebar";
 import { MessageCard } from "@/components/chat/message-card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollJumpControls } from "@/components/ui/scroll-jump-controls";
 import { Textarea } from "@/components/ui/textarea";
 import { api, isAbortError } from "@/lib/api";
 import { createId } from "@/lib/id";
+import { useScrollFollow } from "@/lib/use-scroll-follow";
 import { cn } from "@/lib/utils";
 import type { PublicAnswerResponse, PublicStreamEvent } from "@/types/api";
 
@@ -21,7 +22,6 @@ type UserMessage = {
   role: "user" | "assistant";
   content: string;
   status?: MessageStatus;
-  details?: unknown;
 };
 
 type UserConversation = {
@@ -33,7 +33,6 @@ type UserConversation = {
 
 const storageKey = "wikios.user.chat";
 const sidebarStorageKey = "wikios.user.sidebar.open";
-const drawerWidthStorageKey = "wikios.user.detail.width";
 const HISTORY_LIMIT = 8;
 
 export function UserChat() {
@@ -42,10 +41,7 @@ export function UserChat() {
   const [composer, setComposer] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [selectedDetailId, setSelectedDetailId] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [drawerWidth, setDrawerWidth] = useState(420);
-  const viewportRef = useRef<HTMLDivElement | null>(null);
   const activeRequestRef = useRef<AbortController | null>(null);
   const activeAssistantIdRef = useRef("");
   const [busyLabel, setBusyLabel] = useState("");
@@ -72,10 +68,6 @@ export function UserChat() {
     if (raw === "0") {
       setSidebarOpen(false);
     }
-    const savedWidth = Number(localStorage.getItem(drawerWidthStorageKey) ?? "");
-    if (Number.isFinite(savedWidth) && savedWidth >= 320 && savedWidth <= 960) {
-      setDrawerWidth(savedWidth);
-    }
   }, []);
 
   useEffect(() => {
@@ -92,35 +84,15 @@ export function UserChat() {
     localStorage.setItem(sidebarStorageKey, sidebarOpen ? "1" : "0");
   }, [sidebarOpen]);
 
-  useEffect(() => {
-    localStorage.setItem(drawerWidthStorageKey, String(drawerWidth));
-  }, [drawerWidth]);
-
   const activeConversation = useMemo(
     () => conversations.find((item) => item.id === activeId) ?? conversations[0],
     [activeId, conversations],
   );
-  const selectedDetail = useMemo(
-    () => activeConversation?.messages.find((message) => message.id === selectedDetailId && message.details) ?? null,
-    [activeConversation, selectedDetailId],
-  );
+  const chatScroll = useScrollFollow<HTMLDivElement>([activeId, activeConversation?.messages]);
 
   useEffect(() => {
-    viewportRef.current?.scrollTo({ top: viewportRef.current.scrollHeight, behavior: "smooth" });
-  }, [activeConversation?.messages]);
-
-  function startDrawerResize() {
-    const handleMove = (event: MouseEvent) => {
-      const nextWidth = Math.min(960, Math.max(320, window.innerWidth - event.clientX));
-      setDrawerWidth(nextWidth);
-    };
-    const handleUp = () => {
-      window.removeEventListener("mousemove", handleMove);
-      window.removeEventListener("mouseup", handleUp);
-    };
-    window.addEventListener("mousemove", handleMove);
-    window.addEventListener("mouseup", handleUp);
-  }
+    chatScroll.scrollToBottom("auto");
+  }, [activeId, chatScroll.scrollToBottom]);
 
   async function sendMessage() {
     const question = composer.trim();
@@ -218,7 +190,6 @@ export function UserChat() {
       patchMessage(conversationId, messageId, {
         content: String(data.answer ?? ""),
         status: "done",
-        details: data.details,
       });
       return;
     }
@@ -228,7 +199,6 @@ export function UserChat() {
       patchMessage(conversationId, messageId, {
         content: "暂时无法处理这条请求，请稍后再试。",
         status: "error",
-        details: data,
       });
       setBusy(false);
       setBusyLabel("");
@@ -251,7 +221,6 @@ export function UserChat() {
     patchMessage(conversationId, messageId, {
       content: response.answer,
       status: "done",
-      details: response.details,
     });
   }
 
@@ -274,7 +243,7 @@ export function UserChat() {
   function patchMessage(
     conversationId: string,
     messageId: string,
-    updates: { content?: string | ((prev: string) => string); status?: MessageStatus; details?: unknown },
+    updates: { content?: string | ((prev: string) => string); status?: MessageStatus },
   ) {
     setConversations((current) =>
       current.map((conversation) => {
@@ -293,7 +262,6 @@ export function UserChat() {
               ...message,
               content: nextContent,
               status: updates.status ?? message.status,
-              details: updates.details ?? message.details,
             };
           }),
         };
@@ -305,7 +273,6 @@ export function UserChat() {
     const next = createConversation("新会话");
     setConversations((current) => [next, ...current]);
     setActiveId(next.id);
-    setSelectedDetailId("");
     setError("");
   }
 
@@ -319,9 +286,6 @@ export function UserChat() {
       }
       if (activeId === id) {
         setActiveId(remaining[0].id);
-      }
-      if (selectedDetailId && id === activeId) {
-        setSelectedDetailId("");
       }
       return remaining;
     });
@@ -337,7 +301,7 @@ export function UserChat() {
       {sidebarOpen ? (
         <ConversationSidebar
           title="用户对话"
-          subtitle="面向客户的知识库问答测试页"
+          subtitle="面向客户的客服问答页"
           variant="user"
           items={sidebarItems}
           activeId={activeConversation?.id ?? ""}
@@ -355,7 +319,7 @@ export function UserChat() {
                   {sidebarOpen ? "隐藏会话" : "显示会话"}
                 </Button>
                 <div>
-                <h1 className="text-lg font-semibold">知识库客服对话</h1>
+                <h1 className="text-lg font-semibold">四叶天客服对话</h1>
                 <p className="mt-1 text-sm text-muted-foreground">仅展示可直接面向客户的回答内容。</p>
                 </div>
               </div>
@@ -365,25 +329,28 @@ export function UserChat() {
               </Button>
             </div>
           </header>
-          <ScrollArea viewportRef={viewportRef} className="min-h-0 flex-1 px-6 py-5">
-            <div className="mx-auto flex max-w-3xl flex-col gap-4 pb-8">
-              {activeConversation?.messages.map((message) => (
-                <MessageCard
-                  key={message.id}
-                  id={message.id}
-                  role={message.role}
-                  content={message.content}
-                  pending={message.status === "pending" || message.status === "streaming"}
-                  statusText={messageStatusText(message)}
-                  details={message.role === "assistant" ? message.details : undefined}
-                  selected={selectedDetailId === message.id}
-                  onInspect={({ id }) => {
-                    setSelectedDetailId(id);
-                  }}
-                />
-              ))}
-            </div>
-          </ScrollArea>
+          <div className="relative min-h-0 flex-1">
+            <ScrollArea viewportRef={chatScroll.viewportRef} className="h-full px-6 py-5">
+              <div className="mx-auto flex max-w-3xl flex-col gap-4 pb-8">
+                {activeConversation?.messages.map((message) => (
+                  <MessageCard
+                    key={message.id}
+                    id={message.id}
+                    role={message.role}
+                    content={message.content}
+                    pending={message.status === "pending" || message.status === "streaming"}
+                    statusText={messageStatusText(message)}
+                  />
+                ))}
+              </div>
+            </ScrollArea>
+            <ScrollJumpControls
+              show={chatScroll.showControls}
+              onTop={() => chatScroll.scrollToTop()}
+              onBottom={() => chatScroll.scrollToBottom()}
+              className="bottom-4 right-6"
+            />
+          </div>
           <div className="border-t px-6 py-5">
             <div className="mx-auto max-w-3xl">
               <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
@@ -436,14 +403,6 @@ export function UserChat() {
               </div>
             </div>
           </div>
-        <ChatDetailDrawer
-          title="消息详情"
-          open={Boolean(selectedDetail)}
-          width={drawerWidth}
-          selected={selectedDetail ? { role: selectedDetail.role, content: selectedDetail.content, details: selectedDetail.details } : null}
-          onClear={() => setSelectedDetailId("")}
-          onResizeStart={startDrawerResize}
-        />
       </section>
     </div>
   );

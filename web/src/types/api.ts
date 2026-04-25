@@ -1,21 +1,5 @@
-export type PublicSource = {
-  path: string;
-  title: string;
-  confidence: string;
-};
-
-export type PublicAnswerDetails = {
-  answer_type: string;
-  answer_markdown: string;
-  sources: PublicSource[];
-  confidence: number;
-  notes?: string;
-  trace_id: string;
-};
-
 export type PublicAnswerResponse = {
   answer: string;
-  details?: PublicAnswerDetails;
 };
 
 export type PublicChatHistoryItem = {
@@ -47,6 +31,7 @@ export type AdminChatResponse = {
   mode: string;
   reply: string;
   details: Record<string, unknown>;
+  context_usage?: ContextUsage;
   execution: {
     id: string;
     kind: string;
@@ -65,6 +50,8 @@ export type AdminExecutionStep = {
   input?: Record<string, unknown>;
   output?: Record<string, unknown>;
   duration_ms?: number;
+  started_at?: string;
+  ended_at?: string;
 };
 
 export type AdminStreamEvent = {
@@ -96,4 +83,96 @@ export type UploadResponse = {
 export type UploadStreamEvent = {
   type: string;
   data: unknown;
+};
+
+export type PublicIntentsStatus = {
+  path: string;
+  loaded_at?: string;
+  error?: string;
+  warnings?: string[];
+  rule_count: number;
+};
+
+export type PublicIntentsResponse = {
+  source: string;
+  status: PublicIntentsStatus;
+};
+
+export type ContextUsage = {
+  used_tokens: number;
+  remaining_tokens: number;
+  max_tokens: number;
+  reserve_tokens: number;
+  blocked: boolean;
+  estimated: boolean;
+  counter: string;
+  tokenizer?: string;
+  error?: string;
+};
+
+export type ContextEstimateResponse = {
+  mode: string;
+  context_usage: ContextUsage;
+};
+
+export type WikiTreeItem = {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size: number;
+  modified_at: string;
+  preview: "markdown" | "json" | "image" | "download";
+};
+
+export type WikiTreeResponse = {
+  path: string;
+  items: WikiTreeItem[];
+};
+
+export type WikiFileResponse = {
+  path: string;
+  name: string;
+  size: number;
+  modified_at: string;
+  preview: "markdown" | "json" | "image" | "download";
+  content?: string;
+  data_url?: string;
+  mime_type?: string;
+  download_url: string;
+};
+
+export type SyncStatusFile = {
+  path: string;
+  old_path?: string;
+  status: string;
+  index: string;
+  worktree: string;
+  preview: "markdown" | "json" | "image" | "download";
+  default_on: boolean;
+  deleted: boolean;
+};
+
+export type SyncStatusResponse = {
+  branch: string;
+  remote: string;
+  ahead: number;
+  behind: number;
+  files: SyncStatusFile[];
+};
+
+export type SyncCommitResponse = {
+  ok: boolean;
+  hash: string;
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+};
+
+export type SyncPushResponse = {
+  ok: boolean;
+  remote: string;
+  branch: string;
+  stdout: string;
+  stderr: string;
+  exit_code: number;
 };

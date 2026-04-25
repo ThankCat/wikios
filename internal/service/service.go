@@ -17,13 +17,14 @@ import (
 )
 
 type Deps struct {
-	Config       *config.Config
-	Runtime      *runtime.Runtime
-	LLM          llm.Client
-	Retriever    *retrieval.QMDRetriever
-	Store        *store.Store
-	PromptDir    string
-	WorkspaceDir string
+	Config        *config.Config
+	Runtime       *runtime.Runtime
+	LLM           llm.Client
+	Retriever     *retrieval.QMDRetriever
+	Store         *store.Store
+	PublicIntents *PublicIntentManager
+	PromptDir     string
+	WorkspaceDir  string
 }
 
 type baseService struct {
@@ -49,17 +50,21 @@ func (s *baseService) env(mode string, traceID string, executionID string, jobID
 func (s *baseService) executeTool(ctx context.Context, execution *Execution, env *runtime.ExecEnv, name string, args map[string]any, stepName string) (runtime.ToolResult, error) {
 	start := time.Now()
 	emitStreamEvent(ctx, "step_start", map[string]any{
-		"name":  stepName,
-		"tool":  name,
-		"input": args,
+		"name":       stepName,
+		"tool":       name,
+		"input":      args,
+		"started_at": start.Format(time.RFC3339Nano),
 	})
 	result, err := s.deps.Runtime.Execute(ctx, env, runtime.ToolCall{Name: name, Args: args})
+	end := time.Now()
 	step := Step{
 		Name:       stepName,
 		Tool:       name,
 		Input:      args,
-		DurationMs: time.Since(start).Milliseconds(),
+		DurationMs: end.Sub(start).Milliseconds(),
 		Status:     "SUCCESS",
+		StartedAt:  start,
+		EndedAt:    end,
 	}
 	if result.Data != nil {
 		step.Output = result.Data
@@ -91,10 +96,14 @@ func (s *baseService) executeTool(ctx context.Context, execution *Execution, env
 
 func (s *baseService) executeLLM(ctx context.Context, execution *Execution, model string, messages []llm.Message, stepName string) (string, error) {
 	start := time.Now()
+	promptChars, promptTokens := estimatePromptSize(messages)
 	emitStreamEvent(ctx, "prompt", map[string]any{
-		"name":     stepName,
-		"model":    model,
-		"messages": messages,
+		"name":                    stepName,
+		"model":                   model,
+		"messages":                messages,
+		"created_at":              start.Format(time.RFC3339Nano),
+		"prompt_chars":            promptChars,
+		"prompt_estimated_tokens": promptTokens,
 	})
 	onDelta := func(delta string) {
 		emitStreamEvent(ctx, "llm_delta", map[string]any{
@@ -103,6 +112,7 @@ func (s *baseService) executeLLM(ctx context.Context, execution *Execution, mode
 		})
 	}
 	text, err := s.deps.LLM.StreamChat(ctx, model, messages, onDelta)
+	end := time.Now()
 	if execution == nil {
 		if err != nil {
 			return "", err
@@ -112,13 +122,17 @@ func (s *baseService) executeLLM(ctx context.Context, execution *Execution, mode
 	step := Step{
 		Name:       stepName,
 		Tool:       "llm.chat",
-		DurationMs: time.Since(start).Milliseconds(),
+		DurationMs: end.Sub(start).Milliseconds(),
 		Status:     "SUCCESS",
+		StartedAt:  start,
+		EndedAt:    end,
 		Input: map[string]any{
-			"model":          model,
-			"message_count":  len(messages),
-			"system_preview": summarizeMessage(messages, "system"),
-			"user_preview":   summarizeMessage(messages, "user"),
+			"model":                   model,
+			"message_count":           len(messages),
+			"prompt_chars":            promptChars,
+			"prompt_estimated_tokens": promptTokens,
+			"system_preview":          summarizeMessage(messages, "system"),
+			"user_preview":            summarizeMessage(messages, "user"),
 		},
 		Output: map[string]any{
 			"response_preview": summarizeContent(text),
@@ -130,8 +144,10 @@ func (s *baseService) executeLLM(ctx context.Context, execution *Execution, mode
 	}
 	execution.Steps = append(execution.Steps, step)
 	emitStreamEvent(ctx, "llm_done", map[string]any{
-		"name": stepName,
-		"text": text,
+		"name":       stepName,
+		"text":       text,
+		"ended_at":   end.Format(time.RFC3339Nano),
+		"started_at": start.Format(time.RFC3339Nano),
 		"error": func() string {
 			if err != nil {
 				return err.Error()
@@ -154,6 +170,23 @@ func (s *baseService) loadPromptWithWikiAgent(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	guide := s.loadWikiAgentSections("通用 Wiki 治理规则",
+		"## 系统概述",
+		"## Server / Wiki 职责边界",
+		"## Wikilink 使用规范",
+		"## Wiki 语言规范",
+	)
+	if strings.TrimSpace(guide) == "" {
+		return prompt, nil
+	}
+	return prompt + "\n\n" + guide, nil
+}
+
+func (s *baseService) loadPromptWithWikiQueryGuide(name string) (string, error) {
+	prompt, err := s.loadPrompt(name)
+	if err != nil {
+		return "", err
+	}
 	agentPath := filepath.Join(s.deps.Config.MountedWiki.Root, "AGENT.md")
 	agentRaw, err := os.ReadFile(agentPath)
 	if err != nil {
@@ -162,11 +195,77 @@ func (s *baseService) loadPromptWithWikiAgent(name string) (string, error) {
 		}
 		return "", fmt.Errorf("read mounted wiki AGENT.md: %w", err)
 	}
-	agentText := strings.TrimSpace(string(agentRaw))
-	if agentText == "" {
+	queryGuide := extractPublicMarkdownSection(string(agentRaw), "## QUERY 操作规范")
+	if strings.TrimSpace(queryGuide) == "" {
 		return prompt, nil
 	}
-	return prompt + "\n\n以下是当前挂载 Wiki 的运行规则（来自 mounted wiki 的 AGENT.md）。当这些规则比通用 prompt 更具体时，优先遵守这些规则：\n\n" + agentText, nil
+	return prompt + "\n\n以下是当前挂载 Wiki 的最高优先级 QUERY 规范（来自 mounted wiki 的 AGENT.md），仅用于证据查询和答案合成。若 public answer prompt 与该 QUERY 规范存在差异，一律以 AGENT.md 的 QUERY 规范为准；public answer prompt 只补充客户可见表达和安全边界：\n\n" + strings.TrimSpace(queryGuide), nil
+}
+
+func (s *baseService) loadPromptWithWikiSections(name string, title string, headings ...string) (string, error) {
+	prompt, err := s.loadPrompt(name)
+	if err != nil {
+		return "", err
+	}
+	guide := s.loadWikiAgentSections(title, headings...)
+	if strings.TrimSpace(guide) == "" {
+		return prompt, nil
+	}
+	return prompt + "\n\n" + guide, nil
+}
+
+func (s *baseService) loadWikiAgentSections(title string, headings ...string) string {
+	agentPath := filepath.Join(s.deps.Config.MountedWiki.Root, "AGENT.md")
+	agentRaw, err := os.ReadFile(agentPath)
+	if err != nil {
+		return ""
+	}
+	sections := make([]string, 0, len(headings))
+	for _, heading := range headings {
+		section := extractPublicMarkdownSection(string(agentRaw), heading)
+		if strings.TrimSpace(section) != "" {
+			sections = append(sections, strings.TrimSpace(section))
+		}
+	}
+	if len(sections) == 0 {
+		return ""
+	}
+	return "【" + strings.TrimSpace(title) + "（来自 mounted wiki 的 AGENT.md，Wiki 治理规则最高优先级）】\n" + strings.Join(sections, "\n\n")
+}
+
+func estimatePromptSize(messages []llm.Message) (int, int) {
+	chars := 0
+	for _, message := range messages {
+		chars += len([]rune(message.Role)) + len([]rune(message.Content))
+	}
+	tokens := chars / 4
+	if chars > 0 && tokens == 0 {
+		tokens = 1
+	}
+	return chars, tokens
+}
+
+func extractPublicMarkdownSection(markdown string, heading string) string {
+	lines := strings.Split(strings.ReplaceAll(markdown, "\r\n", "\n"), "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == heading {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(line, "## ") {
+			end = i
+			break
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines[start:end], "\n"))
 }
 
 func (s *baseService) normalizeMountedInputPath(input string) (string, error) {
@@ -197,6 +296,8 @@ func (s *baseService) normalizeMountedInputPath(input string) (string, error) {
 
 func sourceConfidence(path string) string {
 	switch {
+	case strings.Contains(path, "/faq/"):
+		return "high"
 	case strings.Contains(path, "/sources/"):
 		return "medium"
 	case strings.Contains(path, "/concepts/"), strings.Contains(path, "/entities/"):

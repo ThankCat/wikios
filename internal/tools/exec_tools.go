@@ -126,8 +126,14 @@ func (t *execQMDTool) Execute(ctx context.Context, env *runtime.ExecEnv, args ma
 }
 
 func qmdEnv() []string {
+	return commandEnvWithPreferredPath(qmdPreferredPath())
+}
+
+func qmdPreferredPath() string {
 	path := os.Getenv("PATH")
 	preferred := []string{
+		os.Getenv("WIKIOS_QMD_NODE_BIN"),
+		os.Getenv("QMD_NODE_BIN"),
 		"/opt/homebrew/opt/node@24/bin",
 	}
 	segments := make([]string, 0, len(preferred)+1)
@@ -142,7 +148,19 @@ func qmdEnv() []string {
 	if strings.TrimSpace(path) != "" {
 		segments = append(segments, path)
 	}
-	return []string{"PATH=" + strings.Join(segments, ":")}
+	return strings.Join(segments, ":")
+}
+
+func commandEnvWithPreferredPath(path string) []string {
+	if strings.TrimSpace(path) == "" {
+		path = os.Getenv("PATH")
+	}
+	return []string{
+		"PATH=" + path,
+		"HOME=" + os.Getenv("HOME"),
+		"WIKIOS_QMD_NODE_BIN=" + os.Getenv("WIKIOS_QMD_NODE_BIN"),
+		"QMD_NODE_BIN=" + os.Getenv("QMD_NODE_BIN"),
+	}
 }
 
 func (t *execPythonTool) Validate(args map[string]any) error {
@@ -207,12 +225,10 @@ func (t *execShellTool) Execute(ctx context.Context, env *runtime.ExecEnv, args 
 	if strings.TrimSpace(cwd) == "" {
 		cwd = t.deps.Resolver.WikiRoot()
 	}
-	envs := []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + os.Getenv("HOME"),
-		"WIKI_ROOT=" + cwd,
-	}
-	stdout, stderr, exitCode, err := runCommand(runCtx, cwd, "zsh", []string{"-lc", command}, envs)
+	preferredPath := qmdPreferredPath()
+	envs := append(commandEnvWithPreferredPath(preferredPath), "WIKI_ROOT="+cwd)
+	shellCommand := fmt.Sprintf("export PATH=%q; export WIKI_ROOT=%q; %s", preferredPath, cwd, command)
+	stdout, stderr, exitCode, err := runCommand(runCtx, cwd, "zsh", []string{"-c", shellCommand}, envs)
 	if err != nil {
 		return failure(t.risk, "EXEC_FAILED", err), nil
 	}

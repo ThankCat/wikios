@@ -151,9 +151,6 @@ func (c *OpenAICompatibleClient) readStreamResponse(resp *http.Response, onDelta
 		for _, choice := range chunk.Choices {
 			delta := choice.Delta.Content
 			if delta == "" {
-				delta = choice.Delta.ReasoningContent
-			}
-			if delta == "" {
 				continue
 			}
 			full.WriteString(delta)

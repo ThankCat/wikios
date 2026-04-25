@@ -9,8 +9,8 @@ mounted_wiki:
 
 llm:
   provider: deepseek
-  model_public: deepseek-chat
-  model_admin: deepseek-chat
+  model_public: deepseek-v4-flash
+  model_admin: deepseek-v4-flash
   api_key: ${DEEPSEEK_API_KEY}
   base_url: https://api.deepseek.com/v1
   timeout_sec: 90
@@ -50,3 +50,17 @@ web:
 upload:
   max_text_file_kb: 500
   max_table_rows: 120
+
+public_intents:
+  enabled: true
+  path: configs/public_intents.yaml
+
+knowledge_profile:
+  name: siyetian
+  path: configs/knowledge_profiles/siyetian.yaml
+
+context:
+  max_tokens: ${WIKIOS_CONTEXT_MAX_TOKENS}
+  reserve_tokens: ${WIKIOS_CONTEXT_RESERVE_TOKENS}
+  counter: ${WIKIOS_CONTEXT_COUNTER}
+  tokenizer: ${WIKIOS_CONTEXT_TOKENIZER}

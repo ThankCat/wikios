@@ -2,11 +2,19 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"mime"
 	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,26 +29,41 @@ import (
 )
 
 type Handlers struct {
-	PublicQuery *service.PublicQueryService
-	DirectAdmin *service.DirectAdminService
-	Upload      *service.UploadService
-	Store       *store.Store
-	AuthConfig  config.AuthConfig
+	PublicQuery    *service.PublicQueryService
+	DirectAdmin    *service.DirectAdminService
+	Upload         *service.UploadService
+	Lint           *service.LintService
+	Repair         *service.RepairService
+	Store          *store.Store
+	AuthConfig     config.AuthConfig
+	Config         *config.Config
+	PublicIntents  *service.PublicIntentManager
+	ContextCounter *service.ContextCounter
 }
 
 func NewHandlers(
 	publicQuery *service.PublicQueryService,
 	directAdmin *service.DirectAdminService,
 	uploadSvc *service.UploadService,
+	lintSvc *service.LintService,
+	repairSvc *service.RepairService,
 	dataStore *store.Store,
+	cfg *config.Config,
 	authCfg config.AuthConfig,
+	publicIntents *service.PublicIntentManager,
+	contextCounter *service.ContextCounter,
 ) *Handlers {
 	return &Handlers{
-		PublicQuery: publicQuery,
-		DirectAdmin: directAdmin,
-		Upload:      uploadSvc,
-		Store:       dataStore,
-		AuthConfig:  authCfg,
+		PublicQuery:    publicQuery,
+		DirectAdmin:    directAdmin,
+		Upload:         uploadSvc,
+		Lint:           lintSvc,
+		Repair:         repairSvc,
+		Store:          dataStore,
+		AuthConfig:     authCfg,
+		Config:         cfg,
+		PublicIntents:  publicIntents,
+		ContextCounter: contextCounter,
 	}
 }
 
@@ -77,6 +100,22 @@ const chatHistoryLimit = 8
 type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+type publicIntentsUpdateRequest struct {
+	Source string `json:"source"`
+}
+
+type adminContextEstimateRequest adminChatRequest
+
+type syncCommitRequest struct {
+	Message string   `json:"message"`
+	Paths   []string `json:"paths"`
+}
+
+type syncPushRequest struct {
+	Remote string `json:"remote"`
+	Branch string `json:"branch"`
 }
 
 type sseEmitter struct {
@@ -134,10 +173,7 @@ func (h *Handlers) PublicAnswerStream(c *gin.Context) {
 	for _, chunk := range chunkText(resp.Answer, 24) {
 		writeSSE(c, "delta", gin.H{"delta": chunk})
 	}
-	writeSSE(c, "result", gin.H{
-		"answer":  resp.Answer,
-		"details": resp.Details,
-	})
+	writeSSE(c, "result", gin.H{"answer": resp.Answer})
 	writeSSE(c, "done", gin.H{"ok": true})
 }
 
@@ -194,6 +230,48 @@ func (h *Handlers) AdminMe(c *gin.Context) {
 			"id":       user.ID,
 			"username": user.Username,
 		},
+	})
+}
+
+func (h *Handlers) AdminGetPublicIntents(c *gin.Context) {
+	if h.PublicIntents == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{"code": "PUBLIC_INTENTS_UNAVAILABLE", "message": "public intents are not configured"},
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"source": h.PublicIntents.SourceOrDefault(),
+		"status": h.PublicIntents.Status(),
+	})
+}
+
+func (h *Handlers) AdminUpdatePublicIntents(c *gin.Context) {
+	if h.PublicIntents == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{"code": "PUBLIC_INTENTS_UNAVAILABLE", "message": "public intents are not configured"},
+		})
+		return
+	}
+	var req publicIntentsUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	status, err := h.PublicIntents.Save(req.Source)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"code":    "INVALID_PUBLIC_INTENTS",
+				"message": err.Error(),
+			},
+			"status": status,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"source": h.PublicIntents.SourceOrDefault(),
+		"status": status,
 	})
 }
 
@@ -293,8 +371,33 @@ func (h *Handlers) AdminChat(c *gin.Context) {
 		return
 	}
 	mode := firstNonEmpty(strings.TrimSpace(req.ModeHint), detectAdminMode(req.Message, req.Context, req.Attachments))
+	if mode == "lint" {
+		execution := service.NewExecution(mode)
+		result, err := h.Lint.Run(c.Request.Context(), execution, traceID(c), service.LintRequest{WriteReport: true})
+		execution.EndedAt = time.Now()
+		if err != nil {
+			execution.Status = service.ExecutionFailed
+			execution.Error = err.Error()
+			internalError(c, err)
+			return
+		}
+		execution.Status = service.ExecutionSuccess
+		c.JSON(http.StatusOK, gin.H{
+			"mode":      mode,
+			"reply":     adminDisplayReply(mode, result),
+			"details":   result,
+			"execution": execution,
+		})
+		return
+	}
+	directReq := h.buildDirectAdminRequest(req, mode)
+	contextUsage := h.estimateAdminContext(directReq)
+	if contextUsage.Blocked {
+		contextLimitExceeded(c, contextUsage)
+		return
+	}
 	execution := service.NewExecution(mode)
-	result, err := h.runAdminConversation(c.Request.Context(), traceID(c), execution, req, mode)
+	result, err := h.DirectAdmin.Run(c.Request.Context(), execution, traceID(c), directReq)
 	if err != nil {
 		execution.Status = service.ExecutionFailed
 		execution.Error = err.Error()
@@ -305,10 +408,11 @@ func (h *Handlers) AdminChat(c *gin.Context) {
 	execution.Status = service.ExecutionSuccess
 	execution.EndedAt = time.Now()
 	c.JSON(http.StatusOK, gin.H{
-		"mode":      mode,
-		"reply":     adminDisplayReply(mode, result),
-		"details":   result,
-		"execution": execution,
+		"mode":          mode,
+		"reply":         adminDisplayReply(mode, result),
+		"details":       result,
+		"execution":     execution,
+		"context_usage": contextUsage,
 	})
 }
 
@@ -327,13 +431,54 @@ func (h *Handlers) AdminChatStream(c *gin.Context) {
 	mu := &sync.Mutex{}
 	stopKeepalive := startSSEKeepalive(c, mu, 8*time.Second)
 	defer stopKeepalive()
+	if mode == "lint" {
+		writeSSEWithLock(c, "meta", gin.H{
+			"mode":         mode,
+			"execution_id": execution.ID,
+			"started_at":   execution.StartedAt.Format(time.RFC3339Nano),
+		}, mu)
+		streamCtx := service.WithStreamEmitter(c.Request.Context(), &sseEmitter{c: c, mu: mu})
+		result, err := h.Lint.Run(streamCtx, execution, traceID(c), service.LintRequest{WriteReport: true})
+		execution.EndedAt = time.Now()
+		if err != nil {
+			execution.Status = service.ExecutionFailed
+			execution.Error = err.Error()
+			writeSSEWithLock(c, "error", gin.H{"message": err.Error()}, mu)
+			writeSSEWithLock(c, "done", gin.H{"execution": execution}, mu)
+			return
+		}
+		execution.Status = service.ExecutionSuccess
+		writeSSEWithLock(c, "result", gin.H{
+			"mode":      mode,
+			"reply":     adminDisplayReply(mode, result),
+			"details":   result,
+			"execution": execution,
+		}, mu)
+		writeSSEWithLock(c, "done", gin.H{"execution": execution}, mu)
+		return
+	}
+	directReq := h.buildDirectAdminRequest(req, mode)
+	contextUsage := h.estimateAdminContext(directReq)
+	if contextUsage.Blocked {
+		execution.Status = service.ExecutionFailed
+		execution.Error = "CONTEXT_LIMIT_EXCEEDED"
+		execution.EndedAt = time.Now()
+		writeSSEWithLock(c, "error", gin.H{
+			"code":          "CONTEXT_LIMIT_EXCEEDED",
+			"message":       "当前对话已接近上下文上限，请创建新的对话继续。",
+			"context_usage": contextUsage,
+		}, mu)
+		writeSSEWithLock(c, "done", gin.H{"ok": false, "execution": execution}, mu)
+		return
+	}
 	writeSSEWithLock(c, "meta", gin.H{
-		"mode":         mode,
-		"execution_id": execution.ID,
-		"started_at":   execution.StartedAt.Format(time.RFC3339Nano),
+		"mode":          mode,
+		"execution_id":  execution.ID,
+		"started_at":    execution.StartedAt.Format(time.RFC3339Nano),
+		"context_usage": contextUsage,
 	}, mu)
 	streamCtx := service.WithStreamEmitter(c.Request.Context(), &sseEmitter{c: c, mu: mu})
-	result, err := h.runAdminConversation(streamCtx, traceID(c), execution, req, mode)
+	result, err := h.DirectAdmin.Run(streamCtx, execution, traceID(c), directReq)
 	execution.EndedAt = time.Now()
 	if err != nil {
 		execution.Status = service.ExecutionFailed
@@ -344,29 +489,469 @@ func (h *Handlers) AdminChatStream(c *gin.Context) {
 	}
 	execution.Status = service.ExecutionSuccess
 	writeSSEWithLock(c, "result", gin.H{
-		"reply":     adminDisplayReply(mode, result),
-		"details":   result,
-		"execution": execution,
+		"mode":          mode,
+		"reply":         adminDisplayReply(mode, result),
+		"details":       result,
+		"execution":     execution,
+		"context_usage": contextUsage,
 	}, mu)
 	writeSSEWithLock(c, "done", gin.H{"execution": execution}, mu)
 }
 
-func (h *Handlers) runAdminConversation(ctx context.Context, trace string, execution *service.Execution, req adminChatRequest, mode string) (map[string]any, error) {
-	message := contextualizeMessage(req.Message, req.History, req.Context)
+func (h *Handlers) AdminContextEstimate(c *gin.Context) {
+	var req adminChatRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	mode := firstNonEmpty(strings.TrimSpace(req.ModeHint), detectAdminMode(req.Message, req.Context, req.Attachments))
+	directReq := h.buildDirectAdminRequest(req, mode)
+	c.JSON(http.StatusOK, gin.H{
+		"mode":          mode,
+		"context_usage": h.estimateAdminContext(directReq),
+	})
+}
+
+func (h *Handlers) AdminWikiTree(c *gin.Context) {
+	abs, rel, err := h.resolveWikiPath(c.Query("path"))
+	if err != nil {
+		badRequest(c, err)
+		return
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		badRequest(c, err)
+		return
+	}
+	if !info.IsDir() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "NOT_DIRECTORY", "message": "path is not a directory"}})
+		return
+	}
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	items := make([]gin.H, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Name() == ".git" {
+			continue
+		}
+		entryInfo, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		entryRel := filepath.ToSlash(filepath.Join(rel, entry.Name()))
+		items = append(items, gin.H{
+			"name":        entry.Name(),
+			"path":        entryRel,
+			"is_dir":      entry.IsDir(),
+			"size":        entryInfo.Size(),
+			"modified_at": entryInfo.ModTime().Format(time.RFC3339Nano),
+			"preview":     wikiPreviewKind(entryRel),
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		leftDir := items[i]["is_dir"].(bool)
+		rightDir := items[j]["is_dir"].(bool)
+		if leftDir != rightDir {
+			return leftDir
+		}
+		return strings.ToLower(items[i]["name"].(string)) < strings.ToLower(items[j]["name"].(string))
+	})
+	log.Printf("audit wiki.tree path=%s rel=%s count=%d", c.Query("path"), rel, len(items))
+	c.JSON(http.StatusOK, gin.H{"path": rel, "items": items})
+}
+
+func (h *Handlers) AdminWikiFile(c *gin.Context) {
+	abs, rel, err := h.resolveWikiPath(c.Query("path"))
+	if err != nil {
+		badRequest(c, err)
+		return
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		badRequest(c, err)
+		return
+	}
+	if info.IsDir() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "IS_DIRECTORY", "message": "path is a directory"}})
+		return
+	}
+	kind := wikiPreviewKind(rel)
+	resp := gin.H{
+		"path":         rel,
+		"name":         filepath.Base(rel),
+		"size":         info.Size(),
+		"modified_at":  info.ModTime().Format(time.RFC3339Nano),
+		"preview":      kind,
+		"download_url": "/api/v1/admin/wiki/download?path=" + urlQueryEscape(rel),
+	}
+	if kind == "download" {
+		log.Printf("audit wiki.file path=%s preview=download", rel)
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+	content, err := os.ReadFile(abs)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	switch kind {
+	case "image":
+		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(rel)))
+		if mimeType == "" {
+			mimeType = http.DetectContentType(content)
+		}
+		resp["mime_type"] = mimeType
+		resp["data_url"] = "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(content)
+	default:
+		resp["content"] = string(content)
+	}
+	log.Printf("audit wiki.file path=%s preview=%s size=%d", rel, kind, info.Size())
+	c.JSON(http.StatusOK, resp)
+}
+
+func (h *Handlers) AdminWikiDownload(c *gin.Context) {
+	abs, rel, err := h.resolveWikiPath(c.Query("path"))
+	if err != nil {
+		badRequest(c, err)
+		return
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		badRequest(c, err)
+		return
+	}
+	if info.IsDir() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "IS_DIRECTORY", "message": "path is a directory"}})
+		return
+	}
+	log.Printf("audit wiki.download path=%s size=%d", rel, info.Size())
+	c.FileAttachment(abs, filepath.Base(rel))
+}
+
+func (h *Handlers) AdminSyncStatus(c *gin.Context) {
+	status, err := h.gitStatus(c.Request.Context())
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	log.Printf("audit sync.status files=%d", len(status.Files))
+	c.JSON(http.StatusOK, status)
+}
+
+func (h *Handlers) AdminSyncCommit(c *gin.Context) {
+	var req syncCommitRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	message := strings.TrimSpace(req.Message)
+	if message == "" {
+		badRequest(c, fmt.Errorf("message is required"))
+		return
+	}
+	status, err := h.gitStatus(c.Request.Context())
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	paths, err := validateSyncPaths(req.Paths, status.Files)
+	if err != nil {
+		badRequest(c, err)
+		return
+	}
+	args := append([]string{"add", "--"}, paths...)
+	if _, stderr, exitCode, err := h.runWikiGit(c.Request.Context(), args...); err != nil || exitCode != 0 {
+		internalError(c, fmt.Errorf("git add failed: %s", strings.TrimSpace(stderr)))
+		return
+	}
+	stdout, stderr, exitCode, err := h.runWikiGit(c.Request.Context(), "commit", "-m", message)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	if exitCode != 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{"code": "GIT_COMMIT_FAILED", "message": strings.TrimSpace(stdout + stderr)},
+		})
+		return
+	}
+	hash, _, _, _ := h.runWikiGit(c.Request.Context(), "rev-parse", "--short", "HEAD")
+	log.Printf("audit sync.commit paths=%d hash=%s", len(paths), strings.TrimSpace(hash))
+	c.JSON(http.StatusOK, gin.H{
+		"ok":        true,
+		"hash":      strings.TrimSpace(hash),
+		"stdout":    stdout,
+		"stderr":    stderr,
+		"exit_code": exitCode,
+	})
+}
+
+func (h *Handlers) AdminSyncPush(c *gin.Context) {
+	var req syncPushRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	remote := firstNonEmpty(req.Remote, h.Config.Sync.Remote)
+	branch := firstNonEmpty(req.Branch, h.Config.Sync.Branch)
+	if !safeGitName(remote) || !safeGitName(branch) {
+		badRequest(c, fmt.Errorf("invalid remote or branch"))
+		return
+	}
+	stdout, stderr, exitCode, err := h.runWikiGit(c.Request.Context(), "push", remote, branch)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	if exitCode != 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{"code": "GIT_PUSH_FAILED", "message": strings.TrimSpace(stdout + stderr)},
+		})
+		return
+	}
+	log.Printf("audit sync.push remote=%s branch=%s", remote, branch)
+	c.JSON(http.StatusOK, gin.H{"ok": true, "remote": remote, "branch": branch, "stdout": stdout, "stderr": stderr, "exit_code": exitCode})
+}
+
+func (h *Handlers) buildDirectAdminRequest(req adminChatRequest, mode string) service.DirectAdminRequest {
 	context := map[string]any{}
 	for key, value := range req.Context {
 		context[key] = value
 	}
-	if strings.TrimSpace(contextualizeMessage(req.Message, req.History, req.Context)) != "" {
-		context["question"] = firstNonEmpty(strings.TrimSpace(message), stringOption(req.Context, "question"))
+	if strings.TrimSpace(req.Message) != "" {
+		context["question"] = firstNonEmpty(strings.TrimSpace(req.Message), stringOption(req.Context, "question"))
 	}
-	return h.DirectAdmin.Run(ctx, execution, trace, service.DirectAdminRequest{
+	return service.DirectAdminRequest{
 		Message:     strings.TrimSpace(req.Message),
 		ModeHint:    mode,
 		History:     toServiceHistory(req.History),
 		Attachments: toDirectAdminAttachments(req.Attachments),
 		Context:     context,
+	}
+}
+
+func (h *Handlers) estimateAdminContext(req service.DirectAdminRequest) service.ContextUsage {
+	if h.ContextCounter == nil {
+		return service.ContextUsage{MaxTokens: 1000000, ReserveTokens: 8192, Estimated: true, Counter: "unavailable"}
+	}
+	return h.ContextCounter.CountMessages(h.DirectAdmin.InitialMessages(req))
+}
+
+type syncStatusResponse struct {
+	Branch string           `json:"branch"`
+	Remote string           `json:"remote"`
+	Ahead  int              `json:"ahead"`
+	Behind int              `json:"behind"`
+	Files  []syncStatusFile `json:"files"`
+}
+
+type syncStatusFile struct {
+	Path      string `json:"path"`
+	OldPath   string `json:"old_path,omitempty"`
+	Status    string `json:"status"`
+	Index     string `json:"index"`
+	Worktree  string `json:"worktree"`
+	Preview   string `json:"preview"`
+	DefaultOn bool   `json:"default_on"`
+	Deleted   bool   `json:"deleted"`
+}
+
+func (h *Handlers) resolveWikiPath(raw string) (string, string, error) {
+	root, err := filepath.Abs(h.Config.MountedWiki.Root)
+	if err != nil {
+		return "", "", err
+	}
+	cleaned := filepath.Clean(strings.TrimSpace(raw))
+	if cleaned == "." || cleaned == string(filepath.Separator) {
+		cleaned = ""
+	}
+	cleaned = strings.TrimPrefix(filepath.ToSlash(cleaned), "/")
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") || strings.Contains("/"+cleaned+"/", "/.git/") {
+		return "", "", fmt.Errorf("invalid wiki path")
+	}
+	abs := filepath.Join(root, filepath.FromSlash(cleaned))
+	abs, err = filepath.Abs(abs)
+	if err != nil {
+		return "", "", err
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return "", "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("path escapes wiki root")
+	}
+	if rel == "." {
+		rel = ""
+	}
+	return abs, filepath.ToSlash(rel), nil
+}
+
+func wikiPreviewKind(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".md", ".markdown":
+		return "markdown"
+	case ".json":
+		return "json"
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg":
+		return "image"
+	default:
+		return "download"
+	}
+}
+
+func urlQueryEscape(value string) string {
+	return url.QueryEscape(value)
+}
+
+func (h *Handlers) runWikiGit(ctx context.Context, args ...string) (string, string, int, error) {
+	runCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, "git", args...)
+	cmd.Dir = h.Config.MountedWiki.Root
+	out, err := cmd.Output()
+	stderr := ""
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderr = string(exitErr.Stderr)
+			return string(out), stderr, exitErr.ExitCode(), nil
+		}
+		return string(out), stderr, -1, err
+	}
+	return string(out), stderr, 0, nil
+}
+
+func (h *Handlers) gitStatus(ctx context.Context) (syncStatusResponse, error) {
+	stdout, stderr, exitCode, err := h.runWikiGit(ctx, "status", "--porcelain=v1", "-b")
+	if err != nil {
+		return syncStatusResponse{}, err
+	}
+	if exitCode != 0 {
+		return syncStatusResponse{}, fmt.Errorf("git status failed: %s", strings.TrimSpace(stderr))
+	}
+	status := syncStatusResponse{
+		Remote: h.Config.Sync.Remote,
+		Files:  []syncStatusFile{},
+	}
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "## ") {
+			parseBranchLine(strings.TrimPrefix(line, "## "), &status)
+			continue
+		}
+		file, ok := parseStatusLine(line)
+		if ok {
+			status.Files = append(status.Files, file)
+		}
+	}
+	sort.Slice(status.Files, func(i, j int) bool {
+		return status.Files[i].Path < status.Files[j].Path
 	})
+	return status, nil
+}
+
+func parseBranchLine(line string, status *syncStatusResponse) {
+	branch := line
+	if idx := strings.Index(branch, "..."); idx >= 0 {
+		branch = branch[:idx]
+	}
+	if idx := strings.Index(branch, " "); idx >= 0 {
+		branch = branch[:idx]
+	}
+	status.Branch = strings.TrimSpace(branch)
+	if strings.Contains(line, "ahead ") {
+		status.Ahead = parseStatusNumberAfter(line, "ahead ")
+	}
+	if strings.Contains(line, "behind ") {
+		status.Behind = parseStatusNumberAfter(line, "behind ")
+	}
+}
+
+func parseStatusNumberAfter(text string, marker string) int {
+	idx := strings.Index(text, marker)
+	if idx < 0 {
+		return 0
+	}
+	rest := text[idx+len(marker):]
+	value := 0
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			break
+		}
+		value = value*10 + int(r-'0')
+	}
+	return value
+}
+
+func parseStatusLine(line string) (syncStatusFile, bool) {
+	if len(line) < 4 {
+		return syncStatusFile{}, false
+	}
+	index := strings.TrimSpace(line[:1])
+	worktree := strings.TrimSpace(line[1:2])
+	path := strings.TrimSpace(line[3:])
+	oldPath := ""
+	if strings.Contains(path, " -> ") {
+		parts := strings.SplitN(path, " -> ", 2)
+		oldPath = strings.TrimSpace(parts[0])
+		path = strings.TrimSpace(parts[1])
+	}
+	status := firstNonEmpty(index, worktree)
+	deleted := index == "D" || worktree == "D"
+	return syncStatusFile{
+		Path:      filepath.ToSlash(path),
+		OldPath:   filepath.ToSlash(oldPath),
+		Status:    status,
+		Index:     index,
+		Worktree:  worktree,
+		Preview:   wikiPreviewKind(path),
+		DefaultOn: !strings.HasPrefix(filepath.ToSlash(path), ".obsidian/"),
+		Deleted:   deleted,
+	}, true
+}
+
+func validateSyncPaths(paths []string, files []syncStatusFile) ([]string, error) {
+	allowed := map[string]bool{}
+	for _, file := range files {
+		allowed[file.Path] = true
+	}
+	out := make([]string, 0, len(paths))
+	seen := map[string]bool{}
+	for _, raw := range paths {
+		path := filepath.ToSlash(strings.TrimSpace(raw))
+		if path == "" {
+			continue
+		}
+		if path == ".." || strings.HasPrefix(path, "../") || strings.Contains("/"+path+"/", "/.git/") {
+			return nil, fmt.Errorf("invalid path: %s", raw)
+		}
+		if !allowed[path] {
+			return nil, fmt.Errorf("path is not in git status: %s", path)
+		}
+		if !seen[path] {
+			out = append(out, path)
+			seen[path] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("paths is required")
+	}
+	return out, nil
+}
+
+func safeGitName(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasPrefix(value, "-") || strings.ContainsAny(value, " \t\r\n;&|`$<>") {
+		return false
+	}
+	return !strings.Contains(value, "..")
 }
 
 func writeSSE(c *gin.Context, event string, data any) {
@@ -427,6 +1012,10 @@ func detectAdminMode(message string, context map[string]any, attachments []attac
 		return "reflect"
 	case strings.Contains(lower, "修复"), strings.Contains(lower, "repair"):
 		return "repair"
+	case strings.Contains(lower, "merge"), strings.Contains(lower, "去重"), strings.Contains(lower, "合并"):
+		return "merge"
+	case strings.Contains(lower, "add question"), strings.Contains(lower, "记录一个问题"), strings.Contains(lower, "我想搞清楚"):
+		return "add-question"
 	case strings.Contains(lower, "同步"), strings.Contains(lower, "sync"), strings.Contains(lower, "push"):
 		return "sync"
 	default:
@@ -474,6 +1063,16 @@ func internalError(c *gin.Context, err error) {
 			"code":    "INTERNAL_ERROR",
 			"message": err.Error(),
 		},
+	})
+}
+
+func contextLimitExceeded(c *gin.Context, usage service.ContextUsage) {
+	c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+		"error": gin.H{
+			"code":    "CONTEXT_LIMIT_EXCEEDED",
+			"message": "当前对话已接近上下文上限，请创建新的对话继续。",
+		},
+		"context_usage": usage,
 	})
 }
 

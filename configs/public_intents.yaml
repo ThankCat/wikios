@@ -1,0 +1,119 @@
+version: 1
+
+fallbacks:
+  generic: 您好，这个问题我这边暂时还不能准确确认，您可以补充一下具体场景，我再为您确认。
+  operation: 您好，这方面我这边暂时没有可直接确认的操作说明，您可以补充一下具体场景，我再为您确认。
+  device_operation: 您好，这项操作我这边暂时还不能准确确认，建议您先参考设备说明或联系对应支持人员处理。
+
+rules:
+  - name: admin_unsupported
+    enabled: true
+    priority: 100
+    category: safety
+    match:
+      contains:
+        - 删除资料库
+        - 删除知识库
+        - 删库
+        - 删除wiki
+        - 删除页面
+        - 清空知识库
+        - 修改系统
+        - 管理页面
+        - 查看内部结构
+        - 查看 prompt
+        - 查看prompt
+        - 查看系统提示词
+        - 查看 slug
+        - 查看slug
+        - 查看索引
+        - 查看文件路径
+        - drop database
+        - delete wiki
+        - delete knowledge base
+    response: 这个请求不属于对外客服问答范围。如需处理系统或资料管理操作，请联系管理员。
+
+  - name: identity
+    enabled: true
+    priority: 80
+    category: service_identity
+    match:
+      exact:
+        - 你是谁
+        - 你是誰
+        - 你是什么
+        - 你是什麼
+        - 你叫什么
+        - 你叫什麼
+        - 你是机器人吗
+        - 你是機器人嗎
+        - 你是AI吗
+        - 你是 AI 吗
+        - 你是AI嗎
+        - 你是 AI 嗎
+        - 你能做什么
+        - 你能做什麼
+        - 你可以做什么
+        - 你可以做什麼
+        - 你可以帮我什么
+        - 你可以幫我什麼
+      contains:
+        - 你是谁
+        - 你是誰
+        - 你叫什么
+        - 你叫什麼
+        - 你能做什么
+        - 你能做什麼
+        - 你可以做什么
+        - 你可以做什麼
+        - 你可以帮我什么
+        - 你可以幫我什麼
+    response: 您好，我是四叶天代理IP客服，主要为您解答动态IP、静态IP、套餐选择和使用相关问题。
+
+  - name: greeting
+    enabled: true
+    priority: 50
+    category: smalltalk
+    match:
+      exact:
+        - 你好
+        - 您好
+        - 在吗
+        - 在嘛
+        - hello
+        - hi
+    response: 您好，请问有什么可以帮您？您可以告诉我具体的问题，比如动态IP的时长、套餐选择、使用问题等等，我来为您解答。
+
+  - name: thanks_or_done
+    enabled: true
+    priority: 45
+    category: smalltalk
+    match:
+      exact:
+        - 再见
+        - 再见吧
+        - 拜拜
+        - bye
+        - goodbye
+        - 谢谢
+        - 谢谢你
+        - 好的
+        - 没问题了
+        - 暂时没有了
+        - thanks
+        - thank you
+    response: 好的，如后续还有动态IP、静态IP或套餐使用问题，您可以随时咨询。
+
+  - name: human_handoff
+    enabled: true
+    priority: 70
+    category: handoff
+    match:
+      contains:
+        - 人工客服
+        - 联系人工
+        - 转人工
+        - 投诉
+        - 客服热线
+        - 客服电话
+    response: 您好，如需人工协助，您可以联系在线客服或拨打客服热线，我们会为您进一步处理。

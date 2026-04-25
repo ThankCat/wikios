@@ -15,17 +15,20 @@ const (
 )
 
 type Config struct {
-	Server      ServerConfig      `yaml:"server"`
-	MountedWiki MountedWikiConfig `yaml:"mounted_wiki"`
-	LLM         LLMConfig         `yaml:"llm"`
-	Auth        AuthConfig        `yaml:"auth"`
-	Retrieval   RetrievalConfig   `yaml:"retrieval"`
-	Workspace   WorkspaceConfig   `yaml:"workspace"`
-	Sandbox     SandboxConfig     `yaml:"sandbox"`
-	Storage     StorageConfig     `yaml:"storage"`
-	Sync        SyncConfig        `yaml:"sync"`
-	Web         WebConfig         `yaml:"web"`
-	Upload      UploadConfig      `yaml:"upload"`
+	Server           ServerConfig           `yaml:"server"`
+	MountedWiki      MountedWikiConfig      `yaml:"mounted_wiki"`
+	LLM              LLMConfig              `yaml:"llm"`
+	Auth             AuthConfig             `yaml:"auth"`
+	Retrieval        RetrievalConfig        `yaml:"retrieval"`
+	Workspace        WorkspaceConfig        `yaml:"workspace"`
+	Sandbox          SandboxConfig          `yaml:"sandbox"`
+	Storage          StorageConfig          `yaml:"storage"`
+	Sync             SyncConfig             `yaml:"sync"`
+	Web              WebConfig              `yaml:"web"`
+	Upload           UploadConfig           `yaml:"upload"`
+	PublicIntents    PublicIntentsConfig    `yaml:"public_intents"`
+	KnowledgeProfile KnowledgeProfileConfig `yaml:"knowledge_profile"`
+	Context          ContextConfig          `yaml:"context"`
 }
 
 type ServerConfig struct {
@@ -90,6 +93,23 @@ type WebConfig struct {
 type UploadConfig struct {
 	MaxTextFileKB int `yaml:"max_text_file_kb"`
 	MaxTableRows  int `yaml:"max_table_rows"`
+}
+
+type PublicIntentsConfig struct {
+	Enabled *bool  `yaml:"enabled"`
+	Path    string `yaml:"path"`
+}
+
+type KnowledgeProfileConfig struct {
+	Name string `yaml:"name"`
+	Path string `yaml:"path"`
+}
+
+type ContextConfig struct {
+	MaxTokens     int    `yaml:"max_tokens"`
+	ReserveTokens int    `yaml:"reserve_tokens"`
+	Counter       string `yaml:"counter"`
+	Tokenizer     string `yaml:"tokenizer"`
 }
 
 func Load(path string) (*Config, error) {
@@ -183,6 +203,40 @@ func (c *Config) normalizeAndValidate() error {
 	if c.Upload.MaxTableRows <= 0 {
 		c.Upload.MaxTableRows = 120
 	}
+	if c.PublicIntents.Enabled == nil {
+		enabled := true
+		c.PublicIntents.Enabled = &enabled
+	}
+	if strings.TrimSpace(c.PublicIntents.Path) == "" {
+		c.PublicIntents.Path = filepath.Join("configs", "public_intents.yaml")
+	}
+	if strings.TrimSpace(c.KnowledgeProfile.Path) == "" {
+		c.KnowledgeProfile.Path = firstEnv("WIKIOS_KNOWLEDGE_PROFILE_PATH", "")
+	}
+	if strings.TrimSpace(c.KnowledgeProfile.Name) == "" {
+		c.KnowledgeProfile.Name = firstEnv("WIKIOS_KNOWLEDGE_PROFILE", "")
+	}
+	if strings.TrimSpace(c.KnowledgeProfile.Path) != "" {
+		c.KnowledgeProfile.Path = filepath.Clean(c.KnowledgeProfile.Path)
+	}
+	if c.Context.MaxTokens <= 0 {
+		c.Context.MaxTokens = envInt("WIKIOS_CONTEXT_MAX_TOKENS", 1000000)
+	}
+	if c.Context.ReserveTokens <= 0 {
+		c.Context.ReserveTokens = envInt("WIKIOS_CONTEXT_RESERVE_TOKENS", 8192)
+	}
+	if c.Context.ReserveTokens < 0 {
+		c.Context.ReserveTokens = 0
+	}
+	if c.Context.ReserveTokens >= c.Context.MaxTokens {
+		c.Context.ReserveTokens = c.Context.MaxTokens / 10
+	}
+	if strings.TrimSpace(c.Context.Counter) == "" {
+		c.Context.Counter = firstEnv("WIKIOS_CONTEXT_COUNTER", "tokenizer")
+	}
+	if strings.TrimSpace(c.Context.Tokenizer) == "" {
+		c.Context.Tokenizer = firstEnv("WIKIOS_CONTEXT_TOKENIZER", "cl100k_base")
+	}
 	if strings.TrimSpace(c.Auth.DefaultAdminUsername) == "" {
 		c.Auth.DefaultAdminUsername = "admin"
 	}
@@ -196,5 +250,25 @@ func (c *Config) normalizeAndValidate() error {
 		c.Auth.SessionTTLHours = 24 * 7
 	}
 	c.Web.DistDir = filepath.Clean(c.Web.DistDir)
+	c.PublicIntents.Path = filepath.Clean(c.PublicIntents.Path)
 	return nil
+}
+
+func firstEnv(key string, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	var parsed int
+	if _, err := fmt.Sscanf(value, "%d", &parsed); err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }

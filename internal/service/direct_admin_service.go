@@ -47,10 +47,7 @@ func NewDirectAdminService(deps Deps) *DirectAdminService {
 
 func (s *DirectAdminService) Run(ctx context.Context, execution *Execution, traceID string, req DirectAdminRequest) (map[string]any, error) {
 	env := s.env("admin_direct", traceID, execution.ID, "")
-	messages := []llm.Message{
-		{Role: "system", Content: directAdminSystemPrompt(s.deps.Config.MountedWiki.Root)},
-		{Role: "user", Content: directAdminUserPrompt(req)},
-	}
+	messages := s.InitialMessages(req)
 	commands := make([]map[string]any, 0, 24)
 	const maxIterations = 24
 	for iteration := 0; iteration < maxIterations; iteration++ {
@@ -143,6 +140,103 @@ func (s *DirectAdminService) Run(ctx context.Context, execution *Execution, trac
 	return s.forceDirectFinal(ctx, execution, messages, commands, "命令执行轮次已耗尽，请立即返回 final，总结已执行命令和当前结果。")
 }
 
+func (s *DirectAdminService) InitialMessages(req DirectAdminRequest) []llm.Message {
+	systemPrompt := directAdminSystemPrompt(s.deps.Config.MountedWiki.Root)
+	if guide := s.directAdminWikiModeGuide(req.ModeHint); strings.TrimSpace(guide) != "" {
+		systemPrompt += "\n\n" + guide
+	}
+	messages := []llm.Message{{Role: "system", Content: systemPrompt}}
+	for _, item := range req.History {
+		role := strings.TrimSpace(strings.ToLower(item.Role))
+		content := strings.TrimSpace(item.Content)
+		if content == "" {
+			continue
+		}
+		if role != "assistant" {
+			role = "user"
+		}
+		messages = append(messages, llm.Message{Role: role, Content: content})
+	}
+	messages = append(messages, llm.Message{Role: "user", Content: directAdminCurrentUserPrompt(req)})
+	return messages
+}
+
+func (s *DirectAdminService) directAdminWikiModeGuide(mode string) string {
+	switch strings.TrimSpace(strings.ToLower(mode)) {
+	case "query":
+		return s.loadWikiAgentSections("当前 mode_hint=query 的 Wiki 规则",
+			"## 系统概述",
+			"## QUERY 操作规范",
+			"## Source Integrity Rules",
+		)
+	case "ingest", "upload":
+		return s.loadWikiAgentSections("当前 mode_hint=ingest 的 Wiki 规则",
+			"## 系统概述",
+			"## INGEST 操作规范",
+			"## Wikilink 使用规范",
+			"## Wiki 语言规范",
+			"## Confidence 更新规则",
+			"## Source Integrity Rules",
+			"## 系统文件隔离规则",
+			"## 报告命名规范",
+		)
+	case "lint":
+		return s.loadWikiAgentSections("当前 mode_hint=lint 的 Wiki 规则",
+			"## 系统概述",
+			"## LINT 操作规范",
+			"## Source Integrity Rules",
+			"## 系统文件隔离规则",
+			"## 报告命名规范",
+		)
+	case "reflect":
+		return s.loadWikiAgentSections("当前 mode_hint=reflect 的 Wiki 规则",
+			"## 系统概述",
+			"## REFLECT 操作规范",
+			"## Wikilink 使用规范",
+			"## Wiki 语言规范",
+			"## Confidence 更新规则",
+			"## Source Integrity Rules",
+			"## 系统文件隔离规则",
+			"## 报告命名规范",
+		)
+	case "repair":
+		return s.loadWikiAgentSections("当前 mode_hint=repair 的 Wiki 规则",
+			"## 系统概述",
+			"## REPAIR 操作规范",
+			"## LINT 操作规范",
+			"## Wikilink 使用规范",
+			"## Wiki 语言规范",
+			"## Source Integrity Rules",
+			"## 系统文件隔离规则",
+			"## 报告命名规范",
+		)
+	case "merge":
+		return s.loadWikiAgentSections("当前 mode_hint=merge 的 Wiki 规则",
+			"## 系统概述",
+			"## MERGE 操作规范",
+			"## Wikilink 使用规范",
+			"## Wiki 语言规范",
+			"## 系统文件隔离规则",
+			"## 报告命名规范",
+		)
+	case "add-question":
+		return s.loadWikiAgentSections("当前 mode_hint=add-question 的 Wiki 规则",
+			"## 系统概述",
+			"## ADD-QUESTION 操作规范",
+			"## 系统文件隔离规则",
+		)
+	case "sync":
+		return s.loadWikiAgentSections("当前 mode_hint=sync 的 Wiki 规则",
+			"## 系统概述",
+			"## SYNC 操作规范",
+			"## LINT 操作规范",
+			"## 系统文件隔离规则",
+			"## 报告命名规范",
+		)
+	}
+	return ""
+}
+
 func directAdminSystemPrompt(wikiRoot string) string {
 	return strings.TrimSpace(fmt.Sprintf(`
 你处于 WikiOS 管理员全权限直连模式。
@@ -158,7 +252,8 @@ func directAdminSystemPrompt(wikiRoot string) string {
 5. 如果 mode_hint=query，你服务的是管理员，不是客户；允许输出内部文件、命令、来源和限制信息。
 6. 如果上下文已经给出上传后的 stored_path、source_format、FAQ 分段计划或当前 segment 预览，优先基于这些预处理结果继续执行，不要重新实现上传预处理。
 7. 如果正在处理 FAQ segment，只处理当前 segment，不要把整份 FAQ 全文重新塞回上下文。
-8. 每一轮只返回一个 JSON 对象，不要输出 Markdown，不要输出代码块。
+8. 如果当前 mode_hint 注入了 mounted wiki 的 AGENT.md 规则，AGENT.md 是 Wiki 治理规则的最高优先级来源；除 server 安全与权限边界外，任何 ingest/lint/repair/reflect/merge/query/wikilink/目录/报告规则冲突时都以 AGENT.md 为准。
+9. 每一轮只返回一个 JSON 对象，不要输出 Markdown，不要输出代码块。
 
 返回格式二选一：
 {"action":"shell","command":"<shell command>","reason":"<why>"}
@@ -168,7 +263,7 @@ func directAdminSystemPrompt(wikiRoot string) string {
 如果任务已经完成，就返回 final。`, wikiRoot))
 }
 
-func directAdminUserPrompt(req DirectAdminRequest) string {
+func directAdminCurrentUserPrompt(req DirectAdminRequest) string {
 	var b strings.Builder
 	if mode := strings.TrimSpace(req.ModeHint); mode != "" {
 		b.WriteString("模式提示：\n")
@@ -184,26 +279,6 @@ func directAdminUserPrompt(req DirectAdminRequest) string {
 		b.WriteString("请求上下文：\n")
 		b.WriteString(contextSummary)
 		b.WriteString("\n\n")
-	}
-	if len(req.History) > 0 {
-		b.WriteString("最近对话：\n")
-		start := 0
-		if len(req.History) > 8 {
-			start = len(req.History) - 8
-		}
-		for _, item := range req.History[start:] {
-			role := strings.TrimSpace(item.Role)
-			content := strings.TrimSpace(item.Content)
-			if role == "" || content == "" {
-				continue
-			}
-			b.WriteString("- ")
-			b.WriteString(role)
-			b.WriteString(": ")
-			b.WriteString(content)
-			b.WriteString("\n")
-		}
-		b.WriteString("\n")
 	}
 	if len(req.Attachments) > 0 {
 		b.WriteString("当前附件：\n")

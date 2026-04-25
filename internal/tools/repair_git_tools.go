@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"wikios/internal/runtime"
@@ -73,8 +74,23 @@ func (t *gitStatusTool) Execute(ctx context.Context, env *runtime.ExecEnv, _ map
 }
 
 func (t *gitCommitTool) Validate(args map[string]any) error {
-	_, err := requireString(args, "message")
-	return err
+	if _, err := requireString(args, "message"); err != nil {
+		return err
+	}
+	paths, err := optionalStringSlice(args, "paths")
+	if err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		return fmt.Errorf("paths is required")
+	}
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" || path == ".." || strings.HasPrefix(path, "../") || strings.Contains("/"+filepath.ToSlash(path)+"/", "/.git/") {
+			return fmt.Errorf("invalid git path %q", path)
+		}
+	}
+	return nil
 }
 func (t *gitCommitTool) Execute(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
 	message, _ := requireString(args, "message")
@@ -83,7 +99,7 @@ func (t *gitCommitTool) Execute(ctx context.Context, env *runtime.ExecEnv, args 
 		return failure(t.risk, "INVALID_ARGS", err), nil
 	}
 	if len(addPaths) == 0 {
-		addPaths = []string{"."}
+		return failure(t.risk, "INVALID_ARGS", fmt.Errorf("paths is required")), nil
 	}
 	addArgs := append([]string{"add"}, addPaths...)
 	if _, _, _, err := runCommand(ctx, env.WikiRoot, "git", addArgs, nil); err != nil {

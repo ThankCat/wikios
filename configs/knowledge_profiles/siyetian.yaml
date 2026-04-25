@@ -1,0 +1,177 @@
+# Server 侧知识 profile。
+# 这里维护企业差异：上传字段映射、FAQ 分类建议、Wiki FAQ 条目写入格式、质量闸门和初始概念/实体种子。
+# Wiki 的 AGENT.md 只负责通用 LLM-Wiki 治理规则，不维护企业格式、行业分类或客服话术。
+version: 1
+name: siyetian
+display_name: 四叶天代理 IP
+public_persona: 四叶天代理 IP 官方客服
+
+# 输入适配：不同企业、不同客服表格只需要在这里补列名别名。
+input_adapters:
+  faq_xlsx:
+    required_fields:
+      question: [标准问题, 标准问法, 问题]
+      answer: [回复内容, 回复, 答案]
+    optional_fields:
+      original_category: [技能分类, 分类, 问题分类]
+      similar_questions: [相似问法, 相似问题, 同义问法]
+      keywords: [关键词, 关键字]
+      tags: [标签, 标记]
+      quick_replies: [快捷短语, 快捷回复]
+      condition_notes: [命中条件, 条件]
+  faq_markdown_table:
+    required_fields:
+      question: [标准问题, 标准问法, 问题]
+      answer: [回复内容, 回复, 答案]
+    optional_fields:
+      original_category: [技能分类, 分类, 问题分类]
+      similar_questions: [相似问法, 相似问题, 同义问法]
+      keywords: [关键词, 关键字]
+      tags: [标签, 标记]
+      quick_replies: [快捷短语, 快捷回复]
+      condition_notes: [命中条件, 条件]
+
+# FAQ 分类建议：server 传给 LLM 作为分类 profile；原始表格分类只是弱信号。
+faq_taxonomy:
+  max_entries_per_category: 60
+  review_slug: faq-needs-human-taxonomy-review
+  review_title: 待人工复核 FAQ
+  generic_category_names:
+    - FAQ
+    - 常见问题
+    - 通用问题
+    - 其它
+    - 其他
+    - 未分类
+  category_hints:
+    - title: 产品类型与套餐选型
+      slug: faq-product-selection
+      aliases: [产品咨询, 产品, 套餐选择]
+      keywords: [动态IP, 静态IP, 住宅IP, 数据中心IP, 独享IP, 共享IP, 海外IP, 代理IP]
+    - title: 价格、购买与续费
+      slug: faq-pricing-purchase-renewal
+      aliases: [价格与购买, 购买支付, 充值续费, 价格套餐]
+      keywords: [价格, 收费, 购买, 支付, 续费, 充值, 套餐, 月付, 年付]
+    - title: 下载、安装与客户端
+      slug: faq-download-installation
+      aliases: [下载与安装, 下载, 安装, 客户端]
+      keywords: [下载, 安装, 客户端, app, 软件, Windows, macOS, 安卓, iOS]
+    - title: IP 切换与连接配置
+      slug: faq-ip-switching-connection
+      aliases: [技术配置, 使用配置, 配置使用, 连接配置]
+      keywords: [切换IP, 更换IP, 连接, 端口, 账号密码, HTTP, HTTPS, Socks5, 代理设置]
+    - title: 动态 IP 提取、API 与白名单
+      slug: faq-dynamic-ip-api-whitelist
+      aliases: [API提取, 提取链接, 白名单]
+      keywords: [API, 提取, 提取链接, 白名单, 授权IP, 动态IP, 接口]
+    - title: 平台账号与风控场景
+      slug: faq-platform-account-risk-control
+      aliases: [平台场景, 账号风控]
+      keywords: [微信, TikTok, Facebook, Google, Telegram, WhatsApp, ChatGPT, 账号, 风控, 注册, 登录]
+    - title: 速度、带宽与并发
+      slug: faq-speed-bandwidth-concurrency
+      aliases: [速度带宽, 带宽并发]
+      keywords: [速度, 带宽, 并发, Mbps, MB/s, 连接数, 延迟, 卡顿]
+    - title: 故障排查与售后
+      slug: faq-troubleshooting-after-sales
+      aliases: [售后与排查, 故障排查, 技术支持, 售后]
+      keywords: [失败, 连不上, 无法连接, 报错, 排查, 售后, 异常, 不可用]
+    - title: 退款、发票与订单
+      slug: faq-refund-invoice-order
+      aliases: [退款与售后, 退款, 发票, 订单]
+      keywords: [退款, 退费, 发票, 订单, 退订, 售后]
+
+# Wiki 写入契约：决定 wiki/faq 每条 FAQ 按哪些字段、什么顺序落盘。
+wiki_write_contract:
+  faq_entry_fields:
+    - id
+    - question
+    - original_category
+    - similar_questions
+    - keywords
+    - tags
+    - quick_replies
+    - answer
+    - condition_notes
+    - related_concepts
+    - related_entities
+  preserve_operational_metadata: true
+  forbid_customer_tone_in_wiki: true
+
+# 质量闸门：防止粗糙分类退化成一个巨大 faq-faq / FAQ / 未分类 文件。
+quality_gates:
+  max_ungrouped_entries: 10
+  block_large_generic_category: true
+  require_source_archive: true
+  require_faq_index: true
+
+# 初始知识种子：用于帮助 FAQ 摄入生成和对齐 concepts/entities；不要在 Go 里硬编码企业目录。
+knowledge_seeds:
+  concepts:
+    - title: 代理 IP
+      slug: proxy-ip
+      english_name: Proxy IP
+      aliases: [代理IP, 代理 IP, proxy ip, ip代理]
+      definition: 代理 IP 是围绕网络访问、业务场景和连接配置说明的核心产品概念。
+      key_points: [用于承载代理访问、配置、稳定性和适用场景等 FAQ。]
+    - title: 动态 IP
+      slug: dynamic-ip
+      english_name: Dynamic IP
+      aliases: [动态IP, 动态 IP, 短效IP, 动态代理]
+      definition: 动态 IP 指会按规则变化或重新获取的代理 IP 类型。
+      key_points: [用于归纳动态 IP 时长、切换、提取和适用场景。]
+    - title: 静态 IP
+      slug: static-ip
+      english_name: Static IP
+      aliases: [静态IP, 静态 IP, 固定IP, 长效IP]
+      definition: 静态 IP 指在较长时间内保持稳定的代理 IP 类型。
+      key_points: [用于归纳静态 IP 场景、稳定性、套餐和配置问题。]
+    - title: 海外 IP
+      slug: overseas-ip
+      english_name: Overseas IP
+      aliases: [海外IP, 海外 IP, 国外IP, 境外IP]
+      definition: 海外 IP 是归属地位于海外地区的代理 IP。
+      key_points: [只在 FAQ 明确出现海外或国外限定时使用，不把普通 IP 自动收窄为海外 IP。]
+    - title: IP 白名单
+      slug: ip-whitelist
+      english_name: IP Whitelist
+      aliases: [白名单, IP白名单, 授权IP]
+      definition: IP 白名单用于控制哪些来源 IP 可以访问或使用代理服务。
+      key_points: [用于归纳白名单添加、授权、访问失败和安全限制问题。]
+    - title: API 提取
+      slug: api-extraction
+      english_name: API Extraction
+      aliases: [API提取, API接口, 提取接口]
+      definition: API 提取指通过接口获取代理 IP 或相关资源的方式。
+      key_points: [用于归纳 API、提取链接、接口调用和自动化使用问题。]
+    - title: 带宽
+      slug: bandwidth
+      english_name: Bandwidth
+      aliases: [带宽, Mbps, MB/s, 下载速度, 网速]
+      definition: 带宽表示网络传输能力，是代理使用体验中的速度相关概念。
+      key_points: [用于归纳速度、Mbps 与 MB/s 换算等 FAQ。]
+  entities:
+    - title: 四叶天
+      slug: siyetian
+      entity_type: product
+      aliases: [四叶天, siyetian]
+      description: 四叶天是当前 profile 服务的代理 IP 产品或品牌。
+      key_contributions: [提供代理 IP 产品、配置说明和客户服务问答。]
+    - title: 微信
+      slug: wechat
+      entity_type: product
+      aliases: [微信, WeChat, wechat]
+      description: 微信是 FAQ 中可能出现的第三方应用或登录场景。
+      key_contributions: [用于归纳微信登录、访问限制和代理适用性问题。]
+    - title: TikTok
+      slug: tiktok
+      entity_type: product
+      aliases: [TikTok, tiktok, 抖音国际版]
+      description: TikTok 是 FAQ 中可能出现的第三方业务平台。
+      key_contributions: [用于归纳平台访问、账号运营和代理适用性问题。]
+    - title: ChatGPT
+      slug: chatgpt
+      entity_type: product
+      aliases: [ChatGPT, chatgpt, OpenAI, openai]
+      description: ChatGPT 是 FAQ 中可能出现的 AI 工具或第三方服务。
+      key_contributions: [用于归纳 AI 工具访问、代理配置和使用场景问题。]

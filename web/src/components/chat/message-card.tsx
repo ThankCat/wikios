@@ -1,8 +1,6 @@
 "use client";
 
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-
+import { MarkdownContent } from "@/components/chat/markdown-content";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -22,9 +20,9 @@ export function MessageCard({ id, role, content, details, pending, statusText, s
     <div className={cn("flex w-full", role === "user" ? "justify-end" : "justify-start")}>
       <div className={role === "user" ? "chat-bubble-user" : "chat-bubble-assistant"}>
         {role === "assistant" ? (
-          <div className="prose prose-sm max-w-none prose-p:my-2 prose-ul:my-2 prose-headings:mb-2 prose-headings:mt-4">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayContent}</ReactMarkdown>
-          </div>
+          <MarkdownContent className="prose prose-slate prose-sm max-w-none prose-table:my-0 prose-th:p-0 prose-td:p-0">
+            {displayContent}
+          </MarkdownContent>
         ) : (
           <div className="whitespace-pre-wrap">{displayContent}</div>
         )}

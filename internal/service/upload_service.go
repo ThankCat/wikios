@@ -25,13 +25,14 @@ type UploadService struct {
 }
 
 type preparedUpload struct {
-	base       string
-	ext        string
-	kind       string
-	storedRel  string
-	content    string
-	contentSHA string
-	faqDataset *canonicalFAQDataset
+	base          string
+	ext           string
+	kind          string
+	storedRel     string
+	content       string
+	storedContent []byte
+	contentSHA    string
+	faqDataset    *canonicalFAQDataset
 }
 
 func NewUploadService(deps Deps) *UploadService {
@@ -59,7 +60,11 @@ func (s *UploadService) process(ctx context.Context, traceID string, req UploadR
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 		return nil, nil, err
 	}
-	if err := os.WriteFile(absPath, req.Content, 0o644); err != nil {
+	storedContent := req.Content
+	if len(prepared.storedContent) > 0 {
+		storedContent = prepared.storedContent
+	}
+	if err := os.WriteFile(absPath, storedContent, 0o644); err != nil {
 		return nil, nil, err
 	}
 	if prepared.kind == "image" {
@@ -109,7 +114,7 @@ func (s *UploadService) process(ctx context.Context, traceID string, req UploadR
 		resultErr error
 	)
 	if prepared.faqDataset != nil {
-		result, resultErr = s.runStructuredUploadViaDirect(ctx, execution, traceID, prepared)
+		result, resultErr = s.runStructuredUploadViaService(ctx, execution, traceID, prepared)
 	} else {
 		result, resultErr = s.runSingleUploadViaDirect(ctx, execution, traceID, prepared)
 	}
@@ -149,6 +154,7 @@ func (s *UploadService) process(ctx context.Context, traceID string, req UploadR
 }
 
 func (s *UploadService) prepareUpload(ctx context.Context, req UploadRequest) (*preparedUpload, error) {
+	knowledgeProfile, _ := s.loadKnowledgeProfile()
 	ext := strings.ToLower(filepath.Ext(req.Filename))
 	base := strings.TrimSuffix(filepath.Base(req.Filename), ext)
 	if base == "" {
@@ -157,6 +163,30 @@ func (s *UploadService) prepareUpload(ctx context.Context, req UploadRequest) (*
 	name := slugFromText(base)
 	if name == "" {
 		name = "upload"
+	}
+	if ext == ".xlsx" {
+		parsed, err := parseStructuredFAQUploadWithProfile(req.Filename, base, ext, req.Content, "", knowledgeProfile)
+		if err != nil {
+			return nil, err
+		}
+		if parsed == nil || parsed.Dataset == nil {
+			return nil, ValidationError{Message: "FAQ Excel 中未识别到包含“标准问题”和“回复内容”的有效表格。"}
+		}
+		if err := s.validateUploadSizeWithStructured(ext, len(req.Content), true); err != nil {
+			return nil, err
+		}
+		shaSum := sha256.Sum256(req.Content)
+		storedRel := filepath.ToSlash(filepath.Join("raw/articles", fmt.Sprintf("%s-%s.json", nowDate(), name)))
+		return &preparedUpload{
+			base:          base,
+			ext:           ".json",
+			kind:          "article",
+			storedRel:     storedRel,
+			content:       parsed.Content,
+			storedContent: []byte(parsed.Content),
+			contentSHA:    hex.EncodeToString(shaSum[:]),
+			faqDataset:    parsed.Dataset,
+		}, nil
 	}
 	if ext == "" {
 		ext = ".txt"
@@ -169,7 +199,7 @@ func (s *UploadService) prepareUpload(ctx context.Context, req UploadRequest) (*
 	case "image":
 		storedRel = filepath.ToSlash(filepath.Join("raw/images", fmt.Sprintf("%s-%s%s", nowDate(), name, ext)))
 	default:
-		return nil, ValidationError{Message: fmt.Sprintf("暂不支持该文件类型 %s。当前仅支持文章文档（txt、md、markdown、json、doc、docx、rtf）和图片（png、jpg、jpeg、webp）。", ext)}
+		return nil, ValidationError{Message: fmt.Sprintf("暂不支持该文件类型 %s。当前仅支持文章文档（txt、md、markdown、json、xlsx、doc、docx、rtf）和图片（png、jpg、jpeg、webp）。", ext)}
 	}
 	content := string(req.Content)
 	if kind == "document" {
@@ -179,9 +209,14 @@ func (s *UploadService) prepareUpload(ctx context.Context, req UploadRequest) (*
 		}
 		content = text
 	}
-	faqDataset, faqErr := detectCanonicalFAQDataset(req.Filename, base, content)
+	parsed, faqErr := parseStructuredFAQUploadWithProfile(req.Filename, base, ext, req.Content, content, knowledgeProfile)
 	if faqErr != nil {
 		return nil, faqErr
+	}
+	var faqDataset *canonicalFAQDataset
+	if parsed != nil {
+		content = parsed.Content
+		faqDataset = parsed.Dataset
 	}
 	if kind == "article" && ext == ".json" && faqDataset == nil {
 		return nil, ValidationError{Message: "当前仅支持 FAQ JSON 导入，文件中未识别到顶层 faq 数组。"}
@@ -271,102 +306,20 @@ func (s *UploadService) runSingleUploadViaDirect(ctx context.Context, execution 
 	return normalizeDirectResult(result), nil
 }
 
-func (s *UploadService) runStructuredUploadViaDirect(ctx context.Context, execution *Execution, traceID string, prepared *preparedUpload) (map[string]any, error) {
-	segments := prepared.faqDataset.segments(faqSegmentSize)
-	plan := buildUploadIngestPlan(prepared)
-	segmentResults := make([]map[string]any, 0, len(segments))
-	failedSegments := make([]map[string]any, 0)
-	outputFiles := []string{}
-	artifacts := []string{}
-	warnings := []string{}
-	commands := []map[string]any{}
-	for _, segment := range segments {
-		segmentPayload := map[string]any{
-			"index":       segment.Index,
-			"total":       len(segments),
-			"title":       segment.title(),
-			"slug":        segment.slug(),
-			"category":    firstNonEmpty(strings.TrimSpace(segment.Tag), "未分类"),
-			"entry_count": len(segment.Entries),
-		}
-		emitStreamEvent(ctx, "segment_start", segmentPayload)
-		context := map[string]any{
-			"stored_path":      prepared.storedRel,
-			"path":             prepared.storedRel,
-			"source_format":    prepared.faqDataset.Format,
-			"segment_index":    segment.Index,
-			"segment_total":    len(segments),
-			"segment_title":    segment.title(),
-			"segment_slug":     segment.slug(),
-			"segment_category": firstNonEmpty(strings.TrimSpace(segment.Tag), "未分类"),
-			"faq_entry_count":  len(segment.Entries),
-			"segment_preview":  truncateDirectPromptValue(renderFAQEntriesSection(segment.Entries), 2600),
-			"ingest_plan":      marshalCompactJSON(plan),
-		}
-		result, err := NewDirectAdminService(s.deps).Run(ctx, execution, traceID, DirectAdminRequest{
-			Message:  fmt.Sprintf("请基于当前 FAQ 分段完成管理员摄入：%s", segment.title()),
-			ModeHint: "ingest",
-			Attachments: []DirectAdminAttachment{
-				{Path: prepared.storedRel, Kind: prepared.kind, Name: prepared.base + prepared.ext},
-			},
-			Context: context,
-		})
-		if err != nil {
-			failure := map[string]any{
-				"index":       segment.Index,
-				"total":       len(segments),
-				"title":       segment.title(),
-				"slug":        segment.slug(),
-				"category":    firstNonEmpty(strings.TrimSpace(segment.Tag), "未分类"),
-				"entry_count": len(segment.Entries),
-				"error":       err.Error(),
-			}
-			failedSegments = append(failedSegments, failure)
-			emitStreamEvent(ctx, "segment_error", failure)
-			continue
-		}
-		result = normalizeDirectResult(result)
-		result["index"] = segment.Index
-		result["total"] = len(segments)
-		result["title"] = segment.title()
-		result["slug"] = segment.slug()
-		result["category"] = firstNonEmpty(strings.TrimSpace(segment.Tag), "未分类")
-		result["entry_count"] = len(segment.Entries)
-		segmentResults = append(segmentResults, result)
-		emitStreamEvent(ctx, "segment_result", result)
-		outputFiles = appendUniqueStrings(outputFiles, collectUploadFiles(result)...)
-		artifacts = appendUniqueStrings(artifacts, collectUploadArtifacts(result)...)
-		warnings = appendUniqueStrings(warnings, stringSliceValue(result, "warnings")...)
-		commands = append(commands, commandRecords(result["commands"])...)
+func (s *UploadService) runStructuredUploadViaService(ctx context.Context, execution *Execution, traceID string, prepared *preparedUpload) (map[string]any, error) {
+	env := s.env("admin", traceID, execution.ID, execution.ID)
+	if _, err := s.executeTool(ctx, execution, env, "workspace.create_job_dir", map[string]any{"job_id": execution.ID}, "create job dir"); err != nil {
+		return nil, err
 	}
-	completed := len(segmentResults)
-	failed := len(failedSegments)
-	summary := fmt.Sprintf("FAQ 上传预处理完成，已通过管理员直连模式执行 %d 个分段，成功 %d 段，失败 %d 段。", len(segments), completed, failed)
-	reply := summary
-	if completed > 0 {
-		reply = firstNonEmpty(resultStringValue(segmentResults[len(segmentResults)-1], "reply"), summary)
+	result, err := NewIngestService(s.deps).runStructuredFAQIngest(ctx, execution, env, prepared.storedRel, prepared.contentSHA, prepared.faqDataset)
+	if err != nil {
+		return result, err
 	}
-	result := normalizeDirectResult(map[string]any{
-		"reply":              reply,
-		"answer":             reply,
-		"summary":            summary,
-		"stored_path":        prepared.storedRel,
-		"media_kind":         prepared.kind,
-		"source_format":      prepared.faqDataset.Format,
-		"segments_total":     len(segments),
-		"segments_completed": completed,
-		"segments_failed":    failed,
-		"segment_results":    segmentResults,
-		"failed_segments":    failedSegments,
-		"partial_success":    failed > 0 && completed > 0,
-		"output_files":       outputFiles,
-		"artifacts":          artifacts,
-		"warnings":           warnings,
-		"commands":           commands,
-	})
-	if failed > 0 && completed == 0 {
-		return result, ExecutionError{Message: summary, Details: result}
-	}
+	result["stored_path"] = prepared.storedRel
+	result["media_kind"] = prepared.kind
+	result["source_format"] = prepared.faqDataset.Format
+	result["reply"] = firstNonEmpty(resultStringValue(result, "reply"), resultStringValue(result, "summary"), "FAQ 数据兼容摄入完成")
+	result["answer"] = firstNonEmpty(resultStringValue(result, "answer"), resultStringValue(result, "reply"))
 	return result, nil
 }
 
@@ -570,7 +523,7 @@ func (s *UploadService) validateTextStructure(content string, structuredFAQ bool
 
 func detectUploadKind(ext string) string {
 	switch ext {
-	case ".txt", ".md", ".markdown", ".json":
+	case ".txt", ".md", ".markdown", ".json", ".xlsx":
 		return "article"
 	case ".doc", ".docx", ".rtf":
 		return "document"
