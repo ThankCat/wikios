@@ -9,6 +9,7 @@ import type {
   PublicIntentsResponse,
   PublicStreamEvent,
   SyncCommitResponse,
+  SyncGenerateMessageResponse,
   SyncPushResponse,
   SyncStatusResponse,
   UploadResponse,
@@ -145,6 +146,14 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paths, message }),
+      signal,
+    });
+  },
+  syncGenerateMessage(paths: string[], signal?: AbortSignal) {
+    return request<SyncGenerateMessageResponse>(apiURL("/api/v1/admin/sync/generate-message"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths }),
       signal,
     });
   },

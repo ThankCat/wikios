@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"wikios/internal/llm"
 	"wikios/internal/report"
@@ -81,7 +82,10 @@ func (s *ReflectService) Run(ctx context.Context, execution *Execution, traceID 
 	outputFiles := []string{}
 	artifacts := []report.Artifact{}
 	if req.WriteReport {
-		path := "wiki/outputs/reflect/" + nowDate() + "-" + slugFromText(req.Topic) + "-reflect-report.md"
+		path, err := report.BuildPath(report.KindReflect, slugFromText(req.Topic), time.Now())
+		if err != nil {
+			return nil, err
+		}
 		doc := buildOutputDocument("Gap Report", renderReflectOutputMarkdown(parsed), len(deepPages))
 		if _, err := s.executeTool(ctx, execution, env, "wiki.write_output", map[string]any{"path": path, "content": doc}, "write reflect output"); err != nil {
 			return nil, err
@@ -153,7 +157,10 @@ func (s *ReflectService) Run(ctx context.Context, execution *Execution, traceID 
 		rep.NextActions = append(rep.NextActions, "如需留档，请使用 write_report=true 重新执行 reflect")
 	}
 	reportMarkdown := report.Markdown(rep)
-	reportPath := "wiki/outputs/reflect/" + nowDate() + "-" + slugFromText(req.Topic) + "-reflect-report.md"
+	reportPath, err := report.BuildPath(report.KindReflect, slugFromText(req.Topic), time.Now())
+	if err != nil {
+		return nil, err
+	}
 	reportDoc := buildReportDocument("反思与修复报告", "reflect", execution.ID, reportMarkdown)
 	if _, err := s.executeTool(ctx, execution, env, "wiki.write_output", map[string]any{"path": reportPath, "content": reportDoc}, "write reflect report"); err != nil {
 		return nil, err

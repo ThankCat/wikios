@@ -165,6 +165,23 @@ source_family: faq-dataset
 回复：
 不可以用于微信登录业务。
 `)
+	mustWritePublicFixture(t, filepath.Join(root, "wiki/faq/residential-ip-purchase.md"), `---
+title: 住宅IP购买
+type: faq
+source_family: faq-dataset
+---
+
+## Summary
+
+住宅IP支持按带宽选择套餐后购买。
+
+## FAQ Entries
+
+### 5M住宅IP套餐购买说明
+
+回复：
+选择住宅IP的5M带宽套餐后，在官网下单购买。
+`)
 	mustWritePublicFixture(t, filepath.Join(root, "wiki/concepts/static-ip.md"), `---
 title: 静态IP
 ---
@@ -256,6 +273,34 @@ func TestPublicAnswerIncludesConversationHistory(t *testing.T) {
 	}
 	if len(mock.lastMessages) < 2 || !strings.Contains(mock.lastMessages[1].Content, "静态IP是什么？") {
 		t.Fatalf("expected conversation history in user prompt, got %+v", mock.lastMessages)
+	}
+}
+
+func TestPublicAnswerUsesConversationHistoryForRetrieval(t *testing.T) {
+	svc, mock := newPublicQueryTestService(t, `{
+  "answer_type": "text",
+  "answer_markdown": "选择住宅IP的5M带宽套餐后，在官网下单购买。",
+  "sources": [{"path":"wiki/faq/residential-ip-purchase.md","confidence":"high"}],
+  "confidence": 0.9,
+  "notes": ""
+}`)
+	resp, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{
+		Question: "这个怎么买？",
+		History: []service.ChatMessage{
+			{Role: "user", Content: "什么是住宅IP，它的使用场景是什么？"},
+			{Role: "assistant", Content: "住宅IP适合社媒账号运营、跨境电商等场景。"},
+			{Role: "user", Content: "住宅IP的套餐都有什么？"},
+			{Role: "assistant", Content: "住宅IP套餐通常有5M、10M、20M带宽可选。"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if !strings.Contains(resp.Answer, "5M带宽套餐") {
+		t.Fatalf("expected contextual residential IP answer, got %+v", resp)
+	}
+	if len(mock.lastMessages) < 2 || !strings.Contains(mock.lastMessages[1].Content, "5M住宅IP套餐购买说明") {
+		t.Fatalf("expected retrieval to include residential purchase FAQ, got %+v", mock.lastMessages)
 	}
 }
 

@@ -47,6 +47,7 @@ func NewRouter(cfg *config.Config, handlers *api.Handlers, dataStore *store.Stor
 	admin.GET("/wiki/file", handlers.AdminWikiFile)
 	admin.GET("/wiki/download", handlers.AdminWikiDownload)
 	admin.GET("/sync/status", handlers.AdminSyncStatus)
+	admin.POST("/sync/generate-message", handlers.AdminSyncGenerateMessage)
 	admin.POST("/sync/commit", handlers.AdminSyncCommit)
 	admin.POST("/sync/push", handlers.AdminSyncPush)
 	admin.POST("/upload", handlers.AdminUpload)

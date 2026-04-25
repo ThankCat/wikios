@@ -43,12 +43,13 @@ type MountedWikiConfig struct {
 }
 
 type LLMConfig struct {
-	Provider    string `yaml:"provider"`
-	ModelPublic string `yaml:"model_public"`
-	ModelAdmin  string `yaml:"model_admin"`
-	APIKey      string `yaml:"api_key"`
-	BaseURL     string `yaml:"base_url"`
-	TimeoutSec  int    `yaml:"timeout_sec"`
+	Provider        string `yaml:"provider"`
+	ModelPublic     string `yaml:"model_public"`
+	ModelAdmin      string `yaml:"model_admin"`
+	APIKey          string `yaml:"api_key"`
+	BaseURL         string `yaml:"base_url"`
+	TimeoutSec      int    `yaml:"timeout_sec"`
+	AdminTimeoutSec int    `yaml:"admin_timeout_sec"`
 }
 
 type AuthConfig struct {
@@ -161,6 +162,9 @@ func (c *Config) normalizeAndValidate() error {
 	}
 	if c.LLM.TimeoutSec <= 0 {
 		c.LLM.TimeoutSec = 90
+	}
+	if c.LLM.AdminTimeoutSec <= 0 {
+		c.LLM.AdminTimeoutSec = 300
 	}
 	c.Workspace.BaseDir = filepath.Clean(c.Workspace.BaseDir)
 	c.Storage.SQLitePath = filepath.Clean(c.Storage.SQLitePath)

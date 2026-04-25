@@ -170,6 +170,8 @@ func mockDirectAdminResponse(messages []llm.Message) string {
 	switch {
 	case strings.Contains(fullPrompt, "模式提示：\nquery"):
 		return `{"action":"final","reply":"静态IP适合需要长期稳定网络环境的场景，例如账号长期运营、白名单绑定和远程办公。","summary":"管理员查询完成","answer":"静态IP适合需要长期稳定网络环境的场景，例如账号长期运营、白名单绑定和远程办公。","artifacts":["wiki/sources/customer-qa.md"],"output_files":[],"warnings":[]}`
+	case strings.Contains(fullPrompt, "模式提示：\ningest") && strings.Contains(fullPrompt, "source_format: faq"):
+		return `{"action":"final","reply":"FAQ 数据兼容摄入已交由 LLM 按 AGENT 处理。","summary":"FAQ 数据兼容摄入已交由 LLM 按 AGENT 处理。","artifacts":["raw/articles/faq.json"],"output_files":[],"warnings":[]}`
 	case strings.Contains(fullPrompt, "模式提示：\ningest") && strings.Contains(fullPrompt, "segment_title:"):
 		return `{"action":"shell","command":"mkdir -p wiki/sources && printf '%s' '## Summary\n\nmock\n\n## Key Points\n\n- mock\n\n## FAQ Entries\n\n### 测试问题\n\n分类：常见问题\n\n回复：\n测试回复\n' > wiki/sources/faq-generated.md","reason":"写入 FAQ source 页"}`
 	case strings.Contains(fullPrompt, "模式提示：\ningest"):
@@ -260,7 +262,7 @@ func TestAdminContextEstimateRequiresAuthAndReturnsUsage(t *testing.T) {
 	}
 }
 
-func TestAdminChatLintUsesServerLintService(t *testing.T) {
+func TestAdminChatLintUsesDirectAdmin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := buildRouter(t)
 	cookie := loginCookie(t, router)
@@ -279,8 +281,8 @@ func TestAdminChatLintUsesServerLintService(t *testing.T) {
 		t.Fatalf("lint chat failed: %d %s", rec.Code, rec.Body.String())
 	}
 	response := rec.Body.String()
-	if strings.Contains(response, "raw_response") || strings.Contains(response, "管理员直连") {
-		t.Fatalf("lint should not use DirectAdmin LLM response, got %s", response)
+	if strings.Contains(response, "wiki_health") || strings.Contains(response, "qmd_status") {
+		t.Fatalf("lint should not use server LintService details, got %s", response)
 	}
 	if !strings.Contains(response, "健康检查完成") {
 		t.Fatalf("expected health summary, got %s", response)
@@ -424,7 +426,7 @@ func TestAdminUploadAutoSegmentsLargeFAQTable(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected success, got %d %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "生成 1 个 FAQ 分类页") {
+	if !strings.Contains(rec.Body.String(), "FAQ 数据兼容摄入已交由 LLM") {
 		t.Fatalf("unexpected upload reply: %s", rec.Body.String())
 	}
 }
@@ -467,15 +469,15 @@ func TestAdminUploadSupportsFAQJSON(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected success, got %d %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "已完成 FAQ 分类摄入") {
+	if !strings.Contains(rec.Body.String(), "FAQ 数据兼容摄入已交由 LLM") {
 		t.Fatalf("unexpected upload reply: %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "\"tool\":\"llm.chat\"") {
-		t.Fatalf("expected upload details to include llm execution steps, got %s", rec.Body.String())
+	if strings.Contains(rec.Body.String(), "classification_status") || strings.Contains(rec.Body.String(), "category_results") {
+		t.Fatalf("structured upload should not expose server ingest classification details, got %s", rec.Body.String())
 	}
 }
 
-func TestAdminUploadSupportsFAQXLSXWithoutDirectShell(t *testing.T) {
+func TestAdminUploadSupportsFAQXLSXViaDirectLLM(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	root := createFixtureWiki(t)
 	router := buildRouterWithRoot(t, root)
@@ -505,11 +507,11 @@ func TestAdminUploadSupportsFAQXLSXWithoutDirectShell(t *testing.T) {
 		t.Fatalf("expected success, got %d %s", rec.Code, rec.Body.String())
 	}
 	bodyText := rec.Body.String()
-	if !strings.Contains(bodyText, `"source_format":"faq-xlsx"`) || !strings.Contains(bodyText, "event: segment_result") {
-		t.Fatalf("expected xlsx structured ingest stream, got %s", bodyText)
+	if !strings.Contains(bodyText, `"source_format":"faq-xlsx"`) || !strings.Contains(bodyText, "event: ingest_plan") || !strings.Contains(bodyText, "FAQ 数据兼容摄入已交由 LLM") {
+		t.Fatalf("expected xlsx normalized upload to enter direct LLM ingest, got %s", bodyText)
 	}
-	if strings.Contains(bodyText, "direct shell") || strings.Contains(bodyText, `"tool":"exec.shell"`) {
-		t.Fatalf("xlsx structured ingest must not use DirectAdmin shell, got %s", bodyText)
+	if strings.Contains(bodyText, "classification_status") || strings.Contains(bodyText, "category_results") {
+		t.Fatalf("xlsx structured ingest must not use server classification details, got %s", bodyText)
 	}
 	for _, forbidden := range []string{"segments", "docs", "content", "curated", "kb"} {
 		if _, err := os.Stat(filepath.Join(root, forbidden)); err == nil {
@@ -567,27 +569,8 @@ func TestAdminUploadSupportsFAQJSONWithLegacySourceTemplate(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected success with legacy template, got %d %s", rec.Code, rec.Body.String())
 	}
-	entries, err := os.ReadDir(filepath.Join(root, "wiki/faq"))
-	if err != nil {
-		t.Fatalf("read faq dir: %v", err)
-	}
-	generated := ""
-	for _, entry := range entries {
-		name := entry.Name()
-		if strings.HasPrefix(name, "faq-") && strings.HasSuffix(name, ".md") && name != "index.md" {
-			generated = name
-			break
-		}
-	}
-	if generated == "" {
-		t.Fatalf("expected generated FAQ page under wiki/faq")
-	}
-	content, err := os.ReadFile(filepath.Join(root, "wiki/faq", generated))
-	if err != nil {
-		t.Fatalf("read generated FAQ page: %v", err)
-	}
-	if !strings.Contains(string(content), "## FAQ Entries") {
-		t.Fatalf("expected generated page to inject FAQ Entries section, got %s", string(content))
+	if strings.Contains(rec.Body.String(), "category_results") || strings.Contains(rec.Body.String(), "classification_status") {
+		t.Fatalf("structured FAQ upload should be delegated to direct LLM, got %s", rec.Body.String())
 	}
 }
 
@@ -642,51 +625,10 @@ func TestAdminUploadStreamEmitsSegmentEvents(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("stream upload failed: %d %s", rec.Code, rec.Body.String())
 	}
-	for _, marker := range []string{"event: meta", "event: ingest_plan", "event: segment_start", "event: segment_result", "event: result", "event: done"} {
+	for _, marker := range []string{"event: meta", "event: ingest_plan", "event: result", "event: done"} {
 		if !strings.Contains(rec.Body.String(), marker) {
 			t.Fatalf("expected %s in stream body, got %s", marker, rec.Body.String())
 		}
-	}
-}
-
-func TestAdminUploadStreamFallsBackWhenFAQSegmentLLMTimesOut(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	root := createFixtureWiki(t)
-	router := buildRouterWithRootAndClient(t, root, partialFailFAQStreamLLM{})
-	cookie := loginCookie(t, router)
-
-	var builder strings.Builder
-	builder.WriteString("| 技能分类 | 标准问题 | 回复内容 |\n")
-	builder.WriteString("| --- | --- | --- |\n")
-	for i := 0; i < 140; i++ {
-		builder.WriteString(fmt.Sprintf("| 产品咨询 | 问题 %d？ | 回复内容 %d |\n", i, i))
-	}
-
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", "faq.md")
-	if err != nil {
-		t.Fatalf("create part: %v", err)
-	}
-	_, _ = part.Write([]byte(builder.String()))
-	_ = writer.Close()
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/upload/stream", &body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.AddCookie(cookie)
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("stream upload failed: %d %s", rec.Code, rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), "event: segment_error") {
-		t.Fatalf("LLM analysis timeout should fall back locally instead of failing a segment, got %s", rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "已回退到 server profile") {
-		t.Fatalf("expected fallback warning in stream body, got %s", rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "\"status\":\"SUCCESS\"") {
-		t.Fatalf("expected successful execution status, got %s", rec.Body.String())
 	}
 }
 
@@ -764,8 +706,7 @@ rules:
 		service.NewPublicQueryService(deps),
 		service.NewDirectAdminService(deps),
 		service.NewUploadService(deps),
-		service.NewLintService(deps),
-		service.NewRepairService(deps),
+		service.NewSyncService(deps),
 		dataStore,
 		cfg,
 		cfg.Auth,

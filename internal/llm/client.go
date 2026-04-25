@@ -19,20 +19,52 @@ type Client interface {
 	StreamChat(ctx context.Context, model string, messages []Message, onDelta func(string)) (string, error)
 }
 
+type StreamDelta struct {
+	Content          string
+	ReasoningContent string
+}
+
+type EventStreamClient interface {
+	StreamChatEvents(ctx context.Context, model string, messages []Message, onDelta func(StreamDelta)) (string, error)
+}
+
 type OpenAICompatibleClient struct {
-	baseURL string
-	apiKey  string
-	client  *http.Client
+	baseURL      string
+	apiKey       string
+	timeout      time.Duration
+	adminTimeout time.Duration
+	modelPublic  string
+	modelAdmin   string
+	client       *http.Client
 }
 
 func NewClient(cfg config.LLMConfig) Client {
-	return &OpenAICompatibleClient{
-		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
-		apiKey:  cfg.APIKey,
-		client: &http.Client{
-			Timeout: time.Duration(cfg.TimeoutSec) * time.Second,
-		},
+	timeout := time.Duration(cfg.TimeoutSec) * time.Second
+	if timeout <= 0 {
+		timeout = 90 * time.Second
 	}
+	adminTimeout := time.Duration(cfg.AdminTimeoutSec) * time.Second
+	if adminTimeout <= 0 {
+		adminTimeout = 300 * time.Second
+	}
+	return &OpenAICompatibleClient{
+		baseURL:      strings.TrimRight(cfg.BaseURL, "/"),
+		apiKey:       cfg.APIKey,
+		timeout:      timeout,
+		adminTimeout: adminTimeout,
+		modelPublic:  strings.TrimSpace(cfg.ModelPublic),
+		modelAdmin:   strings.TrimSpace(cfg.ModelAdmin),
+		client:       &http.Client{},
+	}
+}
+
+type requestTimeoutKey struct{}
+
+func WithRequestTimeout(ctx context.Context, timeout time.Duration) context.Context {
+	if timeout <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, requestTimeoutKey{}, timeout)
 }
 
 type chatRequest struct {
@@ -67,12 +99,29 @@ func (c *OpenAICompatibleClient) Chat(ctx context.Context, model string, message
 }
 
 func (c *OpenAICompatibleClient) StreamChat(ctx context.Context, model string, messages []Message, onDelta func(string)) (string, error) {
+	return c.StreamChatEvents(ctx, model, messages, func(delta StreamDelta) {
+		if delta.Content != "" && onDelta != nil {
+			onDelta(delta.Content)
+		}
+	})
+}
+
+func (c *OpenAICompatibleClient) StreamChatEvents(ctx context.Context, model string, messages []Message, onDelta func(StreamDelta)) (string, error) {
 	return c.doChat(ctx, model, messages, true, onDelta)
 }
 
-func (c *OpenAICompatibleClient) doChat(ctx context.Context, model string, messages []Message, stream bool, onDelta func(string)) (string, error) {
+func (c *OpenAICompatibleClient) doChat(ctx context.Context, model string, messages []Message, stream bool, onDelta func(StreamDelta)) (string, error) {
 	if strings.TrimSpace(c.apiKey) == "" {
 		return "", fmt.Errorf("llm api key is not configured")
+	}
+	timeout := c.timeoutForModel(model)
+	if override, ok := ctx.Value(requestTimeoutKey{}).(time.Duration); ok && override > 0 {
+		timeout = override
+	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 	payload, err := json.Marshal(chatRequest{
 		Model:    model,
@@ -90,15 +139,19 @@ func (c *OpenAICompatibleClient) doChat(ctx context.Context, model string, messa
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return "", err
+		return "", c.wrapTimeoutError(ctx, timeout, err)
 	}
 	defer resp.Body.Close()
 	if stream {
-		return c.readStreamResponse(resp, onDelta)
+		text, err := c.readStreamResponse(resp, onDelta)
+		if err != nil {
+			return "", c.wrapTimeoutError(ctx, timeout, err)
+		}
+		return text, nil
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return "", c.wrapTimeoutError(ctx, timeout, err)
 	}
 	var parsed chatResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -116,7 +169,35 @@ func (c *OpenAICompatibleClient) doChat(ctx context.Context, model string, messa
 	return strings.TrimSpace(parsed.Choices[0].Message.Content), nil
 }
 
-func (c *OpenAICompatibleClient) readStreamResponse(resp *http.Response, onDelta func(string)) (string, error) {
+func (c *OpenAICompatibleClient) timeoutForModel(model string) time.Duration {
+	model = strings.TrimSpace(model)
+	if c.modelAdmin != "" && model == c.modelAdmin && model != c.modelPublic {
+		return c.adminTimeout
+	}
+	return c.timeout
+}
+
+func (c *OpenAICompatibleClient) wrapTimeoutError(ctx context.Context, timeout time.Duration, err error) error {
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("llm request timeout after %s: %w", formatTimeout(timeout), err)
+	}
+	return err
+}
+
+func formatTimeout(timeout time.Duration) string {
+	if timeout <= 0 {
+		return "unknown"
+	}
+	if timeout%time.Second == 0 {
+		return fmt.Sprintf("%ds", int(timeout/time.Second))
+	}
+	return timeout.String()
+}
+
+func (c *OpenAICompatibleClient) readStreamResponse(resp *http.Response, onDelta func(StreamDelta)) (string, error) {
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
 		var parsed chatResponse
@@ -149,11 +230,13 @@ func (c *OpenAICompatibleClient) readStreamResponse(resp *http.Response, onDelta
 			return "", fmt.Errorf("llm api error: %s", chunk.Error.Message)
 		}
 		for _, choice := range chunk.Choices {
-			delta := choice.Delta.Content
-			if delta == "" {
-				continue
+			delta := StreamDelta{
+				Content:          choice.Delta.Content,
+				ReasoningContent: choice.Delta.ReasoningContent,
 			}
-			full.WriteString(delta)
+			if delta.Content != "" {
+				full.WriteString(delta.Content)
+			}
 			if onDelta != nil {
 				onDelta(delta)
 			}

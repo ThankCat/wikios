@@ -15,10 +15,11 @@ import (
 )
 
 func TestLintRunOnKnowledgeBase(t *testing.T) {
-	cfg := testConfig("/Users/chenhao/Project/knowledge-base", t.TempDir())
+	root := createFixtureWiki(t)
+	cfg := testConfig(root, t.TempDir())
 	rt := newRuntime(cfg)
 	env := &runtime.ExecEnv{
-		WikiRoot:     cfg.MountedWiki.Root,
+		WikiRoot:     root,
 		WorkspaceDir: cfg.Workspace.BaseDir,
 		Mode:         "admin",
 		QMDIndex:     cfg.MountedWiki.QMDIndex,
@@ -157,6 +158,65 @@ func TestExecShellPrefersConfiguredQMDNodePath(t *testing.T) {
 	}
 }
 
+func TestWikiWriteOutputAllowsLLMGovernedOutputPaths(t *testing.T) {
+	root := createFixtureWiki(t)
+	cfg := testConfig(root, t.TempDir())
+	rt := newRuntime(cfg)
+	env := &runtime.ExecEnv{
+		WikiRoot:     root,
+		WorkspaceDir: cfg.Workspace.BaseDir,
+		Mode:         "admin",
+		QMDIndex:     cfg.MountedWiki.QMDIndex,
+	}
+	invalid, _ := rt.Execute(context.Background(), env, runtime.ToolCall{
+		Name: "wiki.write_output",
+		Args: map[string]any{"path": "wiki/outputs/output.md", "content": "---\ngraph-excluded: true\n---\n\nbad"},
+	})
+	if !invalid.Success {
+		t.Fatalf("expected LLM-governed output path to be allowed by tool layer: %+v", invalid)
+	}
+	valid, _ := rt.Execute(context.Background(), env, runtime.ToolCall{
+		Name: "wiki.write_output",
+		Args: map[string]any{"path": "wiki/outputs/repair/2026-04-25-sha-fix-repair-report.md", "content": "---\ngraph-excluded: true\n---\n\nok"},
+	})
+	if !valid.Success {
+		t.Fatalf("expected valid report path: %+v", valid)
+	}
+	nonReport, _ := rt.Execute(context.Background(), env, runtime.ToolCall{
+		Name: "wiki.write_output",
+		Args: map[string]any{"path": "wiki/sources/faq-source.md", "content": "---\ntype: source\ntitle: FAQ Source\n---\n\nok"},
+	})
+	if !nonReport.Success {
+		t.Fatalf("expected non-report wiki write to stay allowed: %+v", nonReport)
+	}
+}
+
+func TestExecShellAllowsLLMGovernedReportPaths(t *testing.T) {
+	root := createFixtureWiki(t)
+	cfg := testConfig(root, t.TempDir())
+	rt := newRuntime(cfg)
+	env := &runtime.ExecEnv{
+		WikiRoot:     root,
+		WorkspaceDir: cfg.Workspace.BaseDir,
+		Mode:         "admin_direct",
+		QMDIndex:     cfg.MountedWiki.QMDIndex,
+	}
+	result, _ := rt.Execute(context.Background(), env, runtime.ToolCall{
+		Name: "exec.shell",
+		Args: map[string]any{"command": "printf ok > wiki/outputs/output.md"},
+	})
+	if !result.Success {
+		t.Fatalf("expected shell report path to be governed by AGENT, not server tool layer: %+v", result)
+	}
+	valid, _ := rt.Execute(context.Background(), env, runtime.ToolCall{
+		Name: "exec.shell",
+		Args: map[string]any{"command": "mkdir -p wiki/outputs/lint && printf ok > wiki/outputs/lint/2026-04-25-health-check-report.md"},
+	})
+	if !valid.Success {
+		t.Fatalf("expected valid shell report path: %+v", valid)
+	}
+}
+
 func TestGitStatusCleanAndDirty(t *testing.T) {
 	root := createFixtureWiki(t)
 	cfg := testConfig(root, t.TempDir())
@@ -238,7 +298,7 @@ func createFixtureWiki(t *testing.T) string {
 	mustWrite(t, filepath.Join(root, "wiki", "overview.md"), "---\ntype: system-overview\ngraph-excluded: true\n---\n\n# System Overview\n")
 	mustWrite(t, filepath.Join(root, "wiki", "templates", "source-template.md"), "---\ntype: source\ntitle: \"\"\ndate: 2026-04-22\nprocessed: false\n---\n\n## Summary\n\n## Key Points\n\n## Concepts Extracted\n\n## Entities Extracted\n\n## Contradictions\n\n## My Notes\n")
 	mustWrite(t, filepath.Join(root, "wiki", "concepts", "test.md"), "---\ntype: concept\ntitle: test\ndate: 2026-04-22\naliases:\n  - test\n---\n\n## Definition\n\ntext\n\n## Evolution Log\n")
-	mustWrite(t, filepath.Join(root, "scripts", "lint.py"), "#!/usr/bin/env python3\nfrom pathlib import Path\np=Path('wiki/outputs/lint-2026-04-22.md')\np.write_text('ok', encoding='utf-8')\nprint('Wrote lint report to wiki/outputs/lint-2026-04-22.md')\n")
+	mustWrite(t, filepath.Join(root, "scripts", "lint.py"), "#!/usr/bin/env python3\nfrom pathlib import Path\np=Path('wiki/outputs/lint/2026-04-22-health-check-report.md')\np.parent.mkdir(parents=True, exist_ok=True)\np.write_text('ok', encoding='utf-8')\nprint('Wrote lint report to wiki/outputs/lint/2026-04-22-health-check-report.md')\n")
 	run(t, root, "git", "init", "-b", "main")
 	run(t, root, "git", "config", "user.email", "test@example.com")
 	run(t, root, "git", "config", "user.name", "Test")

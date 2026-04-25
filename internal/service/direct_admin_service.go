@@ -253,7 +253,8 @@ func directAdminSystemPrompt(wikiRoot string) string {
 6. 如果上下文已经给出上传后的 stored_path、source_format、FAQ 分段计划或当前 segment 预览，优先基于这些预处理结果继续执行，不要重新实现上传预处理。
 7. 如果正在处理 FAQ segment，只处理当前 segment，不要把整份 FAQ 全文重新塞回上下文。
 8. 如果当前 mode_hint 注入了 mounted wiki 的 AGENT.md 规则，AGENT.md 是 Wiki 治理规则的最高优先级来源；除 server 安全与权限边界外，任何 ingest/lint/repair/reflect/merge/query/wikilink/目录/报告规则冲突时都以 AGENT.md 为准。
-9. 每一轮只返回一个 JSON 对象，不要输出 Markdown，不要输出代码块。
+9. 写入 wiki/outputs/ 下的报告必须严格使用 AGENT.md 的报告命名规范；server 不替你决定报告路径，是否合规由 AGENT.md 约束。
+10. 每一轮只返回一个 JSON 对象，不要输出 Markdown，不要输出代码块。
 
 返回格式二选一：
 {"action":"shell","command":"<shell command>","reason":"<why>"}

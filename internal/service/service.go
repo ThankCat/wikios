@@ -97,6 +97,8 @@ func (s *baseService) executeTool(ctx context.Context, execution *Execution, env
 func (s *baseService) executeLLM(ctx context.Context, execution *Execution, model string, messages []llm.Message, stepName string) (string, error) {
 	start := time.Now()
 	promptChars, promptTokens := estimatePromptSize(messages)
+	timeout := s.llmRequestTimeout(execution)
+	timeoutSec := int(timeout / time.Second)
 	emitStreamEvent(ctx, "prompt", map[string]any{
 		"name":                    stepName,
 		"model":                   model,
@@ -104,15 +106,38 @@ func (s *baseService) executeLLM(ctx context.Context, execution *Execution, mode
 		"created_at":              start.Format(time.RFC3339Nano),
 		"prompt_chars":            promptChars,
 		"prompt_estimated_tokens": promptTokens,
+		"timeout_sec":             timeoutSec,
 	})
-	onDelta := func(delta string) {
-		emitStreamEvent(ctx, "llm_delta", map[string]any{
-			"name":  stepName,
-			"delta": delta,
+	ctx = llm.WithRequestTimeout(ctx, timeout)
+	var reasoning strings.Builder
+	onDelta := func(delta llm.StreamDelta) {
+		if delta.ReasoningContent != "" {
+			reasoning.WriteString(delta.ReasoningContent)
+			emitStreamEvent(ctx, "llm_reasoning_delta", map[string]any{
+				"name":       stepName,
+				"delta":      delta.ReasoningContent,
+				"created_at": time.Now().Format(time.RFC3339Nano),
+			})
+		}
+		if delta.Content != "" {
+			emitStreamEvent(ctx, "llm_delta", map[string]any{
+				"name":       stepName,
+				"delta":      delta.Content,
+				"created_at": time.Now().Format(time.RFC3339Nano),
+			})
+		}
+	}
+	var text string
+	var err error
+	if streamClient, ok := s.deps.LLM.(llm.EventStreamClient); ok {
+		text, err = streamClient.StreamChatEvents(ctx, model, messages, onDelta)
+	} else {
+		text, err = s.deps.LLM.StreamChat(ctx, model, messages, func(delta string) {
+			onDelta(llm.StreamDelta{Content: delta})
 		})
 	}
-	text, err := s.deps.LLM.StreamChat(ctx, model, messages, onDelta)
 	end := time.Now()
+	reasoningText := strings.TrimSpace(reasoning.String())
 	if execution == nil {
 		if err != nil {
 			return "", err
@@ -131,6 +156,7 @@ func (s *baseService) executeLLM(ctx context.Context, execution *Execution, mode
 			"message_count":           len(messages),
 			"prompt_chars":            promptChars,
 			"prompt_estimated_tokens": promptTokens,
+			"timeout_sec":             timeoutSec,
 			"system_preview":          summarizeMessage(messages, "system"),
 			"user_preview":            summarizeMessage(messages, "user"),
 		},
@@ -138,16 +164,23 @@ func (s *baseService) executeLLM(ctx context.Context, execution *Execution, mode
 			"response_preview": summarizeContent(text),
 		},
 	}
+	if reasoningText != "" {
+		step.Output["reasoning_preview"] = summarizeContent(reasoningText)
+		step.Output["reasoning_chars"] = len([]rune(reasoningText))
+	}
 	if err != nil {
 		step.Status = "FAILED"
 		step.Output = map[string]any{"error": err.Error()}
 	}
 	execution.Steps = append(execution.Steps, step)
 	emitStreamEvent(ctx, "llm_done", map[string]any{
-		"name":       stepName,
-		"text":       text,
-		"ended_at":   end.Format(time.RFC3339Nano),
-		"started_at": start.Format(time.RFC3339Nano),
+		"name":            stepName,
+		"text":            text,
+		"reasoning":       reasoningText,
+		"reasoning_chars": len([]rune(reasoningText)),
+		"timeout_sec":     timeoutSec,
+		"ended_at":        end.Format(time.RFC3339Nano),
+		"started_at":      start.Format(time.RFC3339Nano),
 		"error": func() string {
 			if err != nil {
 				return err.Error()
@@ -159,6 +192,24 @@ func (s *baseService) executeLLM(ctx context.Context, execution *Execution, mode
 		return "", err
 	}
 	return text, nil
+}
+
+func (s *baseService) llmRequestTimeout(execution *Execution) time.Duration {
+	if s == nil || s.deps.Config == nil {
+		return 90 * time.Second
+	}
+	timeoutSec := s.deps.Config.LLM.TimeoutSec
+	if execution != nil {
+		timeoutSec = s.deps.Config.LLM.AdminTimeoutSec
+	}
+	if timeoutSec <= 0 {
+		if execution != nil {
+			timeoutSec = 300
+		} else {
+			timeoutSec = 90
+		}
+	}
+	return time.Duration(timeoutSec) * time.Second
 }
 
 func (s *baseService) loadPrompt(name string) (string, error) {

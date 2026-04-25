@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"wikios/internal/llm"
 	"wikios/internal/report"
@@ -330,7 +331,10 @@ func (s *IngestService) Run(ctx context.Context, execution *Execution, traceID s
 		rep.NextActions = append(rep.NextActions, "可继续执行 admin/query 或 reflect 验证新来源是否已进入检索结果")
 	}
 	reportMarkdown := report.Markdown(rep)
-	reportPath := "wiki/outputs/ingest/" + nowDate() + "-" + slug + "-ingest-report.md"
+	reportPath, err := report.BuildPath(report.KindIngest, slug, time.Now())
+	if err != nil {
+		return nil, err
+	}
 	reportDoc := buildReportDocument("摄入报告", "ingest", execution.ID, reportMarkdown)
 	if _, err := s.executeTool(ctx, execution, env, "wiki.write_output", map[string]any{"path": reportPath, "content": reportDoc}, "write ingest report"); err != nil {
 		return nil, err
@@ -609,7 +613,10 @@ func (s *IngestService) runStructuredFAQIngest(
 		rep.NextActions = append(rep.NextActions, "可继续执行 admin/query 或公共问答，验证 FAQ-first 检索与回答表现")
 	}
 	reportMarkdown := report.Markdown(rep)
-	reportPath := "wiki/outputs/ingest/" + nowDate() + "-" + dataset.SlugBase + "-ingest-report.md"
+	reportPath, err := report.BuildPath(report.KindIngest, dataset.SlugBase, time.Now())
+	if err != nil {
+		return nil, err
+	}
 	reportDoc := buildReportDocument("FAQ 数据摄入报告", "ingest", execution.ID, reportMarkdown)
 	if _, err := s.executeTool(ctx, execution, env, "wiki.write_output", map[string]any{"path": reportPath, "content": reportDoc}, "write ingest report"); err != nil {
 		return nil, err

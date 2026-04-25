@@ -32,8 +32,7 @@ type Handlers struct {
 	PublicQuery    *service.PublicQueryService
 	DirectAdmin    *service.DirectAdminService
 	Upload         *service.UploadService
-	Lint           *service.LintService
-	Repair         *service.RepairService
+	Sync           *service.SyncService
 	Store          *store.Store
 	AuthConfig     config.AuthConfig
 	Config         *config.Config
@@ -45,8 +44,7 @@ func NewHandlers(
 	publicQuery *service.PublicQueryService,
 	directAdmin *service.DirectAdminService,
 	uploadSvc *service.UploadService,
-	lintSvc *service.LintService,
-	repairSvc *service.RepairService,
+	syncSvc *service.SyncService,
 	dataStore *store.Store,
 	cfg *config.Config,
 	authCfg config.AuthConfig,
@@ -57,8 +55,7 @@ func NewHandlers(
 		PublicQuery:    publicQuery,
 		DirectAdmin:    directAdmin,
 		Upload:         uploadSvc,
-		Lint:           lintSvc,
-		Repair:         repairSvc,
+		Sync:           syncSvc,
 		Store:          dataStore,
 		AuthConfig:     authCfg,
 		Config:         cfg,
@@ -116,6 +113,10 @@ type syncCommitRequest struct {
 type syncPushRequest struct {
 	Remote string `json:"remote"`
 	Branch string `json:"branch"`
+}
+
+type syncGenerateMessageRequest struct {
+	Paths []string `json:"paths"`
 }
 
 type sseEmitter struct {
@@ -371,25 +372,6 @@ func (h *Handlers) AdminChat(c *gin.Context) {
 		return
 	}
 	mode := firstNonEmpty(strings.TrimSpace(req.ModeHint), detectAdminMode(req.Message, req.Context, req.Attachments))
-	if mode == "lint" {
-		execution := service.NewExecution(mode)
-		result, err := h.Lint.Run(c.Request.Context(), execution, traceID(c), service.LintRequest{WriteReport: true})
-		execution.EndedAt = time.Now()
-		if err != nil {
-			execution.Status = service.ExecutionFailed
-			execution.Error = err.Error()
-			internalError(c, err)
-			return
-		}
-		execution.Status = service.ExecutionSuccess
-		c.JSON(http.StatusOK, gin.H{
-			"mode":      mode,
-			"reply":     adminDisplayReply(mode, result),
-			"details":   result,
-			"execution": execution,
-		})
-		return
-	}
 	directReq := h.buildDirectAdminRequest(req, mode)
 	contextUsage := h.estimateAdminContext(directReq)
 	if contextUsage.Blocked {
@@ -431,32 +413,6 @@ func (h *Handlers) AdminChatStream(c *gin.Context) {
 	mu := &sync.Mutex{}
 	stopKeepalive := startSSEKeepalive(c, mu, 8*time.Second)
 	defer stopKeepalive()
-	if mode == "lint" {
-		writeSSEWithLock(c, "meta", gin.H{
-			"mode":         mode,
-			"execution_id": execution.ID,
-			"started_at":   execution.StartedAt.Format(time.RFC3339Nano),
-		}, mu)
-		streamCtx := service.WithStreamEmitter(c.Request.Context(), &sseEmitter{c: c, mu: mu})
-		result, err := h.Lint.Run(streamCtx, execution, traceID(c), service.LintRequest{WriteReport: true})
-		execution.EndedAt = time.Now()
-		if err != nil {
-			execution.Status = service.ExecutionFailed
-			execution.Error = err.Error()
-			writeSSEWithLock(c, "error", gin.H{"message": err.Error()}, mu)
-			writeSSEWithLock(c, "done", gin.H{"execution": execution}, mu)
-			return
-		}
-		execution.Status = service.ExecutionSuccess
-		writeSSEWithLock(c, "result", gin.H{
-			"mode":      mode,
-			"reply":     adminDisplayReply(mode, result),
-			"details":   result,
-			"execution": execution,
-		}, mu)
-		writeSSEWithLock(c, "done", gin.H{"execution": execution}, mu)
-		return
-	}
 	directReq := h.buildDirectAdminRequest(req, mode)
 	contextUsage := h.estimateAdminContext(directReq)
 	if contextUsage.Blocked {
@@ -641,6 +597,42 @@ func (h *Handlers) AdminSyncStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, status)
 }
 
+func (h *Handlers) AdminSyncGenerateMessage(c *gin.Context) {
+	var req syncGenerateMessageRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	status, err := h.gitStatus(c.Request.Context())
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	paths, err := validateSyncPaths(req.Paths, status.Files)
+	if err != nil {
+		badRequest(c, err)
+		return
+	}
+	files := syncFilesByPath(paths, status.Files)
+	diffStat, _, _, _ := h.runWikiGit(c.Request.Context(), append([]string{"diff", "--stat", "--"}, paths...)...)
+	nameStatus, _, _, _ := h.runWikiGit(c.Request.Context(), append([]string{"diff", "--name-status", "--"}, paths...)...)
+	message, rule, err := h.Sync.GenerateCommitMessage(c.Request.Context(), service.SyncCommitMessageRequest{
+		Files:      toServiceSyncFiles(files),
+		DiffStat:   diffStat,
+		NameStatus: nameStatus,
+	})
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	log.Printf("audit sync.generate_message paths=%d", len(paths))
+	c.JSON(http.StatusOK, gin.H{
+		"message": message,
+		"rule":    rule,
+		"paths":   paths,
+	})
+}
+
 func (h *Handlers) AdminSyncCommit(c *gin.Context) {
 	var req syncCommitRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -701,6 +693,17 @@ func (h *Handlers) AdminSyncPush(c *gin.Context) {
 		badRequest(c, fmt.Errorf("invalid remote or branch"))
 		return
 	}
+	status, err := h.gitStatus(c.Request.Context())
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	if status.PushCount <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{"code": "NO_COMMITS_TO_PUSH", "message": "当前没有未推送的提交，请先选择文件并提交。"},
+		})
+		return
+	}
 	stdout, stderr, exitCode, err := h.runWikiGit(c.Request.Context(), "push", remote, branch)
 	if err != nil {
 		internalError(c, err)
@@ -741,11 +744,16 @@ func (h *Handlers) estimateAdminContext(req service.DirectAdminRequest) service.
 }
 
 type syncStatusResponse struct {
-	Branch string           `json:"branch"`
-	Remote string           `json:"remote"`
-	Ahead  int              `json:"ahead"`
-	Behind int              `json:"behind"`
-	Files  []syncStatusFile `json:"files"`
+	Branch        string           `json:"branch"`
+	Remote        string           `json:"remote"`
+	Ahead         int              `json:"ahead"`
+	Behind        int              `json:"behind"`
+	Files         []syncStatusFile `json:"files"`
+	ChangedCount  int              `json:"changed_count"`
+	PushCount     int              `json:"push_count"`
+	CanPush       bool             `json:"can_push"`
+	CommitsToPush []syncCommitInfo `json:"commits_to_push"`
+	RecentCommits []syncCommitInfo `json:"recent_commits"`
 }
 
 type syncStatusFile struct {
@@ -757,6 +765,13 @@ type syncStatusFile struct {
 	Preview   string `json:"preview"`
 	DefaultOn bool   `json:"default_on"`
 	Deleted   bool   `json:"deleted"`
+}
+
+type syncCommitInfo struct {
+	Hash    string `json:"hash"`
+	Date    string `json:"date"`
+	Author  string `json:"author"`
+	Subject string `json:"subject"`
 }
 
 func (h *Handlers) resolveWikiPath(raw string) (string, string, error) {
@@ -854,7 +869,44 @@ func (h *Handlers) gitStatus(ctx context.Context) (syncStatusResponse, error) {
 	sort.Slice(status.Files, func(i, j int) bool {
 		return status.Files[i].Path < status.Files[j].Path
 	})
+	status.ChangedCount = len(status.Files)
+	status.CommitsToPush = h.gitLog(ctx, "@{u}..HEAD", 20)
+	status.RecentCommits = h.gitLog(ctx, "", 10)
+	status.PushCount = len(status.CommitsToPush)
+	if status.PushCount == 0 {
+		status.PushCount = status.Ahead
+	}
+	status.CanPush = status.PushCount > 0
 	return status, nil
+}
+
+func (h *Handlers) gitLog(ctx context.Context, rev string, limit int) []syncCommitInfo {
+	args := []string{"log", fmt.Sprintf("-n%d", limit), "--pretty=format:%h%x09%ad%x09%an%x09%s", "--date=short"}
+	if strings.TrimSpace(rev) != "" {
+		args = append(args, rev)
+	}
+	stdout, _, exitCode, err := h.runWikiGit(ctx, args...)
+	if err != nil || exitCode != 0 {
+		return nil
+	}
+	out := []syncCommitInfo{}
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 4)
+		if len(parts) != 4 {
+			continue
+		}
+		out = append(out, syncCommitInfo{
+			Hash:    parts[0],
+			Date:    parts[1],
+			Author:  parts[2],
+			Subject: parts[3],
+		})
+	}
+	return out
 }
 
 func parseBranchLine(line string, status *syncStatusResponse) {
@@ -944,6 +996,36 @@ func validateSyncPaths(paths []string, files []syncStatusFile) ([]string, error)
 		return nil, fmt.Errorf("paths is required")
 	}
 	return out, nil
+}
+
+func syncFilesByPath(paths []string, files []syncStatusFile) []syncStatusFile {
+	byPath := map[string]syncStatusFile{}
+	for _, file := range files {
+		byPath[file.Path] = file
+	}
+	out := make([]syncStatusFile, 0, len(paths))
+	for _, path := range paths {
+		if file, ok := byPath[path]; ok {
+			out = append(out, file)
+		}
+	}
+	return out
+}
+
+func toServiceSyncFiles(files []syncStatusFile) []service.SyncChangedFile {
+	out := make([]service.SyncChangedFile, 0, len(files))
+	for _, file := range files {
+		out = append(out, service.SyncChangedFile{
+			Path:     file.Path,
+			Status:   file.Status,
+			Deleted:  file.Deleted,
+			Preview:  file.Preview,
+			OldPath:  file.OldPath,
+			Index:    file.Index,
+			Worktree: file.Worktree,
+		})
+	}
+	return out
 }
 
 func safeGitName(value string) bool {

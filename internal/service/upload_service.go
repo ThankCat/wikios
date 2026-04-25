@@ -113,11 +113,7 @@ func (s *UploadService) process(ctx context.Context, traceID string, req UploadR
 		result    map[string]any
 		resultErr error
 	)
-	if prepared.faqDataset != nil {
-		result, resultErr = s.runStructuredUploadViaService(ctx, execution, traceID, prepared)
-	} else {
-		result, resultErr = s.runSingleUploadViaDirect(ctx, execution, traceID, prepared)
-	}
+	result, resultErr = s.runSingleUploadViaDirect(ctx, execution, traceID, prepared)
 	if resultErr != nil {
 		execution.Status = ExecutionFailed
 		execution.Error = resultErr.Error()
@@ -285,6 +281,12 @@ func (s *UploadService) runSingleUploadViaDirect(ctx context.Context, execution 
 	}
 	if prepared.faqDataset != nil {
 		context["source_format"] = prepared.faqDataset.Format
+		context["faq_entry_count"] = len(prepared.faqDataset.Entries)
+		if plan := buildUploadIngestPlan(prepared); plan != nil {
+			if data, err := json.MarshalIndent(plan, "", "  "); err == nil {
+				context["ingest_plan"] = string(data)
+			}
+		}
 	}
 	if strings.TrimSpace(prepared.content) != "" {
 		context["segment_preview"] = truncateDirectPromptValue(prepared.content, 2200)
@@ -304,23 +306,6 @@ func (s *UploadService) runSingleUploadViaDirect(ctx context.Context, execution 
 	result["media_kind"] = prepared.kind
 	result["source_format"] = firstNonEmpty(resultStringValue(result, "source_format"), context["source_format"].(string))
 	return normalizeDirectResult(result), nil
-}
-
-func (s *UploadService) runStructuredUploadViaService(ctx context.Context, execution *Execution, traceID string, prepared *preparedUpload) (map[string]any, error) {
-	env := s.env("admin", traceID, execution.ID, execution.ID)
-	if _, err := s.executeTool(ctx, execution, env, "workspace.create_job_dir", map[string]any{"job_id": execution.ID}, "create job dir"); err != nil {
-		return nil, err
-	}
-	result, err := NewIngestService(s.deps).runStructuredFAQIngest(ctx, execution, env, prepared.storedRel, prepared.contentSHA, prepared.faqDataset)
-	if err != nil {
-		return result, err
-	}
-	result["stored_path"] = prepared.storedRel
-	result["media_kind"] = prepared.kind
-	result["source_format"] = prepared.faqDataset.Format
-	result["reply"] = firstNonEmpty(resultStringValue(result, "reply"), resultStringValue(result, "summary"), "FAQ 数据兼容摄入完成")
-	result["answer"] = firstNonEmpty(resultStringValue(result, "answer"), resultStringValue(result, "reply"))
-	return result, nil
 }
 
 func uploadExecutionStatus(result map[string]any) ExecutionStatus {

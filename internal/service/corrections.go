@@ -111,6 +111,9 @@ func (s *baseService) collectCorrectionCandidates(ctx context.Context, execution
 		sourceSlugs = append(sourceSlugs, extractSourceLinks(content)...)
 	}
 	sourceSlugs = dedupeStrings(sourceSlugs)
+	if len(sourceSlugs) == 0 {
+		sourceSlugs = s.collectSourceSlugsWithRawFile()
+	}
 	out := make([]correctionSourceCandidate, 0, len(sourceSlugs))
 	for _, slug := range sourceSlugs {
 		sourcePath := "wiki/sources/" + slug + ".md"
@@ -152,6 +155,31 @@ func (s *baseService) collectCorrectionCandidates(ctx context.Context, execution
 		})
 	}
 	return out, nil
+}
+
+func (s *baseService) collectSourceSlugsWithRawFile() []string {
+	root := filepath.Join(s.deps.Config.MountedWiki.Root, "wiki", "sources")
+	slugs := []string{}
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() || !strings.HasSuffix(info.Name(), ".md") {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		doc, err := wikiadapter.ParseDocument(string(content))
+		if err != nil {
+			return nil
+		}
+		rawPath, _ := doc.Frontmatter["raw_file"].(string)
+		if strings.TrimSpace(rawPath) == "" {
+			return nil
+		}
+		slugs = append(slugs, strings.TrimSuffix(info.Name(), ".md"))
+		return nil
+	})
+	return dedupeStrings(slugs)
 }
 
 func (s *baseService) collectPagesReferencingSource(ctx context.Context, execution *Execution, env *runtime.ExecEnv, sourceSlug string) ([]correctionTargetPage, error) {

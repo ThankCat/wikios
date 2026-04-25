@@ -152,12 +152,30 @@ export type SyncStatusFile = {
   deleted: boolean;
 };
 
+export type SyncCommitInfo = {
+  hash: string;
+  date: string;
+  author: string;
+  subject: string;
+};
+
 export type SyncStatusResponse = {
   branch: string;
   remote: string;
   ahead: number;
   behind: number;
+  changed_count: number;
+  push_count: number;
+  can_push: boolean;
+  commits_to_push: SyncCommitInfo[];
+  recent_commits: SyncCommitInfo[];
   files: SyncStatusFile[];
+};
+
+export type SyncGenerateMessageResponse = {
+  message: string;
+  rule: string;
+  paths: string[];
 };
 
 export type SyncCommitResponse = {

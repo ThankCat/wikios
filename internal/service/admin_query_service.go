@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -100,7 +102,7 @@ func (s *AdminQueryService) Run(ctx context.Context, execution *Execution, trace
 	}
 	outputFiles := []string{}
 	if req.WriteOutput {
-		outputPath := "wiki/outputs/" + nowDate() + "-" + slugFromText(req.Question) + ".md"
+		outputPath := "wiki/synthesis/" + queryOutputSlug(req.Question) + ".md"
 		outputDoc := buildOutputDocument(req.Question, renderQueryOutputMarkdown(parsed), len(parsed.SourcePaths))
 		if _, err := s.executeTool(ctx, execution, env, "wiki.write_output", map[string]any{"path": outputPath, "content": outputDoc}, "write output"); err != nil {
 			return nil, err
@@ -117,6 +119,15 @@ func (s *AdminQueryService) Run(ctx context.Context, execution *Execution, trace
 	}
 	result["output_files"] = outputFiles
 	return result, nil
+}
+
+func queryOutputSlug(question string) string {
+	slug := slugFromText(question)
+	if slug != "output" {
+		return slug
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(question)))
+	return "query-" + hex.EncodeToString(sum[:])[:10]
 }
 
 func bulletize(items []string) []string {

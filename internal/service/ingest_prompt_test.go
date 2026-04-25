@@ -5,9 +5,20 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"wikios/internal/config"
 )
+
+func TestLLMRequestTimeoutUsesPublicAndAdminConfig(t *testing.T) {
+	svc := newBaseService(Deps{Config: &config.Config{LLM: config.LLMConfig{TimeoutSec: 90, AdminTimeoutSec: 300}}})
+	if got := svc.llmRequestTimeout(nil); got != 90*time.Second {
+		t.Fatalf("expected public/default timeout 90s, got %s", got)
+	}
+	if got := svc.llmRequestTimeout(NewExecution("ingest")); got != 300*time.Second {
+		t.Fatalf("expected admin timeout 300s, got %s", got)
+	}
+}
 
 func TestFAQClassificationManifestIsCompleteAndNotSegmentJSON(t *testing.T) {
 	dataset := &canonicalFAQDataset{

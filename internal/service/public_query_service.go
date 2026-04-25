@@ -75,7 +75,8 @@ func (s *PublicQueryService) Answer(ctx context.Context, traceID string, req Pub
 	if candidateTopK > 12 {
 		candidateTopK = 12
 	}
-	pages, err := s.deps.Retriever.Retrieve(ctx, env, req.Question, candidateTopK)
+	retrievalQuestion := buildPublicRetrievalQuestion(req.Question, req.History)
+	pages, err := s.deps.Retriever.Retrieve(ctx, env, retrievalQuestion, candidateTopK)
 	if err != nil {
 		return nil, err
 	}
@@ -87,14 +88,14 @@ func (s *PublicQueryService) Answer(ctx context.Context, traceID string, req Pub
 		if !isPublicReadableEvidence(page.Path) {
 			continue
 		}
-		content, ok := s.readPublicEvidencePage(ctx, env, page.Path, req.Question, seenPaths, &contentBlocks, &sources)
+		content, ok := s.readPublicEvidencePage(ctx, env, page.Path, retrievalQuestion, seenPaths, &contentBlocks, &sources)
 		if !ok {
 			continue
 		}
 		relatedEvidencePaths = append(relatedEvidencePaths, linkedPublicEvidencePathsFromContent(content)...)
 	}
 	for _, evidencePath := range dedupeEvidencePaths(relatedEvidencePaths) {
-		s.readPublicEvidencePage(ctx, env, evidencePath, req.Question, seenPaths, &contentBlocks, &sources)
+		s.readPublicEvidencePage(ctx, env, evidencePath, retrievalQuestion, seenPaths, &contentBlocks, &sources)
 	}
 	if len(contentBlocks) == 0 || !hasPublicEvidence(sources) {
 		fallback := s.publicFallback(req.Question)
@@ -230,6 +231,44 @@ func formatConversationHistory(history []ChatMessage) string {
 		return ""
 	}
 	return "最近对话上下文：\n" + strings.Join(lines, "\n") + "\n\n"
+}
+
+func buildPublicRetrievalQuestion(question string, history []ChatMessage) string {
+	question = strings.TrimSpace(question)
+	if len(history) == 0 {
+		return question
+	}
+	lines := make([]string, 0, len(history)+1)
+	start := 0
+	if len(history) > publicHistoryLimit {
+		start = len(history) - publicHistoryLimit
+	}
+	for _, item := range history[start:] {
+		role := publicRetrievalRoleLabel(item.Role)
+		content := strings.TrimSpace(item.Content)
+		if role == "" || content == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s：%s", role, truncateForPrompt(content, 180)))
+	}
+	if len(lines) == 0 {
+		return question
+	}
+	if question != "" {
+		lines = append(lines, "当前问题："+question)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func publicRetrievalRoleLabel(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "user":
+		return "用户"
+	case "assistant":
+		return "客服"
+	default:
+		return ""
+	}
 }
 
 func (s *PublicQueryService) matchPublicIntent(question string) (PublicIntentResult, bool) {

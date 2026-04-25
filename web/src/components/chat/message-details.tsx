@@ -1,7 +1,7 @@
 "use client";
 
 import { ReactNode, useMemo, useState } from "react";
-import { Braces, Cog, FileJson2, MessageSquareQuote } from "lucide-react";
+import { Braces, BrainCircuit, Cog, FileJson2, MessageSquareQuote } from "lucide-react";
 
 import { ScrollJumpControls } from "@/components/ui/scroll-jump-controls";
 import { useScrollFollow } from "@/lib/use-scroll-follow";
@@ -12,7 +12,7 @@ type Props = {
   leadingContent?: ReactNode;
 };
 
-type DetailTab = "prompt" | "tools" | "execution" | "result";
+type DetailTab = "reasoning" | "prompt" | "tools" | "execution" | "result";
 
 type TabConfig = {
   id: DetailTab;
@@ -21,6 +21,7 @@ type TabConfig = {
 };
 
 const tabs: TabConfig[] = [
+  { id: "reasoning", label: "Reasoning", icon: BrainCircuit },
   { id: "prompt", label: "Prompt", icon: MessageSquareQuote },
   { id: "tools", label: "Tools", icon: Cog },
   { id: "execution", label: "Execution", icon: Braces },
@@ -41,11 +42,14 @@ export function MessageDetails({ details, leadingContent }: Props) {
   const executionSteps = Array.isArray(execution.steps) ? execution.steps : [];
   const steps = Array.isArray(object.steps) ? object.steps : executionSteps;
   const result = object.result ?? object;
+  const reasoning = typeof object.reasoning === "string" ? object.reasoning : "";
 
   const availableTabs = useMemo(
     () =>
       tabs.filter((tab) => {
         switch (tab.id) {
+          case "reasoning":
+            return reasoning.trim() !== "";
           case "prompt":
             return prompts.length > 0;
           case "tools":
@@ -56,7 +60,7 @@ export function MessageDetails({ details, leadingContent }: Props) {
             return true;
         }
       }),
-    [execution, prompts.length, steps.length],
+    [execution, prompts.length, reasoning, steps.length],
   );
 
   const [activeTab, setActiveTab] = useState<DetailTab>(availableTabs[0]?.id ?? "result");
@@ -89,11 +93,21 @@ export function MessageDetails({ details, leadingContent }: Props) {
 
       {leadingContent}
 
+      {resolvedTab === "reasoning" ? <ReasoningPanel reasoning={reasoning} /> : null}
       {resolvedTab === "prompt" ? <PromptPanel prompts={prompts} /> : null}
       {resolvedTab === "tools" ? <ToolsPanel steps={steps} /> : null}
       {resolvedTab === "execution" ? <ExecutionPanel execution={execution} /> : null}
       {resolvedTab === "result" ? <ResultPanel result={result} /> : null}
     </div>
+  );
+}
+
+function ReasoningPanel({ reasoning }: { reasoning: string }) {
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-3">
+      <div className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Reasoning Stream</div>
+      <CodeBlock value={reasoning} />
+    </section>
   );
 }
 

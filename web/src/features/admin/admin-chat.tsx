@@ -173,9 +173,11 @@ export function AdminChat({ username }: { username: string }) {
   const [selectedSyncPaths, setSelectedSyncPaths] = useState<string[]>([]);
   const [syncMessage, setSyncMessage] = useState("");
   const [syncBusy, setSyncBusy] = useState(false);
+  const [syncMessageBusy, setSyncMessageBusy] = useState(false);
+  const [syncMessageRule, setSyncMessageRule] = useState("");
   const [syncResult, setSyncResult] = useState<SyncCommitResponse | null>(null);
   const [syncError, setSyncError] = useState("");
-  const [toolsOpen, setToolsOpen] = useState(true);
+  const [toolsOpen, setToolsOpen] = useState(false);
 
   useEffect(() => {
     const raw = localStorage.getItem(storageKey);
@@ -531,6 +533,7 @@ export function AdminChat({ username }: { username: string }) {
           .map((file) => file.path),
       );
       setSyncMessage(defaultSyncMessage(response));
+      setSyncMessageRule("");
     } catch (reason) {
       setSyncError(
         reason instanceof Error ? reason.message : "读取同步状态失败",
@@ -584,8 +587,30 @@ export function AdminChat({ username }: { username: string }) {
     }
   }
 
+  async function generateSyncMessage() {
+    if (selectedSyncPaths.length === 0) {
+      setSyncError("请先选择要提交的文件。");
+      return;
+    }
+    setSyncMessageBusy(true);
+    setSyncError("");
+    try {
+      const response = await api.syncGenerateMessage(selectedSyncPaths);
+      setSyncMessage(response.message);
+      setSyncMessageRule(response.rule);
+    } catch (reason) {
+      setSyncError(reason instanceof Error ? reason.message : "生成提交信息失败");
+    } finally {
+      setSyncMessageBusy(false);
+    }
+  }
+
   async function pushSyncCommit() {
     if (!syncStatus) {
+      return;
+    }
+    if (!syncStatus.can_push || syncStatus.push_count <= 0) {
+      setSyncError("当前没有未推送的提交，请先选择文件并提交。");
       return;
     }
     if (
@@ -702,8 +727,29 @@ export function AdminChat({ username }: { username: string }) {
       });
       return;
     }
+    if (event.type === "llm_reasoning_delta") {
+      const data = (event.data ?? {}) as Record<string, unknown>;
+      appendDetailText(conversationId, assistantId, "reasoning", String(data.delta ?? ""), 12000);
+      appendEventDetail(
+        conversationId,
+        assistantId,
+        "reasoning_events",
+        {
+          name: data.name,
+          delta: data.delta,
+          created_at: data.created_at,
+        },
+        80,
+      );
+      return;
+    }
     if (event.type === "llm_done") {
-      mergeDetails(conversationId, assistantId, { llm_done: event.data });
+      const data = asRecord(event.data);
+      const reasoning = String(data.reasoning ?? "");
+      mergeDetails(conversationId, assistantId, {
+        llm_done: event.data,
+        ...(reasoning.trim() !== "" ? { reasoning } : {}),
+      });
       return;
     }
     if (event.type === "done") {
@@ -836,6 +882,42 @@ export function AdminChat({ username }: { username: string }) {
               details: {
                 ...details,
                 [key]: [...values, value].slice(-maxItems),
+              },
+            };
+          }),
+        };
+      }),
+    );
+  }
+
+  function appendDetailText(
+    conversationId: string,
+    messageId: string,
+    key: string,
+    value: string,
+    maxChars = 12000,
+  ) {
+    if (value === "") {
+      return;
+    }
+    setConversations((current) =>
+      current.map((conversation) => {
+        if (conversation.id !== conversationId) {
+          return conversation;
+        }
+        return {
+          ...conversation,
+          messages: conversation.messages.map((message) => {
+            if (message.id !== messageId) {
+              return message;
+            }
+            const details = asRecord(message.details);
+            const next = `${String(details[key] ?? "")}${value}`;
+            return {
+              ...message,
+              details: {
+                ...details,
+                [key]: next.length > maxChars ? next.slice(-maxChars) : next,
               },
             };
           }),
@@ -1352,93 +1434,71 @@ export function AdminChat({ username }: { username: string }) {
             className="bottom-4 right-6"
           />
         </div>
-        <div className="border-t px-6 py-5">
-          <div className="mx-auto max-w-3xl">
-            <div className="mb-2 text-right text-xs text-muted-foreground">
-              {error ||
-                busyLabel ||
-                "支持多轮上下文，也会在详情里显示执行命令和方法。"}
+        <div className="border-t bg-white/65 px-4 py-3 backdrop-blur">
+          <div className="mx-auto max-w-4xl">
+            <div className="mb-2 flex items-center justify-between gap-3 px-3 text-xs text-muted-foreground">
+              <span className="truncate">
+                {error || busyLabel || "支持多轮上下文，执行过程可在消息内展开。"}
+              </span>
+              <CompactContextUsage
+                usage={contextUsage}
+                loading={contextLoading}
+                onNewConversation={createNewConversation}
+              />
             </div>
-            <ContextUsageBar
-              usage={contextUsage}
-              loading={contextLoading}
-              onNewConversation={createNewConversation}
-            />
-            <div className="rounded-[28px] border bg-white p-3 shadow-soft">
+            <div className="rounded-[24px] border bg-white px-3 py-2 shadow-soft">
               {toolsOpen ? (
-                <div className="mb-2 flex flex-wrap items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 rounded-full px-3"
-                    onClick={() => fileInputRef.current?.click()}
+                <div className="mb-2 flex flex-wrap items-center gap-2 border-b border-slate-100 pb-2">
+                  <ComposerToolButton
+                    icon={Paperclip}
+                    label="上传并摄入"
                     disabled={busy}
                     title="选择文件并交给 server 摄入到 Wiki"
-                  >
-                    <Paperclip className="mr-2 h-4 w-4" />
-                    上传并摄入
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 rounded-full px-3"
+                    onClick={() => fileInputRef.current?.click()}
+                  />
+                  <ComposerToolButton
+                    icon={Activity}
+                    label="健康检查"
+                    disabled={busy}
+                    title="按 Wiki 的 LINT 规则执行健康检查"
                     onClick={() =>
                       void send("执行一次健康检查", { mode_hint: "lint" })
                     }
+                  />
+                  <ComposerToolButton
+                    icon={Sparkles}
+                    label="综合分析"
                     disabled={busy}
-                    title="按 Wiki 的 LINT 规则执行健康检查"
-                  >
-                    <Activity className="mr-2 h-4 w-4" />
-                    健康检查
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 rounded-full px-3"
+                    title="让 LLM 按 Wiki 的 REFLECT 规则做综合分析"
                     onClick={() =>
                       void send("请做一次综合反思分析", {
                         mode_hint: "reflect",
                       })
                     }
+                  />
+                  <ComposerToolButton
+                    icon={Wrench}
+                    label="修复问题"
                     disabled={busy}
-                    title="让 LLM 按 Wiki 的 REFLECT 规则做综合分析"
-                  >
-                    <Sparkles className="mr-2 h-4 w-4" />
-                    综合分析
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 rounded-full px-3"
+                    title="让 LLM 按 Wiki 的 REPAIR 规则修复低风险问题"
                     onClick={() =>
                       void send("请尝试自动修复当前上下文中的低风险问题", {
                         mode_hint: "repair",
                       })
                     }
+                  />
+                  <ComposerToolButton
+                    icon={GitMerge}
+                    label="合并冲突"
                     disabled={busy}
-                    title="让 LLM 按 Wiki 的 REPAIR 规则修复低风险问题"
-                  >
-                    <Wrench className="mr-2 h-4 w-4" />
-                    修复问题
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 rounded-full px-3"
+                    title="让 LLM 按 Wiki 的 MERGE 规则提出合并方案，不自动合并"
                     onClick={() =>
                       void send(
                         "请根据 MERGE 操作规范检查当前上下文中的可合并或去重项，只给出合并方案，不要自动执行合并。",
-                        {
-                          mode_hint: "merge",
-                        },
+                        { mode_hint: "merge" },
                       )
                     }
-                    disabled={busy}
-                    title="让 LLM 按 Wiki 的 MERGE 规则提出合并方案，不自动合并"
-                  >
-                    <GitMerge className="mr-2 h-4 w-4" />
-                    合并冲突
-                  </Button>
+                  />
                 </div>
               ) : null}
               <Textarea
@@ -1453,27 +1513,23 @@ export function AdminChat({ username }: { username: string }) {
                     void send();
                   }
                 }}
-                className="min-h-[88px] resize-none border-0 bg-transparent p-2 shadow-none focus-visible:ring-0"
-                placeholder="请输入管理员指令或问题"
+                className="min-h-[54px] resize-none border-0 bg-transparent px-2 py-2 shadow-none focus-visible:ring-0"
+                placeholder="要求后续变更"
               />
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <Button
+                  <button
                     type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 w-8 rounded-full"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100 hover:text-slate-950"
                     onClick={() => setToolsOpen((value) => !value)}
-                    title={toolsOpen ? "隐藏输入框工具栏" : "显示输入框工具栏"}
+                    title={toolsOpen ? "隐藏工具" : "展开工具"}
                   >
-                    {toolsOpen ? (
-                      <ChevronDown className="h-4 w-4" />
-                    ) : (
-                      <Plus className="h-4 w-4" />
-                    )}
-                  </Button>
-                  <span className="rounded-full border border-orange-200 bg-orange-50 px-3 py-1 text-xs font-medium text-orange-700">
+                    {toolsOpen ? <ChevronDown className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                  </button>
+                  <span className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium text-orange-600">
+                    <span className="h-3 w-3 rounded-full border border-orange-300" />
                     完全访问权限
+                    <ChevronDown className="h-3 w-3" />
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1609,6 +1665,19 @@ export function AdminChat({ username }: { username: string }) {
                     {syncStatus?.remote || "-"}；ahead {syncStatus?.ahead ?? 0}{" "}
                     / behind {syncStatus?.behind ?? 0}
                   </span>
+                  <span className="rounded-full bg-slate-100 px-2 py-1 text-slate-700">
+                    待提交 {syncStatus?.changed_count ?? syncStatus?.files.length ?? 0} 个文件
+                  </span>
+                  <span
+                    className={cn(
+                      "rounded-full px-2 py-1",
+                      (syncStatus?.push_count ?? 0) > 0
+                        ? "bg-emerald-50 text-emerald-700"
+                        : "bg-slate-100 text-slate-600",
+                    )}
+                  >
+                    待推送 {syncStatus?.push_count ?? 0} 个提交
+                  </span>
                   <Button
                     type="button"
                     variant="outline"
@@ -1621,6 +1690,27 @@ export function AdminChat({ username }: { username: string }) {
                     刷新
                   </Button>
                 </div>
+                {(syncStatus?.commits_to_push.length ?? 0) > 0 ? (
+                  <div className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3">
+                    <div className="text-xs font-semibold text-emerald-800">
+                      待推送提交
+                    </div>
+                    <div className="mt-2 space-y-1">
+                      {syncStatus?.commits_to_push.map((commit) => (
+                        <div
+                          key={commit.hash}
+                          className="flex flex-wrap items-center gap-2 text-xs text-emerald-900"
+                        >
+                          <span className="font-mono">{commit.hash}</span>
+                          <span>{commit.subject}</span>
+                          <span className="text-emerald-700">
+                            {commit.date} · {commit.author}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="rounded-xl border border-slate-200">
                   {(syncStatus?.files.length ?? 0) === 0 ? (
                     <div className="px-4 py-8 text-center text-sm text-muted-foreground">
@@ -1692,9 +1782,22 @@ export function AdminChat({ username }: { username: string }) {
                   )}
                 </div>
                 <div className="mt-4 space-y-2">
-                  <label className="text-xs font-semibold text-slate-600">
-                    提交信息
-                  </label>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-semibold text-slate-600">
+                      提交信息
+                    </label>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={syncBusy || syncMessageBusy || selectedSyncPaths.length === 0}
+                      onClick={() => void generateSyncMessage()}
+                      title="根据已选择文件让 LLM 生成一条符合规则的提交信息"
+                    >
+                      <Sparkles className="mr-2 h-4 w-4" />
+                      {syncMessageBusy ? "生成中" : "LLM 生成"}
+                    </Button>
+                  </div>
                   <input
                     value={syncMessage}
                     onChange={(event) => setSyncMessage(event.target.value)}
@@ -1702,11 +1805,40 @@ export function AdminChat({ username }: { username: string }) {
                     placeholder="例如：更新 Wiki 内容"
                     title="本次 Git commit 的提交信息"
                   />
+                  <p className="text-[11px] leading-5 text-muted-foreground">
+                    {syncMessageRule ||
+                      "规则：中文一行，说明本次 Wiki 资料变更，不提 LLM/AI/server/prompt。"}
+                  </p>
                 </div>
                 <div className="mt-3 text-xs text-muted-foreground">
                   已选择 {selectedSyncPaths.length} 个文件。
                   {syncResult ? `最近提交：${syncResult.hash}` : ""}
                 </div>
+                {(syncStatus?.recent_commits.length ?? 0) > 0 ? (
+                  <div className="mt-4 rounded-xl border border-slate-200 p-3">
+                    <div className="text-xs font-semibold text-slate-600">
+                      最近提交记录
+                    </div>
+                    <div className="mt-2 max-h-32 space-y-1 overflow-y-auto">
+                      {syncStatus?.recent_commits.map((commit) => (
+                        <div
+                          key={commit.hash}
+                          className="flex flex-wrap items-center gap-2 text-xs text-slate-600"
+                        >
+                          <span className="font-mono text-slate-900">
+                            {commit.hash}
+                          </span>
+                          <span className="text-slate-900">
+                            {commit.subject}
+                          </span>
+                          <span>
+                            {commit.date} · {commit.author}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 {syncError ? (
                   <div
                     className={cn(
@@ -1747,11 +1879,15 @@ export function AdminChat({ username }: { username: string }) {
                 <Button
                   type="button"
                   size="sm"
-                  disabled={syncBusy}
+                  disabled={syncBusy || !syncStatus?.can_push}
                   onClick={() => void pushSyncCommit()}
-                  title="把当前分支推送到配置的远端"
+                  title={
+                    syncStatus?.can_push
+                      ? "把当前分支未推送的提交推送到配置远端"
+                      : "没有未推送提交，需先提交后才能推送"
+                  }
                 >
-                  推送
+                  推送{(syncStatus?.push_count ?? 0) > 0 ? `（${syncStatus?.push_count}）` : ""}
                 </Button>
               </footer>
             </div>
@@ -1892,6 +2028,78 @@ function conversationHistory(messages: AdminMessage[]) {
   return messages
     .filter((message) => message.content.trim() !== "")
     .map((message) => ({ role: message.role, content: message.content }));
+}
+
+function ComposerToolButton({
+  icon: Icon,
+  label,
+  disabled,
+  title,
+  onClick,
+}: {
+  icon: typeof Paperclip;
+  label: string;
+  disabled?: boolean;
+  title: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      title={title}
+      onClick={onClick}
+      className="inline-flex h-8 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      <Icon className="h-3.5 w-3.5" />
+      {label}
+    </button>
+  );
+}
+
+function CompactContextUsage({
+  usage,
+  loading,
+  onNewConversation,
+}: {
+  usage: ContextUsage | null;
+  loading: boolean;
+  onNewConversation: () => void;
+}) {
+  if (!usage) {
+    return (
+      <span className="shrink-0 text-[11px] text-muted-foreground">
+        {loading ? "上下文计算中..." : "上下文暂不可用"}
+      </span>
+    );
+  }
+  const percent =
+    usage.max_tokens > 0
+      ? Math.min(100, Math.round((usage.used_tokens / usage.max_tokens) * 100))
+      : 0;
+  return (
+    <span className="flex min-w-[220px] max-w-[320px] shrink-0 items-center gap-2">
+      <span className={cn("text-[11px]", usage.blocked ? "text-destructive" : "text-muted-foreground")}>
+        上下文 {usage.used_tokens.toLocaleString()} / {usage.max_tokens.toLocaleString()}
+      </span>
+      <span className="h-1.5 min-w-20 flex-1 overflow-hidden rounded-full bg-slate-100">
+        <span
+          className={cn("block h-full rounded-full", usage.blocked ? "bg-destructive" : "bg-slate-900")}
+          style={{ width: `${percent}%` }}
+        />
+      </span>
+      {usage.blocked ? (
+        <button
+          type="button"
+          className="shrink-0 text-[11px] font-semibold text-destructive hover:underline"
+          onClick={onNewConversation}
+          title="创建一个新对话继续"
+        >
+          新对话
+        </button>
+      ) : null}
+    </span>
+  );
 }
 
 function ContextUsageBar({
