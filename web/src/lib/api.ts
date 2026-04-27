@@ -238,8 +238,7 @@ function resolveAPIBaseURL() {
   if (typeof window === "undefined") {
     return "";
   }
-  const { protocol, hostname } = window.location;
-  return `${protocol}//${hostname}:8080`;
+  return window.location.origin;
 }
 
 async function consumeSSE(

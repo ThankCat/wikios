@@ -72,6 +72,29 @@ func TestDirectAdminServiceRunsShell(t *testing.T) {
 	}
 }
 
+func TestDirectShellResultPromptIncludesToolErrors(t *testing.T) {
+	prompt := directShellResultPrompt(map[string]any{
+		"command":       "pwd",
+		"cwd":           "/data/wiki-repo",
+		"shell":         "/bin/bash",
+		"tool_success":  false,
+		"exit_code":     -1,
+		"error_code":    "EXEC_FAILED",
+		"error_message": "exec: zsh: executable file not found in $PATH",
+		"error":         "exec.shell: exec: zsh: executable file not found in $PATH",
+	})
+	for _, want := range []string{
+		"tool_success: false",
+		"error_code: EXEC_FAILED",
+		"error_message: exec: zsh: executable file not found in $PATH",
+		"error: exec.shell: exec: zsh: executable file not found in $PATH",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to include %q, got %q", want, prompt)
+		}
+	}
+}
+
 func TestDirectAdminServiceSalvagesMalformedFinalJSON(t *testing.T) {
 	root := t.TempDir()
 	cfg := &config.Config{

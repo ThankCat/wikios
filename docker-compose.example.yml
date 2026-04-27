@@ -7,13 +7,14 @@ services:
     container_name: wikios
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "9025:9025"
     environment:
       WIKIOS_CONFIG: /app/configs/config.prod.yaml
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
       WIKIOS_DEFAULT_ADMIN_USERNAME: ${WIKIOS_DEFAULT_ADMIN_USERNAME:-admin}
       WIKIOS_DEFAULT_ADMIN_PASSWORD: ${WIKIOS_DEFAULT_ADMIN_PASSWORD:-admin123}
       WIKIOS_QMD_INDEX: ${WIKIOS_QMD_INDEX:-zy-knowledge-base}
+      WIKIOS_QMD_AUTO_COLLECTION: ${WIKIOS_QMD_AUTO_COLLECTION:-true}
       WIKIOS_LLM_ADMIN_TIMEOUT_SEC: ${WIKIOS_LLM_ADMIN_TIMEOUT_SEC:-300}
       WIKIOS_CONTEXT_MAX_TOKENS: ${WIKIOS_CONTEXT_MAX_TOKENS:-1000000}
       WIKIOS_CONTEXT_RESERVE_TOKENS: ${WIKIOS_CONTEXT_RESERVE_TOKENS:-8192}
@@ -21,14 +22,26 @@ services:
       WIKIOS_CONTEXT_TOKENIZER: ${WIKIOS_CONTEXT_TOKENIZER:-cl100k_base}
       WIKIOS_KNOWLEDGE_PROFILE: ${WIKIOS_KNOWLEDGE_PROFILE:-siyetian}
       WIKIOS_KNOWLEDGE_PROFILE_PATH: ${WIKIOS_KNOWLEDGE_PROFILE_PATH:-/app/configs/knowledge_profiles/siyetian.yaml}
+      WIKIOS_WIKI_GIT_URL: ${WIKIOS_WIKI_GIT_URL:-}
+      WIKIOS_WIKI_GIT_BRANCH: ${WIKIOS_WIKI_GIT_BRANCH:-main}
+      WIKIOS_WIKI_GIT_REMOTE: ${WIKIOS_WIKI_GIT_REMOTE:-origin}
+      WIKIOS_WIKI_GIT_PULL_ON_START: ${WIKIOS_WIKI_GIT_PULL_ON_START:-true}
+      WIKIOS_WIKI_GIT_RESET_ON_START: ${WIKIOS_WIKI_GIT_RESET_ON_START:-false}
     volumes:
       - ./knowledge-base:/data/wiki-repo
       - ./data/workspace:/app/.workspace
       - ./data/qmd-cache:/root/.cache/qmd
       # Optional: enable git push/pull over SSH from the mounted wiki repository.
-      # - ~/.ssh:/root/.ssh:ro
+      - ~/.ssh:/root/.ssh:ro
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:9025/healthz').then(r=>process.exit(r.ok?0\
+            :1)).catch(()=>process.exit(1))",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3

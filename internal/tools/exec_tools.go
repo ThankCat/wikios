@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -228,17 +229,51 @@ func (t *execShellTool) Execute(ctx context.Context, env *runtime.ExecEnv, args 
 	preferredPath := qmdPreferredPath()
 	envs := append(commandEnvWithPreferredPath(preferredPath), "WIKI_ROOT="+cwd)
 	shellCommand := fmt.Sprintf("export PATH=%q; export WIKI_ROOT=%q; %s", preferredPath, cwd, command)
-	stdout, stderr, exitCode, err := runCommand(runCtx, cwd, "zsh", []string{"-c", shellCommand}, envs)
-	if err != nil {
-		return failure(t.risk, "EXEC_FAILED", err), nil
+	shell := shellExecutable()
+	stdout, stderr, exitCode, err := runCommand(runCtx, cwd, shell, []string{"-c", shellCommand}, envs)
+	data := map[string]any{
+		"command":      command,
+		"cwd":          cwd,
+		"shell":        shell,
+		"tool_success": true,
+		"stdout":       stdout,
+		"stderr":       stderr,
+		"exit_code":    exitCode,
 	}
-	return success(t.risk, map[string]any{
-		"command":   command,
-		"cwd":       cwd,
-		"stdout":    stdout,
-		"stderr":    stderr,
-		"exit_code": exitCode,
-	}), nil
+	if err != nil {
+		data["tool_success"] = false
+		data["error_code"] = "EXEC_FAILED"
+		data["error_message"] = err.Error()
+		data["error"] = err.Error()
+		return runtime.ToolResult{
+			Success:   false,
+			RiskLevel: t.risk,
+			Data:      data,
+			Error: &runtime.ToolError{
+				Code:    "EXEC_FAILED",
+				Message: err.Error(),
+			},
+		}, nil
+	}
+	return success(t.risk, data), nil
+}
+
+func shellExecutable() string {
+	for _, candidate := range []string{
+		os.Getenv("WIKIOS_SHELL"),
+		"bash",
+		"sh",
+		"zsh",
+	} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if path, err := exec.LookPath(candidate); err == nil {
+			return path
+		}
+	}
+	return "sh"
 }
 
 func (t *lintRunTool) Validate(args map[string]any) error { return nil }

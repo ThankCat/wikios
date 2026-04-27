@@ -77,16 +77,25 @@ func (s *DirectAdminService) Run(ctx context.Context, execution *Execution, trac
 			}
 			result, err := s.executeTool(ctx, execution, env, "exec.shell", map[string]any{"command": command}, "direct shell")
 			commandRecord := map[string]any{
-				"command": command,
-				"reason":  strings.TrimSpace(action.Reason),
+				"command":      command,
+				"reason":       strings.TrimSpace(action.Reason),
+				"tool_success": result.Success,
 			}
 			if result.Data != nil {
 				for key, value := range result.Data {
 					commandRecord[key] = value
 				}
 			}
+			if result.Error != nil {
+				commandRecord["error_code"] = result.Error.Code
+				commandRecord["error_message"] = result.Error.Message
+				commandRecord["error"] = result.Error.Message
+			}
 			if err != nil {
 				commandRecord["error"] = err.Error()
+				if _, ok := commandRecord["error_message"]; !ok {
+					commandRecord["error_message"] = err.Error()
+				}
 			}
 			commands = append(commands, commandRecord)
 			messages = append(messages,
@@ -306,10 +315,15 @@ func directAdminCurrentUserPrompt(req DirectAdminRequest) string {
 
 func directShellResultPrompt(result map[string]any) string {
 	return fmt.Sprintf(
-		"shell_result:\ncommand: %s\ncwd: %s\nexit_code: %v\nstdout:\n%s\nstderr:\n%s",
+		"shell_result:\ncommand: %s\ncwd: %s\nshell: %s\ntool_success: %v\nexit_code: %v\nerror_code: %s\nerror_message: %s\nerror: %s\nstdout:\n%s\nstderr:\n%s",
 		directStringValue(result, "command"),
 		directStringValue(result, "cwd"),
+		directStringValue(result, "shell"),
+		result["tool_success"],
 		result["exit_code"],
+		directStringValue(result, "error_code"),
+		directStringValue(result, "error_message"),
+		directStringValue(result, "error"),
 		trimShellOutput(directStringValue(result, "stdout")),
 		trimShellOutput(directStringValue(result, "stderr")),
 	)

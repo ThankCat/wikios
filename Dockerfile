@@ -26,11 +26,14 @@ COPY --from=go-build /out/wiki-server /app/wiki-server
 COPY --from=web-build /src/web/dist /app/web/dist
 COPY configs /app/configs
 COPY internal/llm/prompts /app/internal/llm/prompts
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
 ENV WIKIOS_CONFIG=/app/configs/config.prod.yaml
-EXPOSE 8080
+EXPOSE 9025
 VOLUME ["/data/wiki-repo", "/app/.workspace"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-	CMD node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+	CMD node -e "fetch('http://127.0.0.1:9025/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["/app/wiki-server"]

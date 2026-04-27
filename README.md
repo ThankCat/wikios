@@ -49,6 +49,12 @@ make build-web
 git clone <your-wiki-repo> ./knowledge-base
 ```
 
+也可以让容器启动时自动拉取 Wiki。配置 `WIKIOS_WIKI_GIT_URL` 后：
+
+- `./knowledge-base` 为空：启动时自动 `git clone`。
+- `./knowledge-base` 已经是 git 仓库：启动时自动 `git pull --ff-only`。
+- `./knowledge-base` 非空且不是 git 仓库：容器拒绝启动，避免覆盖本地数据。
+
 最小结构建议：
 
 ```text
@@ -62,7 +68,7 @@ knowledge-base/
     outputs/
 ```
 
-生产部署采用宿主机目录挂载。容器不会内置真实 Wiki，不会启动时 clone，也不会自动改变你的 Wiki 结构。
+生产部署采用宿主机目录挂载。未配置 `WIKIOS_WIKI_GIT_URL` 时，容器不会内置真实 Wiki，不会启动时 clone，也不会自动改变你的 Wiki 结构。
 
 ### 2. 配置环境变量
 
@@ -89,6 +95,11 @@ WIKIOS_CONTEXT_COUNTER=tokenizer
 WIKIOS_CONTEXT_TOKENIZER=cl100k_base
 WIKIOS_KNOWLEDGE_PROFILE=siyetian
 WIKIOS_KNOWLEDGE_PROFILE_PATH=/app/configs/knowledge_profiles/siyetian.yaml
+WIKIOS_WIKI_GIT_URL=git@github.com:your-org/your-wiki.git
+WIKIOS_WIKI_GIT_BRANCH=main
+WIKIOS_WIKI_GIT_REMOTE=origin
+WIKIOS_WIKI_GIT_PULL_ON_START=true
+WIKIOS_WIKI_GIT_RESET_ON_START=false
 ```
 
 ### 3. 启动
@@ -136,6 +147,8 @@ docker compose -f docker-compose.example.yml exec wikios \
 | `./data/qmd-cache` | `/root/.cache/qmd` | qmd 索引缓存，可选但推荐持久化。 |
 
 如果需要在管理后台使用同步推送功能，外挂 Wiki 必须是 git 仓库，并配置好 remote、branch 和容器内 git 凭据。SSH 推送可以额外挂载只读 `~/.ssh`，或改用 HTTPS token remote。
+
+如果使用自动拉取私有仓库，也需要给容器提供 git 凭据。SSH 方式可打开 compose 里的 `~/.ssh:/root/.ssh:ro` 挂载；HTTPS 方式可在 `WIKIOS_WIKI_GIT_URL` 中使用具备权限的 token URL。
 
 ## AI 客服对接
 
@@ -231,6 +244,10 @@ WIKIOS_DEFAULT_ADMIN_PASSWORD=admin123
 | `web.dist_dir` | 内置 Web 静态产物目录。 |
 | `public_intents.path` | 前置话术 YAML 路径。 |
 | `knowledge_profile.path` | 企业 profile 配置路径。 |
+| `WIKIOS_WIKI_GIT_URL` | 可选；配置后容器启动时自动 clone/pull 外挂 Wiki。 |
+| `WIKIOS_WIKI_GIT_BRANCH` | 自动 clone/pull 的分支，默认 `main`。 |
+| `WIKIOS_WIKI_GIT_PULL_ON_START` | 已有 git 仓库时是否启动自动 pull，默认 `true`。 |
+| `WIKIOS_WIKI_GIT_RESET_ON_START` | 是否启动时 hard reset 到远端分支，默认 `false`；开启会丢弃未提交本地改动。 |
 
 ## 生产注意事项
 
