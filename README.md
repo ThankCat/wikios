@@ -136,15 +136,17 @@ docker compose -f docker-compose.example.yml exec wikios \
   sh -lc 'qmd --index "$WIKIOS_QMD_INDEX" update'
 ```
 
-## 目录挂载说明
+## 数据挂载说明
 
-`docker-compose.example.yml` 默认挂载：
+`docker-compose.example.yml` 默认只把外挂 Wiki 放在 Docker named volume，工作区和 qmd 缓存保留在项目目录：
 
-| 宿主机路径 | 容器路径 | 用途 |
+| 挂载 | 容器路径 | 用途 |
 | --- | --- | --- |
-| `./knowledge-base` | `/data/wiki-repo` | 外挂 Wiki 仓库。 |
+| `wikios-wiki-repo` | `/data/wiki-repo` | 外挂 Wiki 仓库。 |
 | `./data/workspace` | `/app/.workspace` | SQLite、上传中间文件、服务工作区。 |
-| `./data/qmd-cache` | `/root/.cache/qmd` | qmd 索引缓存，可选但推荐持久化。 |
+| `./data/qmd-cache` | `/root/.cache/qmd` | qmd 索引缓存。 |
+
+首次使用空 Wiki volume 时，建议配置 `WIKIOS_WIKI_GIT_URL`，容器会自动 clone Wiki。停止或重建容器不会删除 named volume；如果执行 `docker compose down -v`，Wiki volume 会被删除。
 
 如果需要在管理后台使用同步推送功能，外挂 Wiki 必须是 git 仓库，并配置好 remote、branch 和容器内 git 凭据。SSH 推送可以额外挂载只读 `~/.ssh`，或改用 HTTPS token remote。
 

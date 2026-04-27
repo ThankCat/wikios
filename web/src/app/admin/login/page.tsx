@@ -8,8 +8,8 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 
 export default function AdminLoginPage() {
-  const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("admin123");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -31,7 +31,7 @@ export default function AdminLoginPage() {
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>管理员登录</CardTitle>
-          <CardDescription>默认账号：admin，默认密码：admin123</CardDescription>
+          <CardDescription>请输入管理员账号和密码</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-4">

@@ -28,7 +28,7 @@ services:
       WIKIOS_WIKI_GIT_PULL_ON_START: ${WIKIOS_WIKI_GIT_PULL_ON_START:-true}
       WIKIOS_WIKI_GIT_RESET_ON_START: ${WIKIOS_WIKI_GIT_RESET_ON_START:-false}
     volumes:
-      - ./knowledge-base:/data/wiki-repo
+      - wikios-wiki-repo:/data/wiki-repo
       - ./data/workspace:/app/.workspace
       - ./data/qmd-cache:/root/.cache/qmd
       # Optional: enable git push/pull over SSH from the mounted wiki repository.
@@ -46,3 +46,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+volumes:
+  wikios-wiki-repo:
