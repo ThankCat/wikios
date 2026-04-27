@@ -1,11 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "lib": [
-      "DOM",
-      "DOM.Iterable",
-      "ES2021"
-    ],
+    "lib": ["DOM", "DOM.Iterable", "ES2021"],
     "allowJs": false,
     "skipLibCheck": true,
     "esModuleInterop": true,
@@ -24,11 +20,8 @@
         "name": "next"
       }
     ],
-    "baseUrl": ".",
     "paths": {
-      "@/*": [
-        "./src/*"
-      ]
+      "@/*": ["./src/*"]
     }
   },
   "include": [
