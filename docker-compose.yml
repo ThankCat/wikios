@@ -9,7 +9,7 @@ services:
     ports:
       - "9025:9025"
     environment:
-      WIKIOS_CONFIG: /app/configs/config.prod.yaml
+      WIKIOS_CONFIG: /app/deploy/config.prod.yaml
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
       WIKIOS_DEFAULT_ADMIN_USERNAME: ${WIKIOS_DEFAULT_ADMIN_USERNAME:-admin}
       WIKIOS_DEFAULT_ADMIN_PASSWORD: ${WIKIOS_DEFAULT_ADMIN_PASSWORD:-admin123}

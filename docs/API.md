@@ -9,7 +9,7 @@
 本地默认：
 
 ```text
-http://127.0.0.1:8080
+http://127.0.0.1:9025
 ```
 
 生产环境请替换为实际域名。
@@ -144,7 +144,7 @@ Content-Type：无请求体。
 #### curl
 
 ```bash
-curl http://127.0.0.1:8080/healthz
+curl http://127.0.0.1:9025/healthz
 ```
 
 ## 4. App Config
@@ -165,7 +165,7 @@ curl http://127.0.0.1:8080/healthz
 #### curl
 
 ```bash
-curl http://127.0.0.1:8080/app-config.json
+curl http://127.0.0.1:9025/app-config.json
 ```
 
 ## 5. Public API
@@ -199,7 +199,7 @@ Content-Type：`application/json`
 #### curl
 
 ```bash
-curl -X POST http://127.0.0.1:8080/api/v1/public/answer \
+curl -X POST http://127.0.0.1:9025/api/v1/public/answer \
   -H 'Content-Type: application/json' \
   -d '{
     "question": "这个怎么买？",
@@ -235,7 +235,7 @@ Request Body：同 `POST /api/v1/public/answer`。
 #### curl
 
 ```bash
-curl -N -X POST http://127.0.0.1:8080/api/v1/public/answer/stream \
+curl -N -X POST http://127.0.0.1:9025/api/v1/public/answer/stream \
   -H 'Content-Type: application/json' \
   -d '{"question":"住宅IP怎么购买？","history":[]}'
 ```
@@ -269,7 +269,7 @@ Content-Type：`application/json`
 #### curl
 
 ```bash
-curl -c cookie.txt -X POST http://127.0.0.1:8080/api/v1/admin/auth/login \
+curl -c cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"admin123"}'
 ```
@@ -291,7 +291,7 @@ Content-Type：无请求体。
 #### curl
 
 ```bash
-curl -b cookie.txt -X POST http://127.0.0.1:8080/api/v1/admin/auth/logout
+curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/auth/logout
 ```
 
 ### GET `/api/v1/admin/auth/me`
@@ -314,7 +314,7 @@ Content-Type：无请求体。
 #### curl
 
 ```bash
-curl -b cookie.txt http://127.0.0.1:8080/api/v1/admin/auth/me
+curl -b cookie.txt http://127.0.0.1:9025/api/v1/admin/auth/me
 ```
 
 ## 7. Admin Chat API
@@ -364,7 +364,7 @@ Content-Type：`application/json`
 #### curl
 
 ```bash
-curl -b cookie.txt -X POST http://127.0.0.1:8080/api/v1/admin/chat \
+curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/chat \
   -H 'Content-Type: application/json' \
   -d '{
     "message": "执行一次健康检查",
@@ -421,7 +421,7 @@ Request Body：同 `POST /api/v1/admin/chat`。
 #### curl
 
 ```bash
-curl -N -b cookie.txt -X POST http://127.0.0.1:8080/api/v1/admin/chat/stream \
+curl -N -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/chat/stream \
   -H 'Content-Type: application/json' \
   -d '{
     "message": "执行一次健康检查",
@@ -453,7 +453,7 @@ Request Body：同 `POST /api/v1/admin/chat`。
 #### curl
 
 ```bash
-curl -b cookie.txt -X POST http://127.0.0.1:8080/api/v1/admin/context/estimate \
+curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/context/estimate \
   -H 'Content-Type: application/json' \
   -d '{
     "message": "执行一次健康检查",
@@ -490,7 +490,7 @@ Content-Type：`multipart/form-data`
 #### curl
 
 ```bash
-curl -b cookie.txt -X POST http://127.0.0.1:8080/api/v1/admin/upload \
+curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/upload \
   -F 'file=@知识库问答整理.xlsx'
 ```
 
@@ -511,7 +511,7 @@ SSE 事件：同管理员执行流，常见事件包括 `meta`、`prompt`、`llm
 #### curl
 
 ```bash
-curl -N -b cookie.txt -X POST http://127.0.0.1:8080/api/v1/admin/upload/stream \
+curl -N -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/upload/stream \
   -F 'file=@知识库问答整理.xlsx'
 ```
 
@@ -552,7 +552,7 @@ curl -N -b cookie.txt -X POST http://127.0.0.1:8080/api/v1/admin/upload/stream \
 #### curl
 
 ```bash
-curl -b cookie.txt 'http://127.0.0.1:8080/api/v1/admin/wiki/tree?path=wiki%2Ffaq'
+curl -b cookie.txt 'http://127.0.0.1:9025/api/v1/admin/wiki/tree?path=wiki%2Ffaq'
 ```
 
 ### GET `/api/v1/admin/wiki/file`
@@ -593,7 +593,7 @@ curl -b cookie.txt 'http://127.0.0.1:8080/api/v1/admin/wiki/tree?path=wiki%2Ffaq
 #### curl
 
 ```bash
-curl -b cookie.txt 'http://127.0.0.1:8080/api/v1/admin/wiki/file?path=wiki%2Ffaq%2Ffaq-pricing.md'
+curl -b cookie.txt 'http://127.0.0.1:9025/api/v1/admin/wiki/file?path=wiki%2Ffaq%2Ffaq-pricing.md'
 ```
 
 ### GET `/api/v1/admin/wiki/download`
@@ -615,7 +615,7 @@ Response：文件流，不返回 JSON。
 #### curl
 
 ```bash
-curl -b cookie.txt -o demo.pdf 'http://127.0.0.1:8080/api/v1/admin/wiki/download?path=raw%2Ffiles%2Fdemo.pdf'
+curl -b cookie.txt -o demo.pdf 'http://127.0.0.1:9025/api/v1/admin/wiki/download?path=raw%2Ffiles%2Fdemo.pdf'
 ```
 
 ## 10. Sync API
@@ -644,7 +644,7 @@ curl -b cookie.txt -o demo.pdf 'http://127.0.0.1:8080/api/v1/admin/wiki/download
 #### curl
 
 ```bash
-curl -b cookie.txt http://127.0.0.1:8080/api/v1/admin/sync/status
+curl -b cookie.txt http://127.0.0.1:9025/api/v1/admin/sync/status
 ```
 
 #### SyncStatusFile
@@ -694,7 +694,7 @@ Content-Type：`application/json`
 #### curl
 
 ```bash
-curl -b cookie.txt -X POST http://127.0.0.1:8080/api/v1/admin/sync/generate-message \
+curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/sync/generate-message \
   -H 'Content-Type: application/json' \
   -d '{"paths":["wiki/faq/faq-pricing.md"]}'
 ```
@@ -727,7 +727,7 @@ Content-Type：`application/json`
 #### curl
 
 ```bash
-curl -b cookie.txt -X POST http://127.0.0.1:8080/api/v1/admin/sync/commit \
+curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/sync/commit \
   -H 'Content-Type: application/json' \
   -d '{
     "paths": ["wiki/faq/faq-pricing.md"],
@@ -766,7 +766,7 @@ Content-Type：`application/json`
 #### curl
 
 ```bash
-curl -b cookie.txt -X POST http://127.0.0.1:8080/api/v1/admin/sync/push \
+curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/sync/push \
   -H 'Content-Type: application/json' \
   -d '{"remote":"origin","branch":"main"}'
 ```
@@ -799,7 +799,7 @@ curl -b cookie.txt -X POST http://127.0.0.1:8080/api/v1/admin/sync/push \
 #### curl
 
 ```bash
-curl -b cookie.txt http://127.0.0.1:8080/api/v1/admin/public-intents
+curl -b cookie.txt http://127.0.0.1:9025/api/v1/admin/public-intents
 ```
 
 ### PUT `/api/v1/admin/public-intents`
@@ -821,7 +821,7 @@ Response：同 `GET /api/v1/admin/public-intents`。
 #### curl
 
 ```bash
-curl -b cookie.txt -X PUT http://127.0.0.1:8080/api/v1/admin/public-intents \
+curl -b cookie.txt -X PUT http://127.0.0.1:9025/api/v1/admin/public-intents \
   -H 'Content-Type: application/json' \
   -d '{"source":"version: 1\nrules: []\n"}'
 ```

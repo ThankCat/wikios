@@ -25,11 +25,12 @@ RUN npm install -g @tobilu/qmd \
 COPY --from=go-build /out/wiki-server /app/wiki-server
 COPY --from=web-build /src/web/dist /app/web/dist
 COPY configs /app/configs
+COPY deploy/config.prod.yaml /app/deploy/config.prod.yaml
 COPY internal/llm/prompts /app/internal/llm/prompts
-COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
-ENV WIKIOS_CONFIG=/app/configs/config.prod.yaml
+ENV WIKIOS_CONFIG=/app/deploy/config.prod.yaml
 EXPOSE 9025
 VOLUME ["/data/wiki-repo", "/app/.workspace"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

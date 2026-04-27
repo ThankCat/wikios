@@ -22,7 +22,7 @@ make dev
 
 默认地址：
 
-- API：`http://127.0.0.1:8080`
+- API：`http://127.0.0.1:9025`
 - Web：`http://127.0.0.1:3000`
 - 用户测试页：`/chat`
 - 管理员登录页：`/admin/login`
@@ -41,116 +41,35 @@ make build-web
 
 ## Docker 部署
 
-### 1. 准备外挂 Wiki
+完整部署步骤见：[docs/DOCKER_DEPLOY.md](docs/DOCKER_DEPLOY.md)。
 
-推荐把 Wiki 作为独立 git 仓库放在部署目录下：
-
-```bash
-git clone <your-wiki-repo> ./knowledge-base
-```
-
-也可以让容器启动时自动拉取 Wiki。配置 `WIKIOS_WIKI_GIT_URL` 后：
-
-- `./knowledge-base` 为空：启动时自动 `git clone`。
-- `./knowledge-base` 已经是 git 仓库：启动时自动 `git pull --ff-only`。
-- `./knowledge-base` 非空且不是 git 仓库：容器拒绝启动，避免覆盖本地数据。
-
-最小结构建议：
+部署入口文件：
 
 ```text
-knowledge-base/
-  AGENT.md
-  USER_GUIDE.md
-  raw/
-  wiki/
-    index.md
-    log.md
-    outputs/
+Dockerfile
+docker-compose.yml
+deploy/.env.prod
+deploy/config.prod.yaml
+deploy/docker-entrypoint.sh
 ```
 
-生产部署采用宿主机目录挂载。未配置 `WIKIOS_WIKI_GIT_URL` 时，容器不会内置真实 Wiki，不会启动时 clone，也不会自动改变你的 Wiki 结构。
-
-### 2. 配置环境变量
+生产启动命令：
 
 ```bash
-cp .env.example .env
+docker compose --env-file deploy/.env.prod -f docker-compose.yml up -d --build
 ```
 
-至少配置：
+Docker 部署默认使用 named volume `wikios-wiki-repo` 保存外挂 Wiki。配置 `WIKIOS_WIKI_GIT_URL` 后，容器首次启动会自动 clone Wiki，后续启动会按配置 pull。具体 SSH key、deploy key、Wiki push 权限和 qmd 初始化说明见 Docker 部署文档。
 
-```env
-DEEPSEEK_API_KEY=your-deepseek-api-key
-WIKIOS_DEFAULT_ADMIN_USERNAME=admin
-WIKIOS_DEFAULT_ADMIN_PASSWORD=change-me
-WIKIOS_QMD_INDEX=zy-knowledge-base
-```
-
-可选配置：
-
-```env
-WIKIOS_LLM_ADMIN_TIMEOUT_SEC=300
-WIKIOS_CONTEXT_MAX_TOKENS=1000000
-WIKIOS_CONTEXT_RESERVE_TOKENS=8192
-WIKIOS_CONTEXT_COUNTER=tokenizer
-WIKIOS_CONTEXT_TOKENIZER=cl100k_base
-WIKIOS_KNOWLEDGE_PROFILE=siyetian
-WIKIOS_KNOWLEDGE_PROFILE_PATH=/app/configs/knowledge_profiles/siyetian.yaml
-WIKIOS_WIKI_GIT_URL=git@github.com:your-org/your-wiki.git
-WIKIOS_WIKI_GIT_BRANCH=main
-WIKIOS_WIKI_GIT_REMOTE=origin
-WIKIOS_WIKI_GIT_PULL_ON_START=true
-WIKIOS_WIKI_GIT_RESET_ON_START=false
-```
-
-### 3. 启动
-
-```bash
-docker compose -f docker-compose.example.yml up -d --build
-```
-
-检查服务：
-
-```bash
-curl http://127.0.0.1:8080/healthz
-```
-
-访问管理后台：
-
-```text
-http://127.0.0.1:8080/admin/login
-```
-
-### 4. qmd 初始化
-
-首次部署时，如果外挂 Wiki 尚未建立 qmd collection，可执行：
-
-```bash
-docker compose -f docker-compose.example.yml exec wikios \
-  sh -lc 'qmd --index "$WIKIOS_QMD_INDEX" collection add wiki/ --name wiki'
-```
-
-后续更新可由管理后台操作触发，也可以手动执行：
-
-```bash
-docker compose -f docker-compose.example.yml exec wikios \
-  sh -lc 'qmd --index "$WIKIOS_QMD_INDEX" update'
-```
-
-## 数据挂载说明
-
-`docker-compose.example.yml` 默认只把外挂 Wiki 放在 Docker named volume，工作区和 qmd 缓存保留在项目目录：
+数据挂载：
 
 | 挂载 | 容器路径 | 用途 |
 | --- | --- | --- |
 | `wikios-wiki-repo` | `/data/wiki-repo` | 外挂 Wiki 仓库。 |
-| `./data/workspace` | `/app/.workspace` | SQLite、上传中间文件、服务工作区。 |
-| `./data/qmd-cache` | `/root/.cache/qmd` | qmd 索引缓存。 |
+| `data/workspace` | `/app/.workspace` | SQLite、上传中间文件、服务工作区。 |
+| `data/qmd-cache` | `/root/.cache/qmd` | qmd 索引缓存。 |
 
-首次使用空 Wiki volume 时，建议配置 `WIKIOS_WIKI_GIT_URL`，容器会自动 clone Wiki。停止或重建容器不会删除 named volume；如果执行 `docker compose down -v`，Wiki volume 会被删除。
-
-如果需要在管理后台使用同步推送功能，外挂 Wiki 必须是 git 仓库，并配置好 remote、branch 和容器内 git 凭据。SSH 推送可以额外挂载只读 `~/.ssh`，或改用 HTTPS token remote。
-
-如果使用自动拉取私有仓库，也需要给容器提供 git 凭据。SSH 方式可打开 compose 里的 `~/.ssh:/root/.ssh:ro` 挂载；HTTPS 方式可在 `WIKIOS_WIKI_GIT_URL` 中使用具备权限的 token URL。
+不要执行 `docker compose down -v`，除非你明确要删除 Wiki volume。
 
 ## AI 客服对接
 
@@ -162,7 +81,7 @@ docker compose -f docker-compose.example.yml exec wikios \
 普通请求示例：
 
 ```bash
-curl -X POST http://127.0.0.1:8080/api/v1/public/answer \
+curl -X POST http://127.0.0.1:9025/api/v1/public/answer \
   -H 'Content-Type: application/json' \
   -d '{
     "question": "这个怎么买？",
@@ -176,7 +95,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/public/answer \
 流式请求示例：
 
 ```bash
-curl -N -X POST http://127.0.0.1:8080/api/v1/public/answer/stream \
+curl -N -X POST http://127.0.0.1:9025/api/v1/public/answer/stream \
   -H 'Content-Type: application/json' \
   -d '{"question":"住宅IP怎么购买？","history":[]}'
 ```
@@ -190,7 +109,7 @@ curl -N -X POST http://127.0.0.1:8080/api/v1/public/answer/stream \
 管理后台地址：
 
 ```text
-http://127.0.0.1:8080/admin/login
+http://127.0.0.1:9025/admin/login
 ```
 
 默认账号来自配置或环境变量：
@@ -229,7 +148,7 @@ WIKIOS_DEFAULT_ADMIN_PASSWORD=admin123
 默认配置：
 
 - 本地：`configs/config.local.yaml`
-- 生产：`configs/config.prod.yaml`
+- Docker 生产部署：`deploy/config.prod.yaml`
 
 服务启动时会自动加载项目根目录下的 `.env` 和 `.env.local`。如果当前 shell 已设置同名环境变量，shell 值优先。
 
