@@ -98,4 +98,5 @@ if is_true "$qmd_auto_collection" && [ -d "$wiki_root/wiki" ]; then
   )
 fi
 
+cd /app
 exec "$@"

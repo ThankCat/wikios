@@ -2,6 +2,8 @@
 .env
 .env.local
 .workspace/
+data/workspace/
+data/qmd-cache/
 bin/
 coverage.out
 web/node_modules/
