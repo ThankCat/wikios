@@ -7,6 +7,10 @@ import type {
   PublicChatHistoryItem,
   PublicAnswerResponse,
   PublicIntentsResponse,
+  LLMBalanceResponse,
+  ReviewActionResponse,
+  ReviewCountResponse,
+  ReviewNextResponse,
   PublicStreamEvent,
   SyncCommitResponse,
   SyncGenerateMessageResponse,
@@ -29,6 +33,13 @@ export class APIError extends Error {
     this.payload = payload;
   }
 }
+
+export type PublicAnswerMeta = {
+  session_id?: string;
+  question_message_id?: string;
+  answer_message_id?: string;
+  question_created_at?: string;
+};
 
 async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const response = await fetch(normalizeInput(input), {
@@ -57,17 +68,18 @@ async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  publicAnswer(question: string, history?: PublicChatHistoryItem[], signal?: AbortSignal) {
+  publicAnswer(question: string, history?: PublicChatHistoryItem[], meta?: PublicAnswerMeta, signal?: AbortSignal) {
     return request<PublicAnswerResponse>(apiURL("/api/v1/public/answer"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, history }),
+      body: JSON.stringify({ question, history, ...meta }),
       signal,
     });
   },
   async publicAnswerStream(
     question: string,
     history: PublicChatHistoryItem[] | undefined,
+    meta: PublicAnswerMeta | undefined,
     onEvent: (event: PublicStreamEvent) => void,
     signal?: AbortSignal,
   ) {
@@ -75,7 +87,7 @@ export const api = {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, history }),
+      body: JSON.stringify({ question, history, ...meta }),
       signal,
     });
     if (!response.ok) {
@@ -110,6 +122,32 @@ export const api = {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ source }),
+      signal,
+    });
+  },
+  llmBalance(signal?: AbortSignal) {
+    return request<LLMBalanceResponse>(apiURL("/api/v1/admin/llm/balance"), { signal });
+  },
+  reviewCount(signal?: AbortSignal) {
+    return request<ReviewCountResponse>(apiURL("/api/v1/admin/reviews/count"), { signal });
+  },
+  reviewNext(cursor?: string, signal?: AbortSignal) {
+    const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    return request<ReviewNextResponse>(apiURL(`/api/v1/admin/reviews/next${suffix}`), { signal });
+  },
+  reviewApprove(id: string, payload: { question?: string; answer: string; target_path: string }, signal?: AbortSignal) {
+    return request<ReviewActionResponse>(apiURL(`/api/v1/admin/reviews/${encodeURIComponent(id)}/approve`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal,
+    });
+  },
+  reviewReject(id: string, payload: { reason: string }, signal?: AbortSignal) {
+    return request<ReviewActionResponse>(apiURL(`/api/v1/admin/reviews/${encodeURIComponent(id)}/reject`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
       signal,
     });
   },

@@ -21,6 +21,7 @@ type UserMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  created_at?: string;
   status?: MessageStatus;
 };
 
@@ -40,17 +41,15 @@ export function UserChat() {
   const [activeId, setActiveId] = useState("");
   const [composer, setComposer] = useState("");
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const activeRequestRef = useRef<AbortController | null>(null);
-  const activeAssistantIdRef = useRef("");
-  const [busyLabel, setBusyLabel] = useState("");
+  const requestControllersRef = useRef<Record<string, AbortController>>({});
+  const [requestLabels, setRequestLabels] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const raw = localStorage.getItem(storageKey);
     if (raw) {
       try {
-        const parsed = JSON.parse(raw) as UserConversation[];
+        const parsed = normalizeUserConversations(JSON.parse(raw));
         if (parsed.length > 0) {
           setConversations(parsed);
           setActiveId(parsed[0].id);
@@ -88,11 +87,21 @@ export function UserChat() {
     () => conversations.find((item) => item.id === activeId) ?? conversations[0],
     [activeId, conversations],
   );
+  const busyLabel = activeConversation ? (requestLabels[activeConversation.id] ?? "") : "";
+  const busy = busyLabel !== "";
   const chatScroll = useScrollFollow<HTMLDivElement>([activeId, activeConversation?.messages]);
 
   useEffect(() => {
     chatScroll.scrollToBottom("auto");
   }, [activeId, chatScroll.scrollToBottom]);
+
+  useEffect(
+    () => () => {
+      Object.values(requestControllersRef.current).forEach((controller) => controller.abort());
+      requestControllersRef.current = {};
+    },
+    [],
+  );
 
   async function sendMessage() {
     const question = composer.trim();
@@ -101,79 +110,121 @@ export function UserChat() {
     }
     setError("");
     setComposer("");
-    setBusy(true);
-    setBusyLabel("正在生成回答...");
-    const userMessage: UserMessage = { id: createId(), role: "user", content: question };
-    appendMessage(activeConversation.id, userMessage);
+    const questionCreatedAt = new Date().toISOString();
+    const conversationId = activeConversation.id;
+    const userMessage: UserMessage = { id: createId(), role: "user", content: question, created_at: questionCreatedAt };
+    appendMessage(conversationId, userMessage);
     const history = conversationHistory(activeConversation.messages);
     const controller = new AbortController();
-    activeRequestRef.current = controller;
+    startConversationRequest(conversationId, controller, "正在生成回答...");
     if (activeConversation.stream) {
       const assistantId = createId();
-      activeAssistantIdRef.current = assistantId;
-      appendMessage(activeConversation.id, { id: assistantId, role: "assistant", content: "", status: "streaming" });
+      appendMessage(conversationId, {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        created_at: new Date().toISOString(),
+        status: "streaming",
+      });
       try {
         await api.publicAnswerStream(
           question,
           history,
-          (event) => handleStreamEvent(activeConversation.id, assistantId, event),
+          {
+            session_id: conversationId,
+            question_message_id: userMessage.id,
+            answer_message_id: assistantId,
+            question_created_at: questionCreatedAt,
+          },
+          (event) => handleStreamEvent(conversationId, assistantId, event),
           controller.signal,
         );
-        renameConversation(activeConversation.id, question);
+        renameConversation(conversationId, question);
       } catch (reason) {
         if (isAbortError(reason)) {
-          patchMessage(activeConversation.id, assistantId, {
+          patchMessage(conversationId, assistantId, {
             content: (prev) => prev || "已停止生成。",
             status: "cancelled",
           });
         } else {
           setError(reason instanceof Error ? reason.message : "请求失败");
-          patchMessage(activeConversation.id, assistantId, {
+          patchMessage(conversationId, assistantId, {
             content: "暂时无法处理这条请求，请稍后再试。",
             status: "error",
           });
         }
       } finally {
-        activeRequestRef.current = null;
-        activeAssistantIdRef.current = "";
-        setBusy(false);
-        setBusyLabel("");
+        finishConversationRequest(conversationId, controller);
       }
       return;
     }
     const assistantId = createId();
-    activeAssistantIdRef.current = assistantId;
-    appendMessage(activeConversation.id, { id: assistantId, role: "assistant", content: "", status: "pending" });
+    appendMessage(conversationId, {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      created_at: new Date().toISOString(),
+      status: "pending",
+    });
     try {
-      const response = await api.publicAnswer(question, history, controller.signal);
-      applyPublicResponse(activeConversation.id, assistantId, response);
-      renameConversation(activeConversation.id, question);
+      const response = await api.publicAnswer(
+        question,
+        history,
+        {
+          session_id: conversationId,
+          question_message_id: userMessage.id,
+          answer_message_id: assistantId,
+          question_created_at: questionCreatedAt,
+        },
+        controller.signal,
+      );
+      applyPublicResponse(conversationId, assistantId, response);
+      renameConversation(conversationId, question);
     } catch (reason) {
       if (isAbortError(reason)) {
-        patchMessage(activeConversation.id, assistantId, {
+        patchMessage(conversationId, assistantId, {
           content: "已取消本次请求。",
           status: "cancelled",
         });
       } else {
         setError(reason instanceof Error ? reason.message : "请求失败");
-        patchMessage(activeConversation.id, assistantId, {
+        patchMessage(conversationId, assistantId, {
           content: "暂时无法处理这条请求，请稍后再试。",
           status: "error",
         });
       }
     } finally {
-      activeRequestRef.current = null;
-      activeAssistantIdRef.current = "";
-      setBusy(false);
-      setBusyLabel("");
+      finishConversationRequest(conversationId, controller);
     }
   }
 
   function stopActiveRequest() {
-    activeRequestRef.current?.abort();
-    activeRequestRef.current = null;
-    setBusy(false);
-    setBusyLabel("");
+    if (!activeConversation) {
+      return;
+    }
+    const controller = requestControllersRef.current[activeConversation.id];
+    controller?.abort();
+    finishConversationRequest(activeConversation.id, controller);
+  }
+
+  function startConversationRequest(conversationId: string, controller: AbortController, label: string) {
+    requestControllersRef.current[conversationId] = controller;
+    setRequestLabels((current) => ({ ...current, [conversationId]: label }));
+  }
+
+  function finishConversationRequest(conversationId: string, controller?: AbortController) {
+    if (controller && requestControllersRef.current[conversationId] !== controller) {
+      return;
+    }
+    delete requestControllersRef.current[conversationId];
+    setRequestLabels((current) => {
+      if (!current[conversationId]) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[conversationId];
+      return next;
+    });
   }
 
   function handleStreamEvent(conversationId: string, messageId: string, event: PublicStreamEvent) {
@@ -189,6 +240,7 @@ export function UserChat() {
       const data = (event.data ?? {}) as Record<string, unknown>;
       patchMessage(conversationId, messageId, {
         content: String(data.answer ?? ""),
+        created_at: String(data.answered_at ?? ""),
         status: "done",
       });
       return;
@@ -200,26 +252,19 @@ export function UserChat() {
         content: "暂时无法处理这条请求，请稍后再试。",
         status: "error",
       });
-      setBusy(false);
-      setBusyLabel("");
-      activeRequestRef.current = null;
-      activeAssistantIdRef.current = "";
       return;
     }
     if (event.type === "done") {
       patchMessage(conversationId, messageId, {
         status: "done",
       });
-      setBusy(false);
-      setBusyLabel("");
-      activeRequestRef.current = null;
-      activeAssistantIdRef.current = "";
     }
   }
 
   function applyPublicResponse(conversationId: string, messageId: string, response: PublicAnswerResponse) {
     patchMessage(conversationId, messageId, {
       content: response.answer,
+      created_at: response.answered_at,
       status: "done",
     });
   }
@@ -243,7 +288,7 @@ export function UserChat() {
   function patchMessage(
     conversationId: string,
     messageId: string,
-    updates: { content?: string | ((prev: string) => string); status?: MessageStatus },
+    updates: { content?: string | ((prev: string) => string); created_at?: string; status?: MessageStatus },
   ) {
     setConversations((current) =>
       current.map((conversation) => {
@@ -261,6 +306,7 @@ export function UserChat() {
             return {
               ...message,
               content: nextContent,
+              created_at: updates.created_at?.trim() ? updates.created_at : message.created_at,
               status: updates.status ?? message.status,
             };
           }),
@@ -277,6 +323,8 @@ export function UserChat() {
   }
 
   function deleteConversation(id: string) {
+    requestControllersRef.current[id]?.abort();
+    finishConversationRequest(id, requestControllersRef.current[id]);
     setConversations((current) => {
       const remaining = current.filter((item) => item.id !== id);
       if (remaining.length === 0) {
@@ -294,6 +342,7 @@ export function UserChat() {
   const sidebarItems: ConversationItem[] = conversations.map((item) => ({
     id: item.id,
     title: item.title,
+    updatedAt: lastMessageTime(item.messages),
   }));
 
   return (
@@ -338,6 +387,7 @@ export function UserChat() {
                     id={message.id}
                     role={message.role}
                     content={message.content}
+                    createdAt={message.created_at}
                     pending={message.status === "pending" || message.status === "streaming"}
                     statusText={messageStatusText(message)}
                   />
@@ -417,11 +467,64 @@ function createConversation(title: string): UserConversation {
   };
 }
 
+function normalizeUserConversations(value: unknown): UserConversation[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.reduce<UserConversation[]>((acc, conversation) => {
+    if (!conversation || typeof conversation !== "object") {
+      return acc;
+    }
+    const item = conversation as Partial<UserConversation>;
+    const id = typeof item.id === "string" && item.id.trim() !== "" ? item.id : createId();
+    const migrationTime = new Date().toISOString();
+    const messages = Array.isArray(item.messages)
+      ? item.messages.reduce<UserMessage[]>((messageAcc, message) => {
+          if (!message || typeof message !== "object") {
+            return messageAcc;
+          }
+          const raw = message as Partial<UserMessage>;
+          const role = raw.role === "assistant" ? "assistant" : "user";
+          messageAcc.push({
+            id: typeof raw.id === "string" && raw.id.trim() !== "" ? raw.id : createId(),
+            role,
+            content: typeof raw.content === "string" ? raw.content : "",
+            created_at: typeof raw.created_at === "string" && raw.created_at.trim() !== "" ? raw.created_at : migrationTime,
+            status: raw.status,
+          });
+          return messageAcc;
+        }, [])
+      : [];
+    acc.push({
+      id,
+      title: typeof item.title === "string" && item.title.trim() !== "" ? item.title : "新会话",
+      messages,
+      stream: typeof item.stream === "boolean" ? item.stream : true,
+    });
+    return acc;
+  }, []);
+}
+
 function conversationHistory(messages: UserMessage[]) {
   return messages
     .filter((message) => message.content.trim() !== "")
     .slice(-HISTORY_LIMIT)
-    .map((message) => ({ role: message.role, content: message.content }));
+    .map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      created_at: message.created_at,
+    }));
+}
+
+function lastMessageTime(messages: UserMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const createdAt = messages[index]?.created_at;
+    if (createdAt) {
+      return createdAt;
+    }
+  }
+  return "";
 }
 
 function messageStatusText(message: UserMessage) {

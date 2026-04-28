@@ -165,6 +165,8 @@ WIKIOS_DEFAULT_ADMIN_PASSWORD=admin123
 | `web.dist_dir` | 内置 Web 静态产物目录。 |
 | `public_intents.path` | 前置话术 YAML 路径。 |
 | `knowledge_profile.path` | 企业 profile 配置路径。 |
+| `WIKIOS_SUPPORT_PHONE` | Public Query 注入给 LLM 的公开客服电话，默认 `400-1080-106`。 |
+| `WIKIOS_SUPPORT_WECOM` | Public Query 注入给 LLM 的公开企业微信联系方式，默认 `企业微信`。 |
 | `WIKIOS_WIKI_GIT_URL` | 可选；配置后容器启动时自动 clone/pull 外挂 Wiki。 |
 | `WIKIOS_WIKI_GIT_BRANCH` | 自动 clone/pull 的分支，默认 `main`。 |
 | `WIKIOS_WIKI_GIT_PULL_ON_START` | 已有 git 仓库时是否启动自动 pull，默认 `true`。 |

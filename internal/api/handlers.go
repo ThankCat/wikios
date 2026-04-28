@@ -30,6 +30,7 @@ import (
 
 type Handlers struct {
 	PublicQuery    *service.PublicQueryService
+	ReviewQueue    *service.ReviewQueueService
 	DirectAdmin    *service.DirectAdminService
 	Upload         *service.UploadService
 	Sync           *service.SyncService
@@ -42,6 +43,7 @@ type Handlers struct {
 
 func NewHandlers(
 	publicQuery *service.PublicQueryService,
+	reviewQueue *service.ReviewQueueService,
 	directAdmin *service.DirectAdminService,
 	uploadSvc *service.UploadService,
 	syncSvc *service.SyncService,
@@ -53,6 +55,7 @@ func NewHandlers(
 ) *Handlers {
 	return &Handlers{
 		PublicQuery:    publicQuery,
+		ReviewQueue:    reviewQueue,
 		DirectAdmin:    directAdmin,
 		Upload:         uploadSvc,
 		Sync:           syncSvc,
@@ -74,16 +77,21 @@ type adminChatRequest struct {
 }
 
 type publicAnswerRequest struct {
-	Question  string         `json:"question"`
-	UserID    string         `json:"user_id"`
-	SessionID string         `json:"session_id"`
-	Context   map[string]any `json:"context"`
-	History   []chatMessage  `json:"history"`
+	Question          string         `json:"question"`
+	UserID            string         `json:"user_id"`
+	SessionID         string         `json:"session_id"`
+	QuestionMessageID string         `json:"question_message_id"`
+	AnswerMessageID   string         `json:"answer_message_id"`
+	QuestionCreatedAt string         `json:"question_created_at"`
+	Context           map[string]any `json:"context"`
+	History           []chatMessage  `json:"history"`
 }
 
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	ID        string `json:"id"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	CreatedAt string `json:"created_at"`
 }
 
 type attachment struct {
@@ -119,6 +127,16 @@ type syncGenerateMessageRequest struct {
 	Paths []string `json:"paths"`
 }
 
+type reviewApproveRequest struct {
+	Question   string `json:"question"`
+	Answer     string `json:"answer"`
+	TargetPath string `json:"target_path"`
+}
+
+type reviewRejectRequest struct {
+	Reason string `json:"reason"`
+}
+
 type sseEmitter struct {
 	c  *gin.Context
 	mu *sync.Mutex
@@ -134,12 +152,17 @@ func (h *Handlers) PublicAnswer(c *gin.Context) {
 		badRequest(c, err)
 		return
 	}
+	receivedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	resp, err := h.PublicQuery.Answer(c.Request.Context(), traceID(c), service.PublicAnswerRequest{
-		Question:  req.Question,
-		UserID:    req.UserID,
-		SessionID: req.SessionID,
-		Context:   req.Context,
-		History:   toServiceHistory(req.History),
+		Question:          req.Question,
+		UserID:            req.UserID,
+		SessionID:         req.SessionID,
+		QuestionMessageID: req.QuestionMessageID,
+		AnswerMessageID:   req.AnswerMessageID,
+		QuestionCreatedAt: req.QuestionCreatedAt,
+		ReceivedAt:        receivedAt,
+		Context:           req.Context,
+		History:           toServiceHistory(req.History),
 	})
 	if err != nil {
 		internalError(c, err)
@@ -158,13 +181,18 @@ func (h *Handlers) PublicAnswerStream(c *gin.Context) {
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
-	writeSSE(c, "meta", gin.H{"stream": true})
+	receivedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	writeSSE(c, "meta", gin.H{"stream": true, "received_at": receivedAt})
 	resp, err := h.PublicQuery.Answer(c.Request.Context(), traceID(c), service.PublicAnswerRequest{
-		Question:  req.Question,
-		UserID:    req.UserID,
-		SessionID: req.SessionID,
-		Context:   req.Context,
-		History:   toServiceHistory(req.History),
+		Question:          req.Question,
+		UserID:            req.UserID,
+		SessionID:         req.SessionID,
+		QuestionMessageID: req.QuestionMessageID,
+		AnswerMessageID:   req.AnswerMessageID,
+		QuestionCreatedAt: req.QuestionCreatedAt,
+		ReceivedAt:        receivedAt,
+		Context:           req.Context,
+		History:           toServiceHistory(req.History),
 	})
 	if err != nil {
 		writeSSE(c, "error", gin.H{"message": err.Error()})
@@ -174,7 +202,7 @@ func (h *Handlers) PublicAnswerStream(c *gin.Context) {
 	for _, chunk := range chunkText(resp.Answer, 24) {
 		writeSSE(c, "delta", gin.H{"delta": chunk})
 	}
-	writeSSE(c, "result", gin.H{"answer": resp.Answer})
+	writeSSE(c, "result", gin.H{"answer": resp.Answer, "answered_at": resp.AnsweredAt})
 	writeSSE(c, "done", gin.H{"ok": true})
 }
 
@@ -274,6 +302,82 @@ func (h *Handlers) AdminUpdatePublicIntents(c *gin.Context) {
 		"source": h.PublicIntents.SourceOrDefault(),
 		"status": status,
 	})
+}
+
+func (h *Handlers) AdminReviewCount(c *gin.Context) {
+	if h.ReviewQueue == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{"code": "REVIEWS_UNAVAILABLE", "message": "review queue is unavailable"},
+		})
+		return
+	}
+	count, err := h.ReviewQueue.PendingCount(c.Request.Context())
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"pending_count": count})
+}
+
+func (h *Handlers) AdminReviewNext(c *gin.Context) {
+	if h.ReviewQueue == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{"code": "REVIEWS_UNAVAILABLE", "message": "review queue is unavailable"},
+		})
+		return
+	}
+	resp, err := h.ReviewQueue.Next(c.Request.Context(), c.Query("cursor"))
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+func (h *Handlers) AdminReviewApprove(c *gin.Context) {
+	if h.ReviewQueue == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{"code": "REVIEWS_UNAVAILABLE", "message": "review queue is unavailable"},
+		})
+		return
+	}
+	var req reviewApproveRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	item, err := h.ReviewQueue.Approve(c.Request.Context(), c.Param("id"), service.ReviewApproveRequest{
+		Question:   req.Question,
+		Answer:     req.Answer,
+		TargetPath: req.TargetPath,
+	})
+	if err != nil {
+		badRequest(c, err)
+		return
+	}
+	count, _ := h.ReviewQueue.PendingCount(c.Request.Context())
+	c.JSON(http.StatusOK, gin.H{"ok": true, "item": item, "pending_count": count})
+}
+
+func (h *Handlers) AdminReviewReject(c *gin.Context) {
+	if h.ReviewQueue == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{"code": "REVIEWS_UNAVAILABLE", "message": "review queue is unavailable"},
+		})
+		return
+	}
+	var req reviewRejectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	item, err := h.ReviewQueue.Reject(c.Request.Context(), c.Param("id"), service.ReviewRejectRequest{Reason: req.Reason})
+	if err != nil {
+		badRequest(c, err)
+		return
+	}
+	count, _ := h.ReviewQueue.PendingCount(c.Request.Context())
+	c.JSON(http.StatusOK, gin.H{"ok": true, "item": item, "pending_count": count})
 }
 
 func (h *Handlers) AdminUpload(c *gin.Context) {
@@ -466,6 +570,15 @@ func (h *Handlers) AdminContextEstimate(c *gin.Context) {
 		"mode":          mode,
 		"context_usage": h.estimateAdminContext(directReq),
 	})
+}
+
+func (h *Handlers) AdminLLMBalance(c *gin.Context) {
+	resp, err := service.FetchDeepSeekBalance(c.Request.Context(), h.Config.LLM)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h *Handlers) AdminWikiTree(c *gin.Context) {
@@ -1262,8 +1375,10 @@ func toServiceHistory(items []chatMessage) []service.ChatMessage {
 			continue
 		}
 		history = append(history, service.ChatMessage{
-			Role:    role,
-			Content: content,
+			ID:        strings.TrimSpace(item.ID),
+			Role:      role,
+			Content:   content,
+			CreatedAt: strings.TrimSpace(item.CreatedAt),
 		})
 	}
 	return history

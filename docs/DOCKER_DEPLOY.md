@@ -25,6 +25,8 @@ WIKIOS_WIKI_GIT_URL=ssh://git@ssh.github.com:443/ThankCat/knowledge-base.git
 WIKIOS_WIKI_GIT_BRANCH=main
 WIKIOS_WIKI_GIT_PULL_ON_START=true
 WIKIOS_WIKI_GIT_RESET_ON_START=false
+WIKIOS_SUPPORT_PHONE=400-1080-106
+WIKIOS_SUPPORT_WECOM=企业微信
 ```
 
 重点检查：
@@ -33,6 +35,7 @@ WIKIOS_WIKI_GIT_RESET_ON_START=false
 - `WIKIOS_DEFAULT_ADMIN_PASSWORD` 必须改掉，不要使用默认值。
 - `WIKIOS_WIKI_GIT_URL` 推荐使用 `ssh://git@ssh.github.com:443/...`，适合普通 SSH 22 端口被网络限制的场景。
 - `WIKIOS_WIKI_GIT_RESET_ON_START=false` 是安全默认值；改成 `true` 会在启动时丢弃 Wiki 仓库内未提交改动。
+- `WIKIOS_SUPPORT_PHONE` 和 `WIKIOS_SUPPORT_WECOM` 是 public query 注入给 LLM 的公开客服联系方式。
 
 ## 2. 配置 Wiki 仓库 SSH 权限
 

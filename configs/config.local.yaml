@@ -56,6 +56,15 @@ public_intents:
   enabled: true
   path: configs/public_intents.yaml
 
+public_query:
+  confidence:
+    direct_min: 0.70
+    review_min: 0.25
+
+support:
+  phone: "400-1080-106"
+  wecom: "企业微信"
+
 knowledge_profile:
   name: siyetian
   path: configs/knowledge_profiles/siyetian.yaml

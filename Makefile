@@ -1,4 +1,5 @@
 SHELL := /bin/zsh
+NEXT_PUBLIC_API_BASE_URL ?= http://127.0.0.1:9025
 
 .PHONY: help dev dev-api dev-web build build-web test test-web install-web
 
@@ -27,7 +28,7 @@ dev-web:
 		echo "[web] dependencies missing, running bun install"; \
 		cd web && bun install; \
 	fi
-	cd web && bun run dev
+	cd web && NEXT_PUBLIC_API_BASE_URL=$(NEXT_PUBLIC_API_BASE_URL) bun run dev
 
 build:
 	go build ./cmd/wiki-server

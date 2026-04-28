@@ -164,6 +164,9 @@ func (s *DirectAdminService) InitialMessages(req DirectAdminRequest) []llm.Messa
 		if role != "assistant" {
 			role = "user"
 		}
+		if strings.TrimSpace(item.CreatedAt) != "" {
+			content = "[" + strings.TrimSpace(item.CreatedAt) + "] " + content
+		}
 		messages = append(messages, llm.Message{Role: role, Content: content})
 	}
 	messages = append(messages, llm.Message{Role: "user", Content: directAdminCurrentUserPrompt(req)})

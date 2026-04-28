@@ -30,6 +30,29 @@ import (
 
 type mockLLM struct{}
 
+type qmdAPITestTool struct{}
+
+func (qmdAPITestTool) Name() string {
+	return "exec.qmd"
+}
+
+func (qmdAPITestTool) RiskLevel() runtime.RiskLevel {
+	return runtime.RiskMedium
+}
+
+func (qmdAPITestTool) Validate(_ map[string]any) error {
+	return nil
+}
+
+func (qmdAPITestTool) Execute(_ context.Context, _ *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+	subcommand, _ := args["subcommand"].(string)
+	return runtime.ToolResult{
+		Success:   true,
+		RiskLevel: runtime.RiskMedium,
+		Data:      map[string]any{"subcommand": subcommand, "stdout": "[]", "stderr": "", "exit_code": 0},
+	}, nil
+}
+
 func (mockLLM) Chat(_ context.Context, _ string, messages []llm.Message) (string, error) {
 	if len(messages) > 0 && strings.Contains(messages[0].Content, "管理员全权限直连模式") {
 		return mockDirectAdminResponse(messages), nil
@@ -236,6 +259,85 @@ func TestAdminPublicIntentsRequiresAuth(t *testing.T) {
 	}
 }
 
+func TestAdminReviewsRequireAuthAndApproveReject(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	root := createFixtureWiki(t)
+	router := buildRouterWithRoot(t, root)
+
+	unauth := httptest.NewRecorder()
+	unauthReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/reviews/count", nil)
+	router.ServeHTTP(unauth, unauthReq)
+	if unauth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized, got %d %s", unauth.Code, unauth.Body.String())
+	}
+
+	cookie := loginCookie(t, router)
+	mustWrite(t, filepath.Join(root, "wiki/unconfirmed/review-api-approve.md"), `---
+type: unconfirmed-qa
+status: pending
+question: 代理客户端缓存怎么清理
+draft_answer: 可以先重启客户端。
+suggested_faq_path: wiki/faq/faq-needs-human-taxonomy-review.md
+confidence: 0.4
+graph-excluded: true
+---
+
+# 待确认问题
+`)
+
+	nextRec := httptest.NewRecorder()
+	nextReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/reviews/next", nil)
+	nextReq.AddCookie(cookie)
+	router.ServeHTTP(nextRec, nextReq)
+	if nextRec.Code != http.StatusOK || !strings.Contains(nextRec.Body.String(), "代理客户端缓存怎么清理") {
+		t.Fatalf("expected next review, got %d %s", nextRec.Code, nextRec.Body.String())
+	}
+
+	approveBody, _ := json.Marshal(map[string]any{
+		"answer":      "可以先重启客户端，再重新选择线路连接。",
+		"target_path": "wiki/faq/faq-needs-human-taxonomy-review.md",
+	})
+	approveRec := httptest.NewRecorder()
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/reviews/review-api-approve/approve", bytes.NewReader(approveBody))
+	approveReq.Header.Set("Content-Type", "application/json")
+	approveReq.AddCookie(cookie)
+	router.ServeHTTP(approveRec, approveReq)
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("approve failed: %d %s", approveRec.Code, approveRec.Body.String())
+	}
+	approvedFAQ, err := os.ReadFile(filepath.Join(root, "wiki/faq/faq-needs-human-taxonomy-review.md"))
+	if err != nil {
+		t.Fatalf("read approved FAQ: %v", err)
+	}
+	if !strings.Contains(string(approvedFAQ), "重新选择线路连接") {
+		t.Fatalf("expected approved FAQ content, got %s", string(approvedFAQ))
+	}
+
+	mustWrite(t, filepath.Join(root, "wiki/unconfirmed/review-api-reject.md"), `---
+type: unconfirmed-qa
+status: pending
+question: 代理客户端日志怎么删除
+draft_answer: 可以删除日志。
+confidence: 0.4
+graph-excluded: true
+---
+
+# 待确认问题
+`)
+	rejectBody, _ := json.Marshal(map[string]any{"reason": "不适合自动回复"})
+	rejectRec := httptest.NewRecorder()
+	rejectReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/reviews/review-api-reject/reject", bytes.NewReader(rejectBody))
+	rejectReq.Header.Set("Content-Type", "application/json")
+	rejectReq.AddCookie(cookie)
+	router.ServeHTTP(rejectRec, rejectReq)
+	if rejectRec.Code != http.StatusOK {
+		t.Fatalf("reject failed: %d %s", rejectRec.Code, rejectRec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "wiki/forbidden/review-api-reject.md")); err != nil {
+		t.Fatalf("expected forbidden file: %v", err)
+	}
+}
+
 func TestAdminContextEstimateRequiresAuthAndReturnsUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := buildRouter(t)
@@ -307,7 +409,7 @@ func TestAdminWikiFilePreview(t *testing.T) {
 	}
 }
 
-func TestAdminPublicIntentsSaveValidatesAndHotSwaps(t *testing.T) {
+func TestAdminPublicIntentsSaveValidatesWithoutPublicBypass(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := buildRouter(t)
 	cookie := loginCookie(t, router)
@@ -365,8 +467,11 @@ rules:
 	answerReq := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(answerBody))
 	answerReq.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(answerRec, answerReq)
-	if answerRec.Code != http.StatusOK || !strings.Contains(answerRec.Body.String(), "请问有什么可以帮您") {
-		t.Fatalf("expected public answer to use hot-swapped intent, got %d %s", answerRec.Code, answerRec.Body.String())
+	if answerRec.Code != http.StatusOK {
+		t.Fatalf("expected public answer success, got %d %s", answerRec.Code, answerRec.Body.String())
+	}
+	if strings.Contains(answerRec.Body.String(), "请问有什么可以帮您") {
+		t.Fatalf("expected ordinary public question to go through LLM instead of intent bypass, got %s", answerRec.Body.String())
 	}
 }
 
@@ -690,6 +795,7 @@ rules:
 	}
 	registry := runtime.NewRegistry()
 	tools.RegisterAll(registry, tools.Dependencies{Config: cfg, Resolver: wikiadapter.NewPathResolver(cfg.MountedWiki.Root)})
+	registry.Register(qmdAPITestTool{})
 	rt := runtime.NewRuntime(registry, runtime.NewPolicyEngine(), runtime.NewValidator(), runtime.NewAuditLogger())
 	publicIntents := service.NewPublicIntentManager(cfg.PublicIntents)
 	deps := service.Deps{
@@ -704,6 +810,7 @@ rules:
 	}
 	handlers := api.NewHandlers(
 		service.NewPublicQueryService(deps),
+		service.NewReviewQueueService(deps),
 		service.NewDirectAdminService(deps),
 		service.NewUploadService(deps),
 		service.NewSyncService(deps),

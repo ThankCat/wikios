@@ -1,4 +1,8 @@
 const isStaticExport = process.env.NEXT_STATIC_EXPORT === "1";
+const apiBaseURL = (process.env.NEXT_PUBLIC_API_BASE_URL || process.env.API_BASE_URL || "http://127.0.0.1:9025").replace(
+  /\/$/,
+  "",
+);
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -14,11 +18,11 @@ const nextConfig = {
           return [
             {
               source: "/api/:path*",
-              destination: "http://127.0.0.1:8080/api/:path*",
+              destination: `${apiBaseURL}/api/:path*`,
             },
             {
               source: "/healthz",
-              destination: "http://127.0.0.1:8080/healthz",
+              destination: `${apiBaseURL}/healthz`,
             },
           ];
         },

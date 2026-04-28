@@ -20,14 +20,17 @@ import (
 type mockLLM struct {
 	answer       string
 	lastMessages []llm.Message
+	calls        int
 }
 
 func (m *mockLLM) Chat(_ context.Context, _ string, messages []llm.Message) (string, error) {
+	m.calls++
 	m.lastMessages = messages
 	return m.answer, nil
 }
 
 func (m *mockLLM) StreamChat(_ context.Context, _ string, messages []llm.Message, onDelta func(string)) (string, error) {
+	m.calls++
 	m.lastMessages = messages
 	if onDelta != nil && m.answer != "" {
 		onDelta(m.answer)
@@ -53,6 +56,7 @@ func newPublicQueryTestService(t *testing.T, answer string) (*service.PublicQuer
 		Sandbox:       config.SandboxConfig{QMDTimeoutSec: 1},
 		LLM:           config.LLMConfig{ModelPublic: "test"},
 		PublicIntents: config.PublicIntentsConfig{Enabled: &enabled, Path: intentPath},
+		Support:       config.SupportConfig{Phone: "400-1080-106", WeCom: "企业微信"},
 	}
 	dataStore, err := store.Open(filepath.Join(t.TempDir(), "service.db"))
 	if err != nil {
@@ -228,10 +232,11 @@ func TestPublicAnswerUsesKnowledgeBase(t *testing.T) {
 	}
 }
 
-func TestPublicAnswerInjectsOnlyMountedWikiQueryGuide(t *testing.T) {
+func TestPublicAnswerUsesUnifiedPublicPrompt(t *testing.T) {
 	svc, mock := newPublicQueryTestService(t, `{
-	  "answer_type": "text",
-	  "answer_markdown": "知识库规则摘要",
+  "answer_mode": "evidence",
+  "answer_type": "text",
+  "answer_markdown": "静态IP适合长期稳定网络环境。",
   "sources": [{"path":"wiki/faq/customer-qa.md","confidence":"high"}],
   "confidence": 0.82,
   "notes": "基于命中来源生成"
@@ -243,10 +248,10 @@ func TestPublicAnswerInjectsOnlyMountedWikiQueryGuide(t *testing.T) {
 	if len(mock.lastMessages) == 0 {
 		t.Fatalf("expected llm messages to be captured")
 	}
-	if !strings.Contains(mock.lastMessages[0].Content, "## QUERY 操作规范") {
-		t.Fatalf("expected mounted QUERY guide to be injected into system prompt")
+	if !strings.Contains(mock.lastMessages[0].Content, "Server 只提供候选页面和安全硬边界") {
+		t.Fatalf("expected unified public prompt, got %s", mock.lastMessages[0].Content)
 	}
-	for _, leakedSection := range []string{"## INGEST 操作规范", "## LINT 操作规范"} {
+	for _, leakedSection := range []string{"## QUERY 操作规范", "## INGEST 操作规范", "## LINT 操作规范"} {
 		if strings.Contains(mock.lastMessages[0].Content, leakedSection) {
 			t.Fatalf("expected public prompt to omit %s, got %s", leakedSection, mock.lastMessages[0].Content)
 		}
@@ -273,6 +278,31 @@ func TestPublicAnswerIncludesConversationHistory(t *testing.T) {
 	}
 	if len(mock.lastMessages) < 2 || !strings.Contains(mock.lastMessages[1].Content, "静态IP是什么？") {
 		t.Fatalf("expected conversation history in user prompt, got %+v", mock.lastMessages)
+	}
+}
+
+func TestPublicAnswerInjectsSupportContacts(t *testing.T) {
+	svc, mock := newPublicQueryTestService(t, `{
+  "answer_mode": "self_answer",
+  "answer_markdown": "您可以拨打 400-1080-106 或通过企业微信联系人工客服。",
+  "confidence": 0.8,
+  "evidence_confidence": 0,
+  "review_required": false,
+  "review_reason": "",
+  "suggested_faq_path": ""
+}`)
+	_, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "怎么联系人工客服？"})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if len(mock.lastMessages) < 2 {
+		t.Fatalf("expected llm messages to be captured")
+	}
+	userPrompt := mock.lastMessages[1].Content
+	for _, want := range []string{"当前可公开联系方式", "400-1080-106", "企业微信"} {
+		if !strings.Contains(userPrompt, want) {
+			t.Fatalf("expected user prompt to include %q, got %s", want, userPrompt)
+		}
 	}
 }
 
@@ -305,7 +335,15 @@ func TestPublicAnswerUsesConversationHistoryForRetrieval(t *testing.T) {
 }
 
 func TestPublicAnswerHandlesIdentityQuestionWithoutKnowledgeGap(t *testing.T) {
-	svc, _ := newPublicQueryTestService(t, "")
+	svc, mock := newPublicQueryTestService(t, `{
+  "answer_mode": "self_answer",
+  "answer_markdown": "您好，我是四叶天代理IP客服，可以帮您解答动态IP、静态IP、套餐选择和使用配置相关问题。",
+  "confidence": 0.8,
+  "evidence_confidence": 0,
+  "review_required": false,
+  "review_reason": "",
+  "suggested_faq_path": ""
+}`)
 	resp, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "你是谁"})
 	if err != nil {
 		t.Fatalf("answer: %v", err)
@@ -315,6 +353,9 @@ func TestPublicAnswerHandlesIdentityQuestionWithoutKnowledgeGap(t *testing.T) {
 	}
 	if strings.Contains(resp.Answer, "资料") || strings.Contains(resp.Answer, "知识库") || strings.Contains(resp.Answer, "准确资料") {
 		t.Fatalf("expected no internal knowledge-gap wording, got %+v", resp)
+	}
+	if mock.calls == 0 {
+		t.Fatalf("expected identity question to go through LLM")
 	}
 }
 

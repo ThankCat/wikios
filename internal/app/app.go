@@ -67,6 +67,7 @@ func New(cfg *config.Config) (*App, error) {
 	}
 	handlers := api.NewHandlers(
 		service.NewPublicQueryService(deps),
+		service.NewReviewQueueService(deps),
 		service.NewDirectAdminService(deps),
 		service.NewUploadService(deps),
 		service.NewSyncService(deps),

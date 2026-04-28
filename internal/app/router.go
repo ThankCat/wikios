@@ -43,6 +43,7 @@ func NewRouter(cfg *config.Config, handlers *api.Handlers, dataStore *store.Stor
 	admin.POST("/chat", handlers.AdminChat)
 	admin.POST("/chat/stream", handlers.AdminChatStream)
 	admin.POST("/context/estimate", handlers.AdminContextEstimate)
+	admin.GET("/llm/balance", handlers.AdminLLMBalance)
 	admin.GET("/wiki/tree", handlers.AdminWikiTree)
 	admin.GET("/wiki/file", handlers.AdminWikiFile)
 	admin.GET("/wiki/download", handlers.AdminWikiDownload)
@@ -54,6 +55,10 @@ func NewRouter(cfg *config.Config, handlers *api.Handlers, dataStore *store.Stor
 	admin.POST("/upload/stream", handlers.AdminUploadStream)
 	admin.GET("/public-intents", handlers.AdminGetPublicIntents)
 	admin.PUT("/public-intents", handlers.AdminUpdatePublicIntents)
+	admin.GET("/reviews/count", handlers.AdminReviewCount)
+	admin.GET("/reviews/next", handlers.AdminReviewNext)
+	admin.POST("/reviews/:id/approve", handlers.AdminReviewApprove)
+	admin.POST("/reviews/:id/reject", handlers.AdminReviewReject)
 
 	registerWebRoutes(r, cfg)
 

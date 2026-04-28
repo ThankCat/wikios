@@ -27,6 +27,8 @@ type Config struct {
 	Web              WebConfig              `yaml:"web"`
 	Upload           UploadConfig           `yaml:"upload"`
 	PublicIntents    PublicIntentsConfig    `yaml:"public_intents"`
+	PublicQuery      PublicQueryConfig      `yaml:"public_query"`
+	Support          SupportConfig          `yaml:"support"`
 	KnowledgeProfile KnowledgeProfileConfig `yaml:"knowledge_profile"`
 	Context          ContextConfig          `yaml:"context"`
 }
@@ -99,6 +101,20 @@ type UploadConfig struct {
 type PublicIntentsConfig struct {
 	Enabled *bool  `yaml:"enabled"`
 	Path    string `yaml:"path"`
+}
+
+type PublicQueryConfig struct {
+	Confidence PublicQueryConfidenceConfig `yaml:"confidence"`
+}
+
+type PublicQueryConfidenceConfig struct {
+	DirectMin float64 `yaml:"direct_min"`
+	ReviewMin float64 `yaml:"review_min"`
+}
+
+type SupportConfig struct {
+	Phone string `yaml:"phone"`
+	WeCom string `yaml:"wecom"`
 }
 
 type KnowledgeProfileConfig struct {
@@ -213,6 +229,27 @@ func (c *Config) normalizeAndValidate() error {
 	}
 	if strings.TrimSpace(c.PublicIntents.Path) == "" {
 		c.PublicIntents.Path = filepath.Join("configs", "public_intents.yaml")
+	}
+	if c.PublicQuery.Confidence.DirectMin <= 0 {
+		c.PublicQuery.Confidence.DirectMin = 0.70
+	}
+	if c.PublicQuery.Confidence.ReviewMin <= 0 {
+		c.PublicQuery.Confidence.ReviewMin = 0.25
+	}
+	if c.PublicQuery.Confidence.DirectMin > 1 {
+		c.PublicQuery.Confidence.DirectMin = 1
+	}
+	if c.PublicQuery.Confidence.ReviewMin > 1 {
+		c.PublicQuery.Confidence.ReviewMin = 1
+	}
+	if c.PublicQuery.Confidence.ReviewMin > c.PublicQuery.Confidence.DirectMin {
+		c.PublicQuery.Confidence.ReviewMin = c.PublicQuery.Confidence.DirectMin
+	}
+	if strings.TrimSpace(c.Support.Phone) == "" {
+		c.Support.Phone = firstEnv("WIKIOS_SUPPORT_PHONE", "400-1080-106")
+	}
+	if strings.TrimSpace(c.Support.WeCom) == "" {
+		c.Support.WeCom = firstEnv("WIKIOS_SUPPORT_WECOM", "企业微信")
 	}
 	if strings.TrimSpace(c.KnowledgeProfile.Path) == "" {
 		c.KnowledgeProfile.Path = firstEnv("WIKIOS_KNOWLEDGE_PROFILE_PATH", "")

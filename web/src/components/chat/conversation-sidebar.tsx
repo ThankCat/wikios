@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 export type ConversationItem = {
   id: string;
   title: string;
+  updatedAt?: string;
 };
 
 type Props = {
@@ -49,6 +50,11 @@ export function ConversationSidebar({ title, subtitle, variant, items, activeId,
             >
               <button type="button" onClick={() => onSelect(item.id)} className="min-w-0 flex-1 text-left">
                 <div className="line-clamp-2 break-words pr-1 font-medium leading-5">{item.title}</div>
+                {item.updatedAt ? (
+                  <div className={cn("mt-1 text-[11px]", item.id === activeId ? "text-white/60" : "text-muted-foreground")}>
+                    {formatSidebarTime(item.updatedAt)}
+                  </div>
+                ) : null}
               </button>
               <Button
                 type="button"
@@ -68,4 +74,12 @@ export function ConversationSidebar({ title, subtitle, variant, items, activeId,
       </ScrollArea>
     </aside>
   );
+}
+
+function formatSidebarTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
 }

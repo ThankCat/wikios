@@ -3,7 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
+  CheckCircle2,
   ChevronDown,
+  ClipboardCheck,
   Database,
   Download,
   FileText,
@@ -21,6 +23,7 @@ import {
   Trash2,
   Wrench,
   X,
+  XCircle,
 } from "lucide-react";
 
 import { ChatDetailDrawer } from "@/components/chat/chat-detail-drawer";
@@ -42,7 +45,10 @@ import type {
   AdminChatResponse,
   AdminStreamEvent,
   ContextUsage,
+  LLMBalanceResponse,
   PublicIntentsStatus,
+  ReviewItem,
+  ReviewTarget,
   SyncCommitResponse,
   SyncStatusResponse,
   UploadStreamEvent,
@@ -54,6 +60,7 @@ type AdminMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  created_at?: string;
   status?: MessageStatus;
   details?: unknown;
 };
@@ -129,6 +136,7 @@ function normalizeAdminConversation(value: unknown): AdminConversation | null {
           id: messageId,
           role,
           content: stringValue(item, "content"),
+          created_at: firstNonEmpty(stringValue(item, "created_at"), new Date().toISOString()),
           details: item.details,
         });
         return acc;
@@ -150,14 +158,13 @@ export function AdminChat({ username }: { username: string }) {
   const [activeId, setActiveId] = useState("");
   const [composer, setComposer] = useState("");
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
   const [selectedDetailId, setSelectedDetailId] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [drawerWidth, setDrawerWidth] = useState(460);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const typingTimersRef = useRef<Record<string, number>>({});
-  const activeRequestRef = useRef<AbortController | null>(null);
-  const [busyLabel, setBusyLabel] = useState("");
+  const requestControllersRef = useRef<Record<string, AbortController>>({});
+  const [requestLabels, setRequestLabels] = useState<Record<string, string>>({});
   const [intentEditorOpen, setIntentEditorOpen] = useState(false);
   const [intentSource, setIntentSource] = useState("");
   const [intentStatus, setIntentStatus] = useState<PublicIntentsStatus | null>(
@@ -178,6 +185,20 @@ export function AdminChat({ username }: { username: string }) {
   const [syncResult, setSyncResult] = useState<SyncCommitResponse | null>(null);
   const [syncError, setSyncError] = useState("");
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [reviewCount, setReviewCount] = useState(0);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewItem, setReviewItem] = useState<ReviewItem | null>(null);
+  const [reviewTargets, setReviewTargets] = useState<ReviewTarget[]>([]);
+  const [reviewQuestion, setReviewQuestion] = useState("");
+  const [reviewAnswer, setReviewAnswer] = useState("");
+  const [reviewTargetPath, setReviewTargetPath] = useState("");
+  const [reviewRejectReason, setReviewRejectReason] = useState("");
+  const [reviewMessage, setReviewMessage] = useState("");
+  const [llmBalance, setLLMBalance] = useState<LLMBalanceResponse | null>(null);
+  const [llmBalanceLoading, setLLMBalanceLoading] = useState(false);
+  const [llmBalanceError, setLLMBalanceError] = useState("");
 
   useEffect(() => {
     const raw = localStorage.getItem(storageKey);
@@ -237,6 +258,8 @@ export function AdminChat({ username }: { username: string }) {
       conversations.find((item) => item.id === activeId) ?? conversations[0],
     [activeId, conversations],
   );
+  const busyLabel = activeConversation ? (requestLabels[activeConversation.id] ?? "") : "";
+  const busy = busyLabel !== "";
   const selectedDetail = useMemo(
     () =>
       activeConversation?.messages.find(
@@ -301,7 +324,8 @@ export function AdminChat({ username }: { username: string }) {
 
   useEffect(
     () => () => {
-      activeRequestRef.current?.abort();
+      Object.values(requestControllersRef.current).forEach((controller) => controller.abort());
+      requestControllersRef.current = {};
       Object.values(typingTimersRef.current).forEach((timer) =>
         window.clearTimeout(timer),
       );
@@ -309,6 +333,18 @@ export function AdminChat({ username }: { username: string }) {
     },
     [],
   );
+
+  useEffect(() => {
+    void refreshReviewCount();
+    const timer = window.setInterval(() => {
+      void refreshReviewCount();
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    void refreshLLMBalance();
+  }, []);
 
   function startDrawerResize() {
     const handleMove = (event: MouseEvent) => {
@@ -326,6 +362,35 @@ export function AdminChat({ username }: { username: string }) {
     window.addEventListener("mouseup", handleUp);
   }
 
+  function startConversationRequest(conversationId: string, controller: AbortController, label: string) {
+    requestControllersRef.current[conversationId] = controller;
+    setRequestLabels((current) => ({ ...current, [conversationId]: label }));
+  }
+
+  function setConversationBusyLabel(conversationId: string, label: string) {
+    setRequestLabels((current) => {
+      if (!current[conversationId]) {
+        return current;
+      }
+      return { ...current, [conversationId]: label };
+    });
+  }
+
+  function finishConversationRequest(conversationId: string, controller?: AbortController) {
+    if (controller && requestControllersRef.current[conversationId] !== controller) {
+      return;
+    }
+    delete requestControllersRef.current[conversationId];
+    setRequestLabels((current) => {
+      if (!current[conversationId]) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[conversationId];
+      return next;
+    });
+  }
+
   async function send(
     messageOverride?: string,
     overrides?: Partial<AdminChatRequest>,
@@ -334,6 +399,7 @@ export function AdminChat({ username }: { username: string }) {
     if (!activeConversation || !text || busy) {
       return;
     }
+    const conversationId = activeConversation.id;
     const stream = overrides?.stream ?? activeConversation.stream;
     const request = buildAdminRequest(activeConversation, text, {
       ...overrides,
@@ -352,20 +418,20 @@ export function AdminChat({ username }: { username: string }) {
       id: createId(),
       role: "user",
       content: text,
+      created_at: new Date().toISOString(),
     };
-    appendMessage(activeConversation.id, userMessage);
+    appendMessage(conversationId, userMessage);
     setComposer("");
     setError("");
-    setBusy(true);
-    setBusyLabel(stream ? "正在执行管理员会话..." : "正在处理管理员请求...");
     const controller = new AbortController();
-    activeRequestRef.current = controller;
+    startConversationRequest(conversationId, controller, stream ? "正在执行管理员会话..." : "正在处理管理员请求...");
     if (stream) {
       const assistantId = createId();
-      appendMessage(activeConversation.id, {
+      appendMessage(conversationId, {
         id: assistantId,
         role: "assistant",
         content: "",
+        created_at: new Date().toISOString(),
         status: "streaming",
         details: { prompts: [], steps: [] },
       });
@@ -373,48 +439,47 @@ export function AdminChat({ username }: { username: string }) {
         await api.adminChatStream(
           request,
           (event) =>
-            handleStreamEvent(activeConversation.id, assistantId, event),
+            handleStreamEvent(conversationId, assistantId, event),
           controller.signal,
         );
-        renameConversation(activeConversation.id, text);
+        renameConversation(conversationId, text);
       } catch (reason) {
         if (isAbortError(reason)) {
-          patchMessage(activeConversation.id, assistantId, {
+          patchMessage(conversationId, assistantId, {
             content: (prev) => prev || "已停止当前会话。",
             status: "cancelled",
           });
         } else {
           setError(reason instanceof Error ? reason.message : "请求失败");
-          patchMessage(activeConversation.id, assistantId, {
+          patchMessage(conversationId, assistantId, {
             content: "执行失败，请稍后重试。",
             status: "error",
           });
         }
       } finally {
-        activeRequestRef.current = null;
-        setBusy(false);
-        setBusyLabel("");
+        finishConversationRequest(conversationId, controller);
       }
       return;
     }
     const assistantId = createId();
-    appendMessage(activeConversation.id, {
+    appendMessage(conversationId, {
       id: assistantId,
       role: "assistant",
       content: "",
+      created_at: new Date().toISOString(),
       status: "pending",
       details: { steps: [] },
     });
     try {
       const response = await api.adminChat(request, controller.signal);
       applySessionStatePatch(
-        activeConversation.id,
+        conversationId,
         response.mode,
         response.reply,
         response.details,
         response.execution,
       );
-      patchMessage(activeConversation.id, assistantId, {
+      patchMessage(conversationId, assistantId, {
         content: response.reply,
         status: "done",
         details: {
@@ -423,33 +488,143 @@ export function AdminChat({ username }: { username: string }) {
           steps: response.execution?.steps ?? [],
         },
       });
-      updateLastMode(activeConversation.id, response.mode);
-      renameConversation(activeConversation.id, text);
+      updateLastMode(conversationId, response.mode);
+      renameConversation(conversationId, text);
     } catch (reason) {
       if (isAbortError(reason)) {
-        patchMessage(activeConversation.id, assistantId, {
+        patchMessage(conversationId, assistantId, {
           content: "已取消本次管理员请求。",
           status: "cancelled",
         });
       } else {
         setError(reason instanceof Error ? reason.message : "请求失败");
-        patchMessage(activeConversation.id, assistantId, {
+        patchMessage(conversationId, assistantId, {
           content: "执行失败，请稍后重试。",
           status: "error",
         });
       }
     } finally {
-      activeRequestRef.current = null;
-      setBusy(false);
-      setBusyLabel("");
+      finishConversationRequest(conversationId, controller);
     }
   }
 
   function stopActiveRequest() {
-    activeRequestRef.current?.abort();
-    activeRequestRef.current = null;
-    setBusy(false);
-    setBusyLabel("");
+    if (!activeConversation) {
+      return;
+    }
+    const controller = requestControllersRef.current[activeConversation.id];
+    controller?.abort();
+    finishConversationRequest(activeConversation.id, controller);
+  }
+
+  async function refreshReviewCount() {
+    try {
+      const response = await api.reviewCount();
+      setReviewCount(response.pending_count);
+    } catch {
+      setReviewCount(0);
+    }
+  }
+
+  async function refreshLLMBalance() {
+    setLLMBalanceLoading(true);
+    setLLMBalanceError("");
+    try {
+      const response = await api.llmBalance();
+      setLLMBalance(response);
+    } catch (reason) {
+      setLLMBalanceError(reason instanceof Error ? reason.message : "余额查询失败");
+    } finally {
+      setLLMBalanceLoading(false);
+    }
+  }
+
+  async function openReviewModal() {
+    setReviewOpen(true);
+    await loadReviewItem();
+  }
+
+  async function loadReviewItem(cursor?: string) {
+    setReviewLoading(true);
+    setReviewMessage("");
+    try {
+      const response = await api.reviewNext(cursor);
+      setReviewCount(response.pending_count);
+      setReviewTargets(response.target_paths);
+      if (response.item) {
+        setReviewItem(response.item);
+        setReviewQuestion(response.item.question);
+        setReviewAnswer(response.item.draft_answer);
+        setReviewTargetPath(
+          response.item.suggested_faq_path ||
+            response.target_paths[0]?.path ||
+            "",
+        );
+        setReviewRejectReason("");
+      } else {
+        setReviewItem(null);
+        setReviewQuestion("");
+        setReviewAnswer("");
+        setReviewTargetPath(response.target_paths[0]?.path || "");
+        setReviewRejectReason("");
+        setReviewMessage("暂无待审查问题。");
+      }
+    } catch (reason) {
+      setReviewMessage(reason instanceof Error ? reason.message : "读取审查队列失败");
+    } finally {
+      setReviewLoading(false);
+    }
+  }
+
+  async function approveReviewItem() {
+    if (!reviewItem) {
+      return;
+    }
+    if (reviewAnswer.trim() === "" || reviewTargetPath.trim() === "") {
+      setReviewMessage("请填写回答并选择目标 FAQ。");
+      return;
+    }
+    setReviewBusy(true);
+    setReviewMessage("");
+    try {
+      const response = await api.reviewApprove(reviewItem.id, {
+        question: reviewQuestion.trim(),
+        answer: reviewAnswer.trim(),
+        target_path: reviewTargetPath.trim(),
+      });
+      setReviewCount(response.pending_count);
+      await loadReviewItem();
+      setReviewMessage("已记录到知识库。后续可以在同步窗口提交并推送变更。");
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "通过失败";
+      setReviewMessage(
+        message.includes("qmd update") && !message.includes("FAQ 已回滚")
+          ? `通过失败：FAQ 已回滚，qmd update 失败，请修复 qmd 后重试。${message}`
+          : message,
+      );
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
+  async function rejectReviewItem() {
+    if (!reviewItem) {
+      return;
+    }
+    setReviewBusy(true);
+    setReviewMessage("");
+    try {
+      const response = await api.reviewReject(reviewItem.id, {
+        reason: reviewRejectReason.trim() || "管理员驳回",
+      });
+      setReviewCount(response.pending_count);
+      await loadReviewItem();
+      setReviewMessage("已记录到禁答列表。相似问题后续将不会回复。");
+    } catch (reason) {
+      setReviewMessage(reason instanceof Error ? reason.message : "驳回失败");
+    } finally {
+      setReviewBusy(false);
+    }
   }
 
   async function openIntentEditor() {
@@ -705,9 +880,6 @@ export function AdminChat({ username }: { username: string }) {
       });
       mergeDetails(conversationId, assistantId, { error: data });
       setError(String(data.message ?? "执行失败"));
-      setBusy(false);
-      setBusyLabel("");
-      activeRequestRef.current = null;
       return;
     }
     if (event.type === "step_start" || event.type === "step_finish") {
@@ -758,9 +930,6 @@ export function AdminChat({ username }: { username: string }) {
         status: "done",
       });
       mergeDetails(conversationId, assistantId, { execution: data.execution });
-      activeRequestRef.current = null;
-      setBusy(false);
-      setBusyLabel("");
     }
   }
 
@@ -797,6 +966,7 @@ export function AdminChat({ username }: { username: string }) {
     messageId: string,
     updates: {
       content?: string | ((prev: string) => string);
+      created_at?: string;
       status?: MessageStatus;
       details?: unknown;
     },
@@ -819,6 +989,7 @@ export function AdminChat({ username }: { username: string }) {
             return {
               ...message,
               content: nextContent,
+              created_at: updates.created_at?.trim() ? updates.created_at : message.created_at,
               status: updates.status ?? message.status,
               details: updates.details ?? message.details,
             };
@@ -1005,6 +1176,9 @@ export function AdminChat({ username }: { username: string }) {
   }
 
   function deleteConversation(id: string) {
+    const controller = requestControllersRef.current[id];
+    controller?.abort();
+    finishConversationRequest(id, controller);
     setConversations((current) => {
       const remaining = current.filter((item) => item.id !== id);
       if (remaining.length === 0) {
@@ -1024,22 +1198,23 @@ export function AdminChat({ username }: { username: string }) {
 
   async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (!file || !activeConversation) {
+    if (!file || !activeConversation || busy) {
       return;
     }
-    setBusy(true);
     setError("");
-    setBusyLabel("正在上传并摄入文件...");
-    appendMessage(activeConversation.id, {
+    const conversationId = activeConversation.id;
+    appendMessage(conversationId, {
       id: createId(),
       role: "user",
       content: `上传文件：${file.name}`,
+      created_at: new Date().toISOString(),
     });
     const assistantId = createId();
-    appendMessage(activeConversation.id, {
+    appendMessage(conversationId, {
       id: assistantId,
       role: "assistant",
       content: "",
+      created_at: new Date().toISOString(),
       status: "pending",
       details: {
         phase: "upload",
@@ -1047,13 +1222,13 @@ export function AdminChat({ username }: { username: string }) {
       },
     });
     const controller = new AbortController();
-    activeRequestRef.current = controller;
+    startConversationRequest(conversationId, controller, "正在上传并摄入文件...");
     try {
       await api.uploadStream(
         file,
         (streamEvent) =>
           handleUploadStreamEvent(
-            activeConversation.id,
+            conversationId,
             assistantId,
             streamEvent,
           ),
@@ -1061,7 +1236,7 @@ export function AdminChat({ username }: { username: string }) {
       );
     } catch (reason) {
       if (isAbortError(reason)) {
-        patchMessage(activeConversation.id, assistantId, {
+        patchMessage(conversationId, assistantId, {
           content: "已取消上传和摄入。",
           status: "cancelled",
         });
@@ -1080,7 +1255,7 @@ export function AdminChat({ username }: { username: string }) {
                 error: message,
                 kind: "upload_validation",
               };
-        patchMessage(activeConversation.id, assistantId, {
+        patchMessage(conversationId, assistantId, {
           content: message,
           status: "error",
           details: errorDetails,
@@ -1090,9 +1265,7 @@ export function AdminChat({ username }: { username: string }) {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
-      activeRequestRef.current = null;
-      setBusy(false);
-      setBusyLabel("");
+      finishConversationRequest(conversationId, controller);
     }
   }
 
@@ -1119,7 +1292,7 @@ export function AdminChat({ username }: { username: string }) {
         content: "正在拆分文件...",
         status: "streaming",
       });
-      setBusyLabel("正在拆分文件...");
+      setConversationBusyLabel(conversationId, "正在拆分文件...");
       return;
     }
     if (event.type === "ingest_plan") {
@@ -1136,7 +1309,8 @@ export function AdminChat({ username }: { username: string }) {
             : "文件已准备完成，开始分析。",
         status: "streaming",
       });
-      setBusyLabel(
+      setConversationBusyLabel(
+        conversationId,
         total > 1
           ? `已拆分为 ${total} 段，准备开始逐段分析...`
           : "开始分析内容...",
@@ -1165,7 +1339,8 @@ export function AdminChat({ username }: { username: string }) {
             : `正在分析分段：${title}`,
         status: "streaming",
       });
-      setBusyLabel(
+      setConversationBusyLabel(
+        conversationId,
         total > 0 ? `正在分析第 ${index}/${total} 段...` : "正在分析分段...",
       );
       return;
@@ -1220,7 +1395,8 @@ export function AdminChat({ username }: { username: string }) {
             : `已完成分段落库：${title}`,
         status: "streaming",
       });
-      setBusyLabel(
+      setConversationBusyLabel(
+        conversationId,
         total > 0
           ? `已完成第 ${index}/${total} 段，继续处理后续分段...`
           : "继续处理后续分段...",
@@ -1245,7 +1421,8 @@ export function AdminChat({ username }: { username: string }) {
             : "有分段处理失败，继续执行后续分段。",
         status: "streaming",
       });
-      setBusyLabel(
+      setConversationBusyLabel(
+        conversationId,
         total > 0
           ? `第 ${index}/${total} 段失败，继续处理后续分段...`
           : "有分段失败，继续处理后续分段...",
@@ -1290,15 +1467,13 @@ export function AdminChat({ username }: { username: string }) {
     if (event.type === "done") {
       const data = asRecord(event.data);
       mergeDetails(conversationId, assistantId, { execution: data.execution });
-      activeRequestRef.current = null;
-      setBusy(false);
-      setBusyLabel("");
     }
   }
 
   const sidebarItems: ConversationItem[] = conversations.map((item) => ({
     id: item.id,
     title: item.title,
+    updatedAt: lastMessageTime(item.messages),
   }));
 
   return (
@@ -1341,6 +1516,25 @@ export function AdminChat({ username }: { username: string }) {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              <div
+                className={cn(
+                  "flex h-9 items-center gap-1 rounded-md border border-slate-200 bg-white/70 px-2 text-xs text-slate-600",
+                  llmBalanceError && "border-red-200 bg-red-50 text-red-700",
+                )}
+                title={llmBalanceError || llmBalanceDetailTitle(llmBalance)}
+              >
+                <span className="whitespace-nowrap">余额：{formatLLMBalance(llmBalance, llmBalanceError)}</span>
+                <button
+                  type="button"
+                  onClick={() => void refreshLLMBalance()}
+                  disabled={llmBalanceLoading}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                  title="刷新 DeepSeek API 最新余额"
+                >
+                  <RefreshCw className={cn("h-3.5 w-3.5", llmBalanceLoading && "animate-spin")} />
+                  <span className="sr-only">刷新余额</span>
+                </button>
+              </div>
               <Button
                 variant="outline"
                 size="sm"
@@ -1350,6 +1544,22 @@ export function AdminChat({ username }: { username: string }) {
               >
                 <FileText className="mr-2 h-4 w-4" />
                 前置话术
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void openReviewModal()}
+                disabled={reviewLoading}
+                title="逐条审查 LLM 低置信自答内容"
+                className="relative"
+              >
+                <ClipboardCheck className="mr-2 h-4 w-4" />
+                问题审查
+                {reviewCount > 0 ? (
+                  <span className="absolute -right-2 -top-2 min-w-5 rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                    {reviewCount > 99 ? "99+" : reviewCount}
+                  </span>
+                ) : null}
               </Button>
               <Button
                 variant="outline"
@@ -1415,6 +1625,7 @@ export function AdminChat({ username }: { username: string }) {
                   id={message.id}
                   role={message.role}
                   content={message.content || "处理中..."}
+                  createdAt={message.created_at}
                   pending={
                     message.status === "pending" ||
                     message.status === "streaming"
@@ -1624,6 +1835,184 @@ export function AdminChat({ username }: { username: string }) {
           onClear={() => setSelectedDetailId("")}
           onResizeStart={startDrawerResize}
         />
+        {reviewOpen ? (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="review-title"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) {
+                setReviewOpen(false);
+              }
+            }}
+          >
+            <div className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+              <header className="flex items-start justify-between gap-4 border-b px-5 py-4">
+                <div>
+                  <h2 id="review-title" className="text-sm font-semibold">
+                    问题审查
+                  </h2>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    待审 {reviewCount} 条；每次只处理当前这一条。
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setReviewOpen(false)}
+                  title="关闭审查弹窗"
+                >
+                  <X className="mr-2 h-4 w-4" />
+                  关闭
+                </Button>
+              </header>
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                {reviewLoading ? (
+                  <div className="py-12 text-center text-sm text-muted-foreground">
+                    正在读取待审查内容...
+                  </div>
+                ) : reviewItem ? (
+                  <div className="space-y-4">
+                    <div className="grid gap-2">
+                      <label className="text-xs font-semibold text-slate-600">
+                        问题
+                      </label>
+                      <Textarea
+                        value={reviewQuestion}
+                        onChange={(event) => setReviewQuestion(event.target.value)}
+                        className="min-h-[76px] resize-none bg-white text-sm"
+                        title="管理员可以修正问题表述后再通过"
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <label className="text-xs font-semibold text-slate-600">
+                        回答草稿
+                      </label>
+                      <Textarea
+                        value={reviewAnswer}
+                        onChange={(event) => setReviewAnswer(event.target.value)}
+                        className="min-h-[180px] resize-y bg-white text-sm leading-relaxed"
+                        title="管理员可以修改回答后再通过"
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <label className="text-xs font-semibold text-slate-600">
+                        目标 FAQ
+                      </label>
+                      <select
+                        value={reviewTargetPath}
+                        onChange={(event) => setReviewTargetPath(event.target.value)}
+                        className="h-10 rounded-md border border-input bg-white px-3 text-sm"
+                        title="通过后会追加到这个 FAQ 文件"
+                      >
+                        {reviewTargets.map((target) => (
+                          <option key={target.path} value={target.path}>
+                            {target.title} · {target.path}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="grid gap-2">
+                      <label className="text-xs font-semibold text-slate-600">
+                        驳回原因
+                      </label>
+                      <input
+                        value={reviewRejectReason}
+                        onChange={(event) => setReviewRejectReason(event.target.value)}
+                        className="h-10 rounded-md border border-input bg-white px-3 text-sm"
+                        placeholder="例如：回答不准确或不适合自动回复"
+                        title="驳回后会写入禁答记录"
+                      />
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+                      <div>置信度：{reviewItem.confidence || 0}</div>
+                      <div>证据置信度：{reviewItem.evidence_confidence ?? 0}</div>
+                      <div>回答模式：{reviewItem.answer_mode || "-"}</div>
+                      {reviewItem.original_question ? <div>原始提问：{reviewItem.original_question}</div> : null}
+                      <div>提问时间：{formatDateTime(reviewItem.question_created_at)}</div>
+                      <div>回答时间：{formatDateTime(reviewItem.answer_created_at)}</div>
+                      <div>创建时间：{formatDateTime(reviewItem.created_at)}</div>
+                      <div>原因：{reviewItem.boundary_reason || "低置信自答，等待人工确认。"}</div>
+                      <div className="truncate">文件：{reviewItem.path}</div>
+                      {reviewItem.matched_pages?.length ? (
+                        <div className="mt-1">
+                          相关路径：{reviewItem.matched_pages.slice(0, 4).join("、")}
+                        </div>
+                      ) : null}
+                      {reviewItem.conversation_excerpt?.length ? (
+                        <div className="mt-1 line-clamp-3">
+                          对话片段：{reviewItem.conversation_excerpt.slice(-3).join(" / ")}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="py-12 text-center text-sm text-muted-foreground">
+                    当前没有待审查问题。
+                  </div>
+                )}
+                {reviewMessage ? (
+                  <div
+                    className={cn(
+                      "mt-3 text-xs",
+                      reviewMessage.includes("已")
+                        ? "text-emerald-700"
+                        : "text-destructive",
+                    )}
+                  >
+                    {reviewMessage}
+                  </div>
+                ) : null}
+              </div>
+              <footer className="flex flex-wrap items-center justify-between gap-2 border-t bg-slate-50 px-5 py-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={reviewLoading || reviewBusy || !reviewItem || reviewCount <= 1}
+                  onClick={() => reviewItem && void loadReviewItem(reviewItem.id)}
+                  title="跳到下一条待审查内容，不处理当前条"
+                >
+                  下一条
+                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setReviewOpen(false)}
+                    title="关闭审查弹窗"
+                  >
+                    关闭
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={reviewLoading || reviewBusy || !reviewItem}
+                    onClick={() => void rejectReviewItem()}
+                    title="记录到禁答列表，后续不能回复这个问题"
+                  >
+                    <XCircle className="mr-2 h-4 w-4" />
+                    驳回
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={reviewLoading || reviewBusy || !reviewItem}
+                    onClick={() => void approveReviewItem()}
+                    title="记录到知识库中，后续可直接回复"
+                  >
+                    <CheckCircle2 className="mr-2 h-4 w-4" />
+                    通过
+                  </Button>
+                </div>
+              </footer>
+            </div>
+          </div>
+        ) : null}
         {syncOpen ? (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4"
@@ -2027,7 +2416,73 @@ function buildAdminRequest(
 function conversationHistory(messages: AdminMessage[]) {
   return messages
     .filter((message) => message.content.trim() !== "")
-    .map((message) => ({ role: message.role, content: message.content }));
+    .map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      created_at: message.created_at,
+    }));
+}
+
+function lastMessageTime(messages: AdminMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const createdAt = messages[index]?.created_at;
+    if (createdAt) {
+      return createdAt;
+    }
+  }
+  return "";
+}
+
+function formatDateTime(value?: string) {
+  if (!value) {
+    return "-";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatLLMBalance(balance: LLMBalanceResponse | null, error: string) {
+  if (error) {
+    return "查询失败";
+  }
+  const info = preferredBalanceInfo(balance);
+  if (!info) {
+    return "--";
+  }
+  const prefix = info.currency === "CNY" ? "¥" : info.currency === "USD" ? "$" : `${info.currency} `;
+  return `${prefix}${info.total_balance}`;
+}
+
+function llmBalanceDetailTitle(balance: LLMBalanceResponse | null) {
+  const info = preferredBalanceInfo(balance);
+  if (!info) {
+    return "DeepSeek API 余额，点击刷新获取最新值";
+  }
+  return [
+    `DeepSeek API 余额：${info.currency} ${info.total_balance}`,
+    `赠金：${info.granted_balance}`,
+    `充值：${info.topped_up_balance}`,
+    balance?.checked_at ? `刷新时间：${formatDateTime(balance.checked_at)}` : "",
+  ]
+    .filter(Boolean)
+    .join("；");
+}
+
+function preferredBalanceInfo(balance: LLMBalanceResponse | null) {
+  if (!balance?.balance_infos?.length) {
+    return null;
+  }
+  return balance.balance_infos.find((item) => item.currency === "CNY") ?? balance.balance_infos[0];
 }
 
 function ComposerToolButton({

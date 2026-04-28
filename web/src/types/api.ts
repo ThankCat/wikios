@@ -1,10 +1,14 @@
 export type PublicAnswerResponse = {
   answer: string;
+  received_at?: string;
+  answered_at?: string;
 };
 
 export type PublicChatHistoryItem = {
+  id?: string;
   role: "user" | "assistant";
   content: string;
+  created_at?: string;
 };
 
 export type PublicStreamEvent = {
@@ -96,6 +100,63 @@ export type PublicIntentsStatus = {
 export type PublicIntentsResponse = {
   source: string;
   status: PublicIntentsStatus;
+};
+
+export type LLMBalanceInfo = {
+  currency: "CNY" | "USD" | string;
+  total_balance: string;
+  granted_balance: string;
+  topped_up_balance: string;
+};
+
+export type LLMBalanceResponse = {
+  is_available: boolean;
+  balance_infos: LLMBalanceInfo[];
+  checked_at: string;
+};
+
+export type ReviewItem = {
+  id: string;
+  path: string;
+  question: string;
+  original_question?: string;
+  draft_answer: string;
+  suggested_faq_path: string;
+  confidence: number;
+  boundary_reason: string;
+  matched_pages: string[];
+  created_at: string;
+  session_id?: string;
+  question_message_id?: string;
+  answer_message_id?: string;
+  question_created_at?: string;
+  answer_created_at?: string;
+  answer_mode?: string;
+  evidence_confidence?: number;
+  retrieved_pages?: string[];
+  conversation_excerpt?: string[];
+};
+
+export type ReviewTarget = {
+  path: string;
+  title: string;
+};
+
+export type ReviewCountResponse = {
+  pending_count: number;
+};
+
+export type ReviewNextResponse = {
+  item?: ReviewItem;
+  pending_count: number;
+  remaining_count: number;
+  target_paths: ReviewTarget[];
+};
+
+export type ReviewActionResponse = {
+  ok: boolean;
+  item: ReviewItem;
+  pending_count: number;
 };
 
 export type ContextUsage = {

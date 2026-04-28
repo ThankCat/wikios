@@ -11,6 +11,7 @@ type Props = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  createdAt?: string;
   details?: unknown;
   pending?: boolean;
   statusText?: string;
@@ -18,7 +19,7 @@ type Props = {
   onInspect?: (payload: { id: string; role: "user" | "assistant"; content: string; details?: unknown }) => void;
 };
 
-export function MessageCard({ id, role, content, details, pending, statusText, selected, onInspect }: Props) {
+export function MessageCard({ id, role, content, createdAt, details, pending, statusText, selected, onInspect }: Props) {
   const displayContent = role === "assistant" && content.trim() === "" && pending ? "正在处理..." : content;
   const detailObject = useMemo(() => asObject(details), [details]);
   const reasoning = typeof detailObject.reasoning === "string" ? detailObject.reasoning.trim() : "";
@@ -30,46 +31,62 @@ export function MessageCard({ id, role, content, details, pending, statusText, s
       : [];
   return (
     <div className={cn("flex w-full", role === "user" ? "justify-end" : "justify-start")}>
-      <div className={role === "user" ? "chat-bubble-user" : "chat-bubble-assistant"}>
-        {role === "assistant" && (reasoning || stepItems.length > 0) ? (
-          <div className="mb-3 space-y-2">
-            {reasoning ? <InlineTracePanel title="思考过程" icon="reasoning" content={reasoning} pending={pending} /> : null}
-            {stepItems.length > 0 ? <InlineTracePanel title="执行过程" icon="tools" steps={stepItems} pending={pending} /> : null}
+      <div className={cn("flex w-full min-w-0 flex-col", role === "user" ? "items-end" : "items-start")}>
+        {createdAt ? (
+          <div className="mb-1 px-1 text-[10px] leading-4 text-slate-400">
+            {formatMessageTime(createdAt)}
           </div>
         ) : null}
-        {role === "assistant" ? (
-          <MarkdownContent className="prose prose-slate prose-sm max-w-none prose-table:my-0 prose-th:p-0 prose-td:p-0">
-            {displayContent}
-          </MarkdownContent>
-        ) : (
-          <div className="whitespace-pre-wrap">{displayContent}</div>
-        )}
-        {statusText ? (
-          <div className={cn("mt-2 text-xs", role === "user" ? "text-white/70" : "text-slate-500")}>{statusText}</div>
-        ) : null}
-        {details ? (
-          <div className="mt-3 flex justify-end">
-            <button
-              type="button"
-              onClick={() => onInspect?.({ id, role, content, details })}
-              className={cn(
-                "rounded-full border px-3 py-1.5 text-[11px] font-medium transition",
-                role === "user"
-                  ? selected
-                    ? "border-white/40 bg-white/15 text-white"
-                    : "border-white/20 bg-white/5 text-white/85 hover:bg-white/10"
-                  : selected
-                    ? "border-slate-900 bg-slate-900 text-white"
-                    : "border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100",
-              )}
-            >
-              {selected ? "正在查看详情" : "查看详情"}
-            </button>
-          </div>
-        ) : null}
+        <div className={role === "user" ? "chat-bubble-user" : "chat-bubble-assistant"}>
+          {role === "assistant" && (reasoning || stepItems.length > 0) ? (
+            <div className="mb-3 space-y-2">
+              {reasoning ? <InlineTracePanel title="思考过程" icon="reasoning" content={reasoning} pending={pending} /> : null}
+              {stepItems.length > 0 ? <InlineTracePanel title="执行过程" icon="tools" steps={stepItems} pending={pending} /> : null}
+            </div>
+          ) : null}
+          {role === "assistant" ? (
+            <MarkdownContent className="prose prose-slate prose-sm max-w-none prose-table:my-0 prose-th:p-0 prose-td:p-0">
+              {displayContent}
+            </MarkdownContent>
+          ) : (
+            <div className="whitespace-pre-wrap">{displayContent}</div>
+          )}
+          {statusText ? (
+            <div className={cn("mt-2 text-xs", role === "user" ? "text-white/70" : "text-slate-500")}>{statusText}</div>
+          ) : null}
+          {details ? (
+            <div className="mt-3 flex justify-end">
+              <button
+                type="button"
+                onClick={() => onInspect?.({ id, role, content, details })}
+                className={cn(
+                  "rounded-full border px-3 py-1.5 text-[11px] font-medium transition",
+                  role === "user"
+                    ? selected
+                      ? "border-white/40 bg-white/15 text-white"
+                      : "border-white/20 bg-white/5 text-white/85 hover:bg-white/10"
+                    : selected
+                      ? "border-slate-900 bg-slate-900 text-white"
+                      : "border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100",
+                )}
+              >
+                {selected ? "正在查看详情" : "查看详情"}
+              </button>
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );
+}
+
+function formatMessageTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const pad = (item: number) => String(item).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function InlineTracePanel({

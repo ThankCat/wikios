@@ -79,8 +79,12 @@ export function MarkdownContent({ children, className }: Props) {
   return (
     <div className={cn("markdown-content", className)}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-        {children}
+        {normalizeBareLinks(children)}
       </ReactMarkdown>
     </div>
   );
+}
+
+function normalizeBareLinks(markdown: string) {
+  return markdown.replace(/(https?:\/\/[^\s<>"'，。！？；、（）【】《》]+)(?=[\u4e00-\u9fff，。！？；、）】》])/g, "$1 ");
 }

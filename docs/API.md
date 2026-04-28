@@ -63,6 +63,7 @@ http://127.0.0.1:9025
 | `NOT_FOUND` | `404` | 路由不存在。 |
 | `CONTEXT_LIMIT_EXCEEDED` | `413` | 管理员多轮上下文超过限制。 |
 | `PUBLIC_INTENTS_UNAVAILABLE` | `503` | 前置话术管理器不可用。 |
+| `REVIEWS_UNAVAILABLE` | `503` | 问题审查队列不可用。 |
 | `INVALID_PUBLIC_INTENTS` | `400` | 前置话术 YAML 校验失败。 |
 | `GIT_COMMIT_FAILED` | `400` | Git commit 执行失败。 |
 | `GIT_PUSH_FAILED` | `400` | Git push 执行失败。 |
@@ -771,7 +772,56 @@ curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/sync/push \
   -d '{"remote":"origin","branch":"main"}'
 ```
 
-## 11. Public Intents API
+## 11. Review API
+
+审查队列以 mounted wiki 文件为事实来源：`wiki/unconfirmed/` 保存待审问题，`wiki/forbidden/` 保存驳回后的禁答问题。所有接口都需要管理员 Cookie。
+
+### GET `/api/v1/admin/reviews/count`
+
+用途：读取待审查数量。
+
+Response：`{ "pending_count": 3 }`
+
+### GET `/api/v1/admin/reviews/next`
+
+用途：读取下一条待审查问题。可选 query `cursor=<review_id>`，用于跳过当前条读取后续条目。
+
+Response 字段：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `item` | `object` | 当前待审条目；没有待审时为空。 |
+| `pending_count` | `number` | 当前待审总数。 |
+| `remaining_count` | `number` | 当前条之后还剩多少条。 |
+| `target_paths` | `array<object>` | 可写入的 FAQ 目标文件列表。 |
+
+### POST `/api/v1/admin/reviews/:id/approve`
+
+用途：通过当前待审问题，把最终问答追加到指定 `wiki/faq/*.md`。
+
+Request Body：
+
+| 字段 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `question` | `string` | 否 | 管理员修正后的问题；为空则使用原问题。 |
+| `answer` | `string` | 是 | 管理员确认或修改后的回答。 |
+| `target_path` | `string` | 是 | 目标 FAQ 文件，例如 `wiki/faq/faq-product-selection.md`。 |
+
+Response：`{ "ok": true, "item": {...}, "pending_count": 2 }`
+
+### POST `/api/v1/admin/reviews/:id/reject`
+
+用途：驳回当前待审问题，移动到 `wiki/forbidden/`，后续相似问题禁答。
+
+Request Body：
+
+| 字段 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `reason` | `string` | 否 | 驳回原因；为空时使用默认原因。 |
+
+Response：`{ "ok": true, "item": {...}, "pending_count": 2 }`
+
+## 12. Public Intents API
 
 ### GET `/api/v1/admin/public-intents`
 
@@ -826,7 +876,7 @@ curl -b cookie.txt -X PUT http://127.0.0.1:9025/api/v1/admin/public-intents \
   -d '{"source":"version: 1\nrules: []\n"}'
 ```
 
-## 12. 接入建议
+## 13. 接入建议
 
 - 终端 AI 客服只使用 `/api/v1/public/answer` 或 `/api/v1/public/answer/stream`。
 - 终端 AI 客服必须自己维护用户会话，并把最近对话作为 `history` 传入。

@@ -56,6 +56,15 @@ public_intents:
   enabled: true
   path: configs/public_intents.yaml
 
+public_query:
+  confidence:
+    direct_min: 0.70
+    review_min: 0.25
+
+support:
+  phone: ${WIKIOS_SUPPORT_PHONE}
+  wecom: ${WIKIOS_SUPPORT_WECOM}
+
 knowledge_profile:
   name: ${WIKIOS_KNOWLEDGE_PROFILE}
   path: ${WIKIOS_KNOWLEDGE_PROFILE_PATH}

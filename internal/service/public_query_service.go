@@ -6,23 +6,31 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"wikios/internal/llm"
+	"wikios/internal/retrieval"
 	"wikios/internal/runtime"
 	"wikios/internal/wikiadapter"
 )
 
 type PublicAnswerRequest struct {
-	Question  string         `json:"question"`
-	UserID    string         `json:"user_id"`
-	SessionID string         `json:"session_id"`
-	Context   map[string]any `json:"context"`
-	History   []ChatMessage  `json:"history"`
+	Question          string         `json:"question"`
+	UserID            string         `json:"user_id"`
+	SessionID         string         `json:"session_id"`
+	QuestionMessageID string         `json:"question_message_id"`
+	AnswerMessageID   string         `json:"answer_message_id"`
+	QuestionCreatedAt string         `json:"question_created_at"`
+	ReceivedAt        string         `json:"received_at"`
+	Context           map[string]any `json:"context"`
+	History           []ChatMessage  `json:"history"`
 }
 
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	ID        string `json:"id,omitempty"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 type SourceRef struct {
@@ -32,7 +40,9 @@ type SourceRef struct {
 }
 
 type PublicAnswerResponse struct {
-	Answer string `json:"answer"`
+	Answer     string `json:"answer"`
+	ReceivedAt string `json:"received_at,omitempty"`
+	AnsweredAt string `json:"answered_at,omitempty"`
 }
 
 type PublicQueryService struct {
@@ -42,14 +52,22 @@ type PublicQueryService struct {
 const publicHistoryLimit = 8
 
 type publicAnswerLLMOutput struct {
-	AnswerType     string `json:"answer_type"`
-	AnswerMarkdown string `json:"answer_markdown"`
-	Sources        []struct {
+	AnswerMode         string  `json:"answer_mode"`
+	AnswerType         string  `json:"answer_type"`
+	AnswerMarkdown     string  `json:"answer_markdown"`
+	CanAnswer          *bool   `json:"can_answer"`
+	ReviewQuestion     string  `json:"review_question"`
+	Confidence         float64 `json:"confidence"`
+	EvidenceConfidence float64 `json:"evidence_confidence"`
+	ReviewRequired     bool    `json:"review_required"`
+	ReviewReason       string  `json:"review_reason"`
+	BoundaryReason     string  `json:"boundary_reason"`
+	SuggestedFAQPath   string  `json:"suggested_faq_path"`
+	Sources            []struct {
 		Path       string `json:"path"`
 		Confidence string `json:"confidence"`
 	} `json:"sources"`
-	Confidence float64 `json:"confidence"`
-	Notes      string  `json:"notes"`
+	Notes string `json:"notes"`
 }
 
 func NewPublicQueryService(deps Deps) *PublicQueryService {
@@ -57,16 +75,17 @@ func NewPublicQueryService(deps Deps) *PublicQueryService {
 }
 
 func (s *PublicQueryService) Answer(ctx context.Context, traceID string, req PublicAnswerRequest) (*PublicAnswerResponse, error) {
-	if intent, ok := s.matchPublicIntent(req.Question); ok {
-		return &PublicAnswerResponse{
-			Answer: intent.Response,
-		}, nil
+	receivedAt := firstNonEmpty(strings.TrimSpace(req.ReceivedAt), time.Now().Format(time.RFC3339Nano))
+	if reply, ok := hardPublicSafetyReply(req.Question); ok {
+		return publicAnswerResponse(reply, receivedAt), nil
 	}
-	if unsupported, ok := unsupportedPublicReply(req.Question); ok {
-		return &PublicAnswerResponse{
-			Answer: unsupported,
-		}, nil
+	reviewQueue := NewReviewQueueService(s.deps)
+	if _, forbidden, err := reviewQueue.MatchForbidden(ctx, req.Question); err != nil {
+		return nil, err
+	} else if forbidden {
+		return publicAnswerResponse(forbiddenPublicReply(), receivedAt), nil
 	}
+
 	env := s.env("public", traceID, "", "")
 	candidateTopK := s.deps.Config.Retrieval.TopK * 4
 	if candidateTopK < 8 {
@@ -80,6 +99,7 @@ func (s *PublicQueryService) Answer(ctx context.Context, traceID string, req Pub
 	if err != nil {
 		return nil, err
 	}
+	retrievedPaths := retrievedPagePaths(pages)
 	contentBlocks := make([]string, 0, len(pages))
 	sources := make([]SourceRef, 0, len(pages))
 	seenPaths := map[string]bool{}
@@ -88,32 +108,22 @@ func (s *PublicQueryService) Answer(ctx context.Context, traceID string, req Pub
 		if !isPublicReadableEvidence(page.Path) {
 			continue
 		}
-		content, ok := s.readPublicEvidencePage(ctx, env, page.Path, retrievalQuestion, seenPaths, &contentBlocks, &sources)
+		content, ok := s.readPublicEvidencePage(ctx, env, page.Path, seenPaths, &contentBlocks, &sources)
 		if !ok {
 			continue
 		}
 		relatedEvidencePaths = append(relatedEvidencePaths, linkedPublicEvidencePathsFromContent(content)...)
 	}
 	for _, evidencePath := range dedupeEvidencePaths(relatedEvidencePaths) {
-		s.readPublicEvidencePage(ctx, env, evidencePath, retrievalQuestion, seenPaths, &contentBlocks, &sources)
+		s.readPublicEvidencePage(ctx, env, evidencePath, seenPaths, &contentBlocks, &sources)
 	}
-	if len(contentBlocks) == 0 || !hasPublicEvidence(sources) {
-		fallback := s.publicFallback(req.Question)
-		return &PublicAnswerResponse{
-			Answer: fallback,
-		}, nil
-	}
-	systemPrompt, err := s.loadPromptWithWikiQueryGuide("public_answer_system.md")
+
+	systemPrompt, err := s.loadPrompt("public_answer_system.md")
 	if err != nil {
 		return nil, err
 	}
 	systemPrompt += "\n\n你必须只返回一个 JSON 对象，不要输出代码块。"
-	userPrompt := fmt.Sprintf(
-		"%s用户问题：%s\n\n候选页面：\n%s",
-		formatConversationHistory(req.History),
-		req.Question,
-		strings.Join(contentBlocks, "\n\n"),
-	)
+	userPrompt := s.publicDecisionPrompt(req, receivedAt, retrievedPaths, contentBlocks)
 	llmText, err := s.executeLLM(ctx, nil, s.deps.Config.LLM.ModelPublic, []llm.Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userPrompt},
@@ -121,37 +131,194 @@ func (s *PublicQueryService) Answer(ctx context.Context, traceID string, req Pub
 	if err != nil {
 		return nil, err
 	}
-	parsed := publicAnswerLLMOutput{}
-	if err := llm.DecodeJSONObject(llmText, &parsed); err != nil {
-		parsed.AnswerType = "text"
-		parsed.AnswerMarkdown = llmText
-	}
-	mergedSources := mergePromptSources(parsed.Sources, dedupeSources(sources))
+	parsed := s.parsePublicAnswerOutput(ctx, llmText)
 	answerMarkdown := strings.TrimSpace(parsed.AnswerMarkdown)
 	if answerMarkdown == "" {
-		answerMarkdown = llmText
+		answerMarkdown = s.publicFallback(req.Question)
 	}
-	if normalized, changed := normalizeBrandedPublicAnswer(answerMarkdown, hasPublicEvidence(mergedSources)); changed {
+	fallback := s.publicFallback(req.Question)
+	if sanitized, ok := sanitizePublicAnswer(answerMarkdown, req.Question, fallback); ok {
+		answerMarkdown = sanitized
+	} else if normalized, ok := normalizeBrandedPublicAnswer(answerMarkdown, true); ok {
 		answerMarkdown = normalized
 	}
-	if leaked, ok := sanitizePublicAnswer(answerMarkdown, req.Question, s.publicFallback(req.Question)); ok {
-		answerMarkdown = leaked
-		mergedSources = nil
-	}
-	if !hasPublicEvidence(mergedSources) {
-		answerMarkdown = s.publicFallback(req.Question)
-		mergedSources = nil
+	answeredAt := time.Now().Format(time.RFC3339Nano)
+	parsed.AnswerMarkdown = answerMarkdown
+
+	if s.shouldCreatePublicReview(parsed) {
+		_, _ = reviewQueue.CreatePending(ctx, ReviewCreateRequest{
+			Question:            firstNonEmpty(parsed.ReviewQuestion, req.Question),
+			OriginalQuestion:    req.Question,
+			DraftAnswer:         answerMarkdown,
+			SuggestedFAQPath:    parsed.SuggestedFAQPath,
+			Confidence:          clampConfidence(parsed.Confidence),
+			BoundaryReason:      firstNonEmpty(parsed.ReviewReason, parsed.Notes, "低可信 public query 回答，等待人工审查。"),
+			MatchedPages:        retrievedPaths,
+			SessionID:           req.SessionID,
+			QuestionMessageID:   req.QuestionMessageID,
+			AnswerMessageID:     req.AnswerMessageID,
+			QuestionCreatedAt:   firstNonEmpty(req.QuestionCreatedAt, receivedAt),
+			AnswerCreatedAt:     answeredAt,
+			AnswerMode:          normalizedAnswerMode(parsed.AnswerMode),
+			EvidenceConfidence:  clampConfidence(parsed.EvidenceConfidence),
+			RetrievedPages:      retrievedPaths,
+			ConversationExcerpt: publicConversationExcerpt(req),
+		})
 	}
 	return &PublicAnswerResponse{
-		Answer: answerMarkdown,
+		Answer:     answerMarkdown,
+		ReceivedAt: receivedAt,
+		AnsweredAt: answeredAt,
 	}, nil
+}
+
+func publicAnswerResponse(answer string, receivedAt string) *PublicAnswerResponse {
+	return &PublicAnswerResponse{
+		Answer:     answer,
+		ReceivedAt: receivedAt,
+		AnsweredAt: time.Now().Format(time.RFC3339Nano),
+	}
+}
+
+func (s *PublicQueryService) parsePublicAnswerOutput(ctx context.Context, llmText string) publicAnswerLLMOutput {
+	parsed := publicAnswerLLMOutput{}
+	if err := llm.DecodeJSONObject(llmText, &parsed); err == nil {
+		return normalizePublicAnswerOutput(parsed)
+	}
+	systemPrompt := "你只负责把输入改写成一个 JSON 对象，不改变语义，不补充事实。必须输出字段 answer_mode、answer_markdown、confidence、evidence_confidence、review_required、review_reason、suggested_faq_path。"
+	userPrompt := "原始输出：\n" + truncateForPrompt(llmText, 4000)
+	repaired, err := s.executeLLM(ctx, nil, s.deps.Config.LLM.ModelPublic, []llm.Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt},
+	}, "llm public answer json repair")
+	if err == nil {
+		parsed = publicAnswerLLMOutput{}
+		if decodeErr := llm.DecodeJSONObject(repaired, &parsed); decodeErr == nil {
+			return normalizePublicAnswerOutput(parsed)
+		}
+	}
+	return normalizePublicAnswerOutput(publicAnswerLLMOutput{
+		AnswerMode:     "self_answer",
+		AnswerMarkdown: strings.TrimSpace(llmText),
+		Confidence:     s.deps.Config.PublicQuery.Confidence.ReviewMin,
+		ReviewRequired: true,
+		ReviewReason:   "LLM 未输出标准 JSON，按低可信回答进入审查。",
+	})
+}
+
+func normalizePublicAnswerOutput(parsed publicAnswerLLMOutput) publicAnswerLLMOutput {
+	if parsed.CanAnswer != nil && !*parsed.CanAnswer && strings.TrimSpace(parsed.AnswerMode) == "" {
+		parsed.AnswerMode = "refusal"
+	}
+	parsed.AnswerMode = normalizedAnswerMode(parsed.AnswerMode)
+	parsed.AnswerMarkdown = strings.TrimSpace(parsed.AnswerMarkdown)
+	parsed.ReviewQuestion = strings.TrimSpace(parsed.ReviewQuestion)
+	parsed.Confidence = clampConfidence(parsed.Confidence)
+	parsed.EvidenceConfidence = clampConfidence(parsed.EvidenceConfidence)
+	parsed.ReviewReason = strings.TrimSpace(parsed.ReviewReason)
+	if parsed.ReviewReason == "" {
+		parsed.ReviewReason = strings.TrimSpace(parsed.BoundaryReason)
+	}
+	parsed.SuggestedFAQPath = strings.TrimSpace(parsed.SuggestedFAQPath)
+	parsed.Notes = strings.TrimSpace(parsed.Notes)
+	return parsed
+}
+
+func normalizedAnswerMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "evidence", "mixed", "self_answer", "clarification", "refusal":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "self_answer"
+	}
+}
+
+func clampConfidence(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
+}
+
+func (s *PublicQueryService) shouldCreatePublicReview(parsed publicAnswerLLMOutput) bool {
+	mode := normalizedAnswerMode(parsed.AnswerMode)
+	if mode == "refusal" || strings.TrimSpace(parsed.AnswerMarkdown) == "" {
+		return false
+	}
+	directMin, reviewMin := publicConfidenceThresholds(
+		s.deps.Config.PublicQuery.Confidence.DirectMin,
+		s.deps.Config.PublicQuery.Confidence.ReviewMin,
+	)
+	confidence := clampConfidence(parsed.Confidence)
+	if confidence >= directMin {
+		return false
+	}
+	if confidence >= reviewMin {
+		return true
+	}
+	return parsed.ReviewRequired
+}
+
+func publicConfidenceThresholds(directMin float64, reviewMin float64) (float64, float64) {
+	if directMin <= 0 {
+		directMin = 0.70
+	}
+	if reviewMin <= 0 {
+		reviewMin = 0.25
+	}
+	directMin = clampConfidence(directMin)
+	reviewMin = clampConfidence(reviewMin)
+	if reviewMin > directMin {
+		reviewMin = directMin
+	}
+	return directMin, reviewMin
+}
+
+func (s *PublicQueryService) publicDecisionPrompt(req PublicAnswerRequest, receivedAt string, retrievedPaths []string, contentBlocks []string) string {
+	candidateText := strings.TrimSpace(strings.Join(contentBlocks, "\n\n"))
+	if candidateText == "" {
+		candidateText = "- 暂无候选页面"
+	}
+	return fmt.Sprintf(
+		"当前时间：%s\n用户问题：%s\n\n%s当前可公开联系方式：\n%s\n\n检索到的候选路径：\n%s\n\n候选页面内容：\n%s",
+		receivedAt,
+		strings.TrimSpace(req.Question),
+		formatConversationHistory(req.History),
+		s.supportContactPrompt(),
+		formatMatchedPageList(retrievedPaths),
+		candidateText,
+	)
+}
+
+func (s *PublicQueryService) supportContactPrompt() string {
+	phone := strings.TrimSpace(s.deps.Config.Support.Phone)
+	if phone == "" {
+		phone = "400-1080-106"
+	}
+	wecom := strings.TrimSpace(s.deps.Config.Support.WeCom)
+	if wecom == "" {
+		wecom = "企业微信"
+	}
+	lines := make([]string, 0, 2)
+	if phone != "" {
+		lines = append(lines, "- 客服电话："+phone)
+	}
+	if wecom != "" {
+		lines = append(lines, "- 企业微信："+wecom)
+	}
+	if len(lines) == 0 {
+		return "- 暂无"
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (s *PublicQueryService) readPublicEvidencePage(
 	ctx context.Context,
 	env *runtime.ExecEnv,
 	path string,
-	question string,
 	seenPaths map[string]bool,
 	contentBlocks *[]string,
 	sources *[]SourceRef,
@@ -169,7 +336,6 @@ func (s *PublicQueryService) readPublicEvidencePage(
 	}
 	displayTitle := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	body := strings.TrimSpace(content)
-	preview := body
 	if doc, err := wikiadapter.ParseDocument(content); err == nil {
 		if title, _ := doc.Frontmatter["title"].(string); strings.TrimSpace(title) != "" {
 			displayTitle = strings.TrimSpace(title)
@@ -177,37 +343,15 @@ func (s *PublicQueryService) readPublicEvidencePage(
 		if strings.TrimSpace(doc.Body) != "" {
 			body = strings.TrimSpace(doc.Body)
 		}
-		if isStructuredFAQEvidence(doc.Frontmatter, path) {
-			preview = buildFAQEvidencePreview(body, question)
-		}
-	}
-	if strings.TrimSpace(preview) == "" {
-		preview = body
 	}
 	seenPaths[path] = true
-	*contentBlocks = append(*contentBlocks, fmt.Sprintf("## %s\n\n%s", displayTitle, truncateForPrompt(preview, 2200)))
+	*contentBlocks = append(*contentBlocks, fmt.Sprintf("## %s\npath: %s\n\n%s", displayTitle, path, truncateForPrompt(body, 2200)))
 	*sources = append(*sources, SourceRef{
 		Path:       path,
 		Title:      displayTitle,
-		Confidence: sourceConfidence(path),
+		Confidence: publicSourceConfidence(path),
 	})
 	return body, true
-}
-
-func isStructuredFAQEvidence(frontmatter map[string]any, path string) bool {
-	if strings.HasPrefix(path, "wiki/faq/") {
-		return true
-	}
-	if frontmatter == nil {
-		return false
-	}
-	if value, _ := frontmatter["source_family"].(string); strings.TrimSpace(value) == faqSourceFamily {
-		return true
-	}
-	if value, _ := frontmatter["source_format"].(string); strings.HasPrefix(strings.TrimSpace(value), "faq-") {
-		return true
-	}
-	return false
 }
 
 func formatConversationHistory(history []ChatMessage) string {
@@ -225,12 +369,17 @@ func formatConversationHistory(history []ChatMessage) string {
 		if role == "" || content == "" {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("- %s: %s", role, content))
+		timeText := strings.TrimSpace(item.CreatedAt)
+		if timeText != "" {
+			lines = append(lines, fmt.Sprintf("- [%s] %s: %s", timeText, role, content))
+		} else {
+			lines = append(lines, fmt.Sprintf("- %s: %s", role, content))
+		}
 	}
 	if len(lines) == 0 {
 		return ""
 	}
-	return "最近对话上下文：\n" + strings.Join(lines, "\n") + "\n\n"
+	return "最近对话上下文（按时间顺序）：\n" + strings.Join(lines, "\n") + "\n\n"
 }
 
 func buildPublicRetrievalQuestion(question string, history []ChatMessage) string {
@@ -251,9 +400,6 @@ func buildPublicRetrievalQuestion(question string, history []ChatMessage) string
 		}
 		lines = append(lines, fmt.Sprintf("%s：%s", role, truncateForPrompt(content, 180)))
 	}
-	if len(lines) == 0 {
-		return question
-	}
 	if question != "" {
 		lines = append(lines, "当前问题："+question)
 	}
@@ -271,6 +417,30 @@ func publicRetrievalRoleLabel(role string) string {
 	}
 }
 
+func publicConversationExcerpt(req PublicAnswerRequest) []string {
+	lines := make([]string, 0, len(req.History)+1)
+	for _, item := range req.History {
+		content := strings.TrimSpace(item.Content)
+		role := strings.TrimSpace(item.Role)
+		if content == "" || role == "" {
+			continue
+		}
+		prefix := role
+		if item.CreatedAt != "" {
+			prefix = item.CreatedAt + " " + role
+		}
+		lines = append(lines, prefix+": "+truncateForPrompt(content, 240))
+	}
+	if strings.TrimSpace(req.Question) != "" {
+		prefix := "user"
+		if req.QuestionCreatedAt != "" {
+			prefix = req.QuestionCreatedAt + " user"
+		}
+		lines = append(lines, prefix+": "+truncateForPrompt(req.Question, 240))
+	}
+	return lines
+}
+
 func (s *PublicQueryService) matchPublicIntent(question string) (PublicIntentResult, bool) {
 	if s.deps.PublicIntents == nil {
 		return PublicIntentResult{}, false
@@ -283,6 +453,27 @@ func (s *PublicQueryService) publicFallback(question string) string {
 		return genericPublicFallback(question)
 	}
 	return s.deps.PublicIntents.Fallback(question)
+}
+
+func hardPublicSafetyReply(question string) (string, bool) {
+	if unsupported, ok := unsupportedPublicReply(question); ok {
+		return unsupported, true
+	}
+	lower := strings.ToLower(strings.TrimSpace(question))
+	if containsAny(lower,
+		"查看 prompt", "查看prompt", "系统提示词", "泄露提示词", "内部路径", "api key", "apikey",
+		"删除资料库", "删除知识库", "删库", "删除wiki", "删除页面", "清空知识库",
+		"drop database", "delete wiki", "delete knowledge base",
+	) {
+		return "这个请求不属于对外客服问答范围。如需处理系统或资料管理操作，请联系管理员。", true
+	}
+	if containsAny(lower,
+		"诈骗", "洗钱", "攻击", "盗号", "木马", "恶意软件", "ddos", "sql注入", "sql injection",
+		"破解", "撞库", "爬取隐私", "窃取", "钓鱼网站", "绕过监管",
+	) {
+		return "这个请求我这边不能协助处理。", true
+	}
+	return "", false
 }
 
 func unsupportedPublicReply(question string) (string, bool) {
@@ -307,58 +498,41 @@ func unsupportedPublicReply(question string) (string, bool) {
 	return "", false
 }
 
+func forbiddenPublicReply() string {
+	return "这个问题我这边不能继续回复，建议您联系人工客服进一步确认。"
+}
+
 func sanitizePublicAnswer(answer string, question string, fallback string) (string, bool) {
 	lower := strings.ToLower(answer)
 	if containsAny(lower,
 		"wiki/index.md",
 		"wiki/outputs",
+		"wiki/unconfirmed",
+		"wiki/forbidden",
 		"slug",
+		"知识库",
+		"资料库",
+		"检索结果",
+		"常见faq",
+		"常见 faq",
+		"未确认",
+		"审查",
+		"管理员待确认",
+		"尚未收录",
+		"没有专门针对",
 		"资料库中仅包含",
 		"系统索引页",
 		"历史检查报告",
 		"请问您希望删除整个资料库",
 		"如果是特定页面",
 	) {
-		return "这个请求不属于对外客服问答范围。如需处理系统或资料管理操作，请联系管理员。", true
+		if containsAny(lower, "wiki/", "slug", "资料库中仅包含", "系统索引页", "历史检查报告", "请问您希望删除整个资料库", "如果是特定页面") {
+			return "当前无法直接处理这类系统操作。如需处理资料或系统配置，请联系管理员。", true
+		}
+		return firstNonEmpty(strings.TrimSpace(fallback), genericPublicFallback(question)), true
 	}
 	if internalPathPattern.MatchString(answer) {
 		return "当前无法直接处理这类系统操作。如需处理资料或系统配置，请联系管理员。", true
-	}
-	if containsAny(lower,
-		"目前知识库",
-		"当前知识库",
-		"知识库里",
-		"知识库中",
-		"知识库没有",
-		"知识库暂无",
-		"资料库",
-		"当前资料",
-		"现有资料",
-		"检索结果",
-		"没有专门针对",
-		"当前知识库中尚未收录",
-		"由于当前知识库中尚未收录",
-		"知识库当前",
-		"我暂时无法提供准确的信息",
-		"暂时无法提供准确的信息",
-		"建议您联系管理员",
-		"建议联系管理员",
-		"请问您是想了解",
-		"请问您是想",
-		"当前没有对应信息",
-		"知识库中没有足够依据",
-		"客服知识库",
-		"服务商",
-		"服务提供商",
-		"用户指南",
-		"通常有以下几种方式",
-		"一般有以下几种方式",
-		"根据客服知识库",
-	) {
-		if strings.TrimSpace(fallback) != "" {
-			return strings.TrimSpace(fallback), true
-		}
-		return genericPublicFallback(question), true
 	}
 	if containsAny(strings.ToLower(question), "删除资料库", "删除知识库", "删库") {
 		return "这个请求不属于对外客服问答范围。如需处理系统或资料管理操作，请联系管理员。", true
@@ -389,8 +563,6 @@ func normalizeBrandedPublicAnswer(answer string, hasEvidence bool) (string, bool
 		{"根据客服知识库的信息，", ""},
 		{"根据我们客服知识库", ""},
 		{"根据客服知识库", ""},
-		{"通常有以下几种方式：", ""},
-		{"一般有以下几种方式：", ""},
 		{"通过服务商提供的管理后台/控制面板", "您可以通过我们的管理后台"},
 		{"通过服务商提供的管理后台", "您可以通过我们的管理后台"},
 		{"服务商通常会提供", "我们通常会提供"},
@@ -434,25 +606,28 @@ func genericPublicFallback(question string) string {
 }
 
 func isPublicReadableEvidence(path string) bool {
-	switch {
-	case strings.HasPrefix(path, "wiki/faq/"):
-		return true
-	case strings.HasPrefix(path, "wiki/concepts/"):
-		return true
-	case strings.HasPrefix(path, "wiki/entities/"):
-		return true
-	default:
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if !strings.HasPrefix(path, "wiki/") {
 		return false
 	}
+	if strings.HasPrefix(path, "wiki/unconfirmed/") ||
+		strings.HasPrefix(path, "wiki/forbidden/") ||
+		strings.HasPrefix(path, "wiki/templates/") ||
+		strings.HasPrefix(path, "wiki/outputs/") {
+		return false
+	}
+	return strings.HasSuffix(path, ".md")
 }
 
-func hasPublicEvidence(sources []SourceRef) bool {
-	for _, source := range sources {
-		if strings.HasPrefix(source.Path, "wiki/faq/") {
-			return true
-		}
+func publicSourceConfidence(path string) string {
+	switch {
+	case strings.HasPrefix(path, "wiki/faq/"):
+		return "high"
+	case strings.HasPrefix(path, "wiki/concepts/"), strings.HasPrefix(path, "wiki/entities/"):
+		return "medium"
+	default:
+		return "low"
 	}
-	return false
 }
 
 var wikilinkPattern = regexp.MustCompile(`\[\[([^\]]+)\]\]`)
@@ -487,7 +662,7 @@ func dedupeEvidencePaths(in []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(in))
 	for _, item := range in {
-		if item == "" || seen[item] {
+		if item == "" || seen[item] || !isPublicReadableEvidence(item) {
 			continue
 		}
 		seen[item] = true
@@ -496,62 +671,34 @@ func dedupeEvidencePaths(in []string) []string {
 	return out
 }
 
-func dedupeSources(in []SourceRef) []SourceRef {
+func retrievedPagePaths(pages []retrieval.RetrievedPage) []string {
+	out := make([]string, 0, len(pages))
 	seen := map[string]bool{}
-	out := make([]SourceRef, 0, len(in))
-	for _, item := range in {
-		if seen[item.Path] {
+	for _, page := range pages {
+		path := strings.TrimSpace(page.Path)
+		if path == "" || seen[path] {
 			continue
 		}
-		seen[item.Path] = true
-		out = append(out, item)
+		seen[path] = true
+		out = append(out, path)
 	}
 	return out
 }
 
-func confidenceFromSources(sources []SourceRef) float64 {
-	if len(sources) >= 5 {
-		return 0.92
+func formatMatchedPageList(paths []string) string {
+	if len(paths) == 0 {
+		return "- 暂无"
 	}
-	if len(sources) >= 3 {
-		return 0.85
-	}
-	if len(sources) >= 1 {
-		return 0.72
-	}
-	return 0.3
-}
-
-func mergePromptSources(promptSources []struct {
-	Path       string `json:"path"`
-	Confidence string `json:"confidence"`
-}, retrieved []SourceRef) []SourceRef {
-	index := map[string]SourceRef{}
-	for _, item := range retrieved {
-		index[item.Path] = item
-	}
-	for _, item := range promptSources {
-		if strings.TrimSpace(item.Path) == "" {
-			continue
+	lines := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if strings.TrimSpace(path) != "" {
+			lines = append(lines, "- "+strings.TrimSpace(path))
 		}
-		existing := index[item.Path]
-		if existing.Path == "" {
-			existing = SourceRef{
-				Path:       item.Path,
-				Title:      strings.TrimSuffix(filepath.Base(item.Path), filepath.Ext(item.Path)),
-				Confidence: item.Confidence,
-			}
-		}
-		if item.Confidence != "" {
-			existing.Confidence = item.Confidence
-		}
-		index[item.Path] = existing
 	}
-	out := make([]SourceRef, 0, len(index))
-	for _, item := range index {
-		out = append(out, item)
+	if len(lines) == 0 {
+		return "- 暂无"
 	}
-	return dedupeSources(out)
+	return strings.Join(lines, "\n")
 }
 
 func runtimeCall(name string, args map[string]any) runtime.ToolCall {
