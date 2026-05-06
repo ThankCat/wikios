@@ -5,7 +5,7 @@ server:
 mounted_wiki:
   root: /Users/chenhao/Project/knowledge-base
   name: default-wiki
-  qmd_index: zy-knowledge-base
+  qmd_index: knowledge-base
 
 llm:
   provider: deepseek
@@ -21,6 +21,9 @@ auth:
   default_admin_password: admin123
   session_cookie_name: wikios_admin_session
   session_ttl_hours: 168
+  session_cookie_domain: ""
+  session_cookie_secure: false
+  session_cookie_same_site: lax
 
 retrieval:
   top_k: 5

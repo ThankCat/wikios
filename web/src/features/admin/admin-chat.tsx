@@ -164,6 +164,7 @@ export function AdminChat({ username }: { username: string }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const typingTimersRef = useRef<Record<string, number>>({});
   const requestControllersRef = useRef<Record<string, AbortController>>({});
+  const sendLocksRef = useRef<Record<string, boolean>>({});
   const [requestLabels, setRequestLabels] = useState<Record<string, string>>({});
   const [intentEditorOpen, setIntentEditorOpen] = useState(false);
   const [intentSource, setIntentSource] = useState("");
@@ -298,6 +299,12 @@ export function AdminChat({ username }: { username: string }) {
       setContextUsage(null);
       return;
     }
+    if (busy || composer.trim() === "") {
+      if (composer.trim() === "") {
+        setContextUsage(null);
+      }
+      return;
+    }
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       const request = buildAdminRequest(activeConversation, composer, {});
@@ -320,12 +327,13 @@ export function AdminChat({ username }: { username: string }) {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [activeConversation, contextEstimateKey]);
+  }, [activeConversation, busy, composer, contextEstimateKey]);
 
   useEffect(
     () => () => {
       Object.values(requestControllersRef.current).forEach((controller) => controller.abort());
       requestControllersRef.current = {};
+      sendLocksRef.current = {};
       Object.values(typingTimersRef.current).forEach((timer) =>
         window.clearTimeout(timer),
       );
@@ -346,8 +354,13 @@ export function AdminChat({ username }: { username: string }) {
     void refreshLLMBalance();
   }, []);
 
-  function startDrawerResize() {
-    const handleMove = (event: MouseEvent) => {
+  function startDrawerResize(clientX?: number) {
+    if (typeof clientX === "number") {
+      setDrawerWidth(
+        Math.min(960, Math.max(320, window.innerWidth - clientX)),
+      );
+    }
+    const handleMove = (event: PointerEvent) => {
       const nextWidth = Math.min(
         960,
         Math.max(320, window.innerWidth - event.clientX),
@@ -355,11 +368,13 @@ export function AdminChat({ username }: { username: string }) {
       setDrawerWidth(nextWidth);
     };
     const handleUp = () => {
-      window.removeEventListener("mousemove", handleMove);
-      window.removeEventListener("mouseup", handleUp);
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleUp);
     };
-    window.addEventListener("mousemove", handleMove);
-    window.addEventListener("mouseup", handleUp);
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleUp);
   }
 
   function startConversationRequest(conversationId: string, controller: AbortController, label: string) {
@@ -399,54 +414,101 @@ export function AdminChat({ username }: { username: string }) {
     if (!activeConversation || !text || busy) {
       return;
     }
-    const conversationId = activeConversation.id;
-    const stream = overrides?.stream ?? activeConversation.stream;
-    const request = buildAdminRequest(activeConversation, text, {
-      ...overrides,
-      stream,
-    });
-    const estimate = await api.estimateAdminContext(request).catch(() => null);
-    if (estimate?.context_usage.blocked) {
-      setContextUsage(estimate.context_usage);
+    if (contextUsage?.blocked) {
       setError("当前对话已接近上下文上限，请创建新的对话继续。");
       return;
     }
-    if (estimate?.context_usage) {
-      setContextUsage(estimate.context_usage);
+    const conversationId = activeConversation.id;
+    if (sendLocksRef.current[conversationId]) {
+      return;
     }
-    const userMessage: AdminMessage = {
-      id: createId(),
-      role: "user",
-      content: text,
-      created_at: new Date().toISOString(),
-    };
-    appendMessage(conversationId, userMessage);
-    setComposer("");
-    setError("");
-    const controller = new AbortController();
-    startConversationRequest(conversationId, controller, stream ? "正在执行管理员会话..." : "正在处理管理员请求...");
-    if (stream) {
+    sendLocksRef.current[conversationId] = true;
+    try {
+      const stream = overrides?.stream ?? activeConversation.stream;
+      const request = buildAdminRequest(activeConversation, text, {
+        ...overrides,
+        stream,
+      });
+      const userMessage: AdminMessage = {
+        id: createId(),
+        role: "user",
+        content: text,
+        created_at: new Date().toISOString(),
+      };
+      appendMessage(conversationId, userMessage);
+      setComposer("");
+      setError("");
+      const controller = new AbortController();
+      startConversationRequest(conversationId, controller, stream ? "正在执行管理员会话..." : "正在处理管理员请求...");
+      if (stream) {
+        const assistantId = createId();
+        appendMessage(conversationId, {
+          id: assistantId,
+          role: "assistant",
+          content: "",
+          created_at: new Date().toISOString(),
+          status: "streaming",
+          details: { prompts: [], steps: [] },
+        });
+        try {
+          await api.adminChatStream(
+            request,
+            (event) =>
+              handleStreamEvent(conversationId, assistantId, event),
+            controller.signal,
+          );
+          renameConversation(conversationId, text);
+        } catch (reason) {
+          if (isAbortError(reason)) {
+            patchMessage(conversationId, assistantId, {
+              content: (prev) => prev || "已停止当前会话。",
+              status: "cancelled",
+            });
+          } else {
+            setError(reason instanceof Error ? reason.message : "请求失败");
+            patchMessage(conversationId, assistantId, {
+              content: "执行失败，请稍后重试。",
+              status: "error",
+            });
+          }
+        } finally {
+          finishConversationRequest(conversationId, controller);
+        }
+        return;
+      }
       const assistantId = createId();
       appendMessage(conversationId, {
         id: assistantId,
         role: "assistant",
         content: "",
         created_at: new Date().toISOString(),
-        status: "streaming",
-        details: { prompts: [], steps: [] },
+        status: "pending",
+        details: { steps: [] },
       });
       try {
-        await api.adminChatStream(
-          request,
-          (event) =>
-            handleStreamEvent(conversationId, assistantId, event),
-          controller.signal,
+        const response = await api.adminChat(request, controller.signal);
+        applySessionStatePatch(
+          conversationId,
+          response.mode,
+          response.reply,
+          response.details,
+          response.execution,
         );
+        patchMessage(conversationId, assistantId, {
+          content: response.reply,
+          status: "done",
+          details: {
+            result: response.details,
+            execution: response.execution,
+            steps: response.execution?.steps ?? [],
+          },
+        });
+        updateLastMode(conversationId, response.mode);
         renameConversation(conversationId, text);
       } catch (reason) {
         if (isAbortError(reason)) {
           patchMessage(conversationId, assistantId, {
-            content: (prev) => prev || "已停止当前会话。",
+            content: "已取消本次管理员请求。",
             status: "cancelled",
           });
         } else {
@@ -459,52 +521,8 @@ export function AdminChat({ username }: { username: string }) {
       } finally {
         finishConversationRequest(conversationId, controller);
       }
-      return;
-    }
-    const assistantId = createId();
-    appendMessage(conversationId, {
-      id: assistantId,
-      role: "assistant",
-      content: "",
-      created_at: new Date().toISOString(),
-      status: "pending",
-      details: { steps: [] },
-    });
-    try {
-      const response = await api.adminChat(request, controller.signal);
-      applySessionStatePatch(
-        conversationId,
-        response.mode,
-        response.reply,
-        response.details,
-        response.execution,
-      );
-      patchMessage(conversationId, assistantId, {
-        content: response.reply,
-        status: "done",
-        details: {
-          result: response.details,
-          execution: response.execution,
-          steps: response.execution?.steps ?? [],
-        },
-      });
-      updateLastMode(conversationId, response.mode);
-      renameConversation(conversationId, text);
-    } catch (reason) {
-      if (isAbortError(reason)) {
-        patchMessage(conversationId, assistantId, {
-          content: "已取消本次管理员请求。",
-          status: "cancelled",
-        });
-      } else {
-        setError(reason instanceof Error ? reason.message : "请求失败");
-        patchMessage(conversationId, assistantId, {
-          content: "执行失败，请稍后重试。",
-          status: "error",
-        });
-      }
     } finally {
-      finishConversationRequest(conversationId, controller);
+      delete sendLocksRef.current[conversationId];
     }
   }
 
@@ -622,6 +640,28 @@ export function AdminChat({ username }: { username: string }) {
       setReviewMessage("已记录到禁答列表。相似问题后续将不会回复。");
     } catch (reason) {
       setReviewMessage(reason instanceof Error ? reason.message : "驳回失败");
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
+  async function deleteReviewItem() {
+    if (!reviewItem) {
+      return;
+    }
+    const confirmed = window.confirm("确认从待审队列删除这条问题吗？删除后不会写入知识库或禁答列表。");
+    if (!confirmed) {
+      return;
+    }
+    setReviewBusy(true);
+    setReviewMessage("");
+    try {
+      const response = await api.reviewDelete(reviewItem.id);
+      setReviewCount(response.pending_count);
+      await loadReviewItem();
+      setReviewMessage("已从待审队列删除。不会写入知识库或禁答列表。");
+    } catch (reason) {
+      setReviewMessage(reason instanceof Error ? reason.message : "删除失败");
     } finally {
       setReviewBusy(false);
     }
@@ -1986,6 +2026,17 @@ export function AdminChat({ username }: { username: string }) {
                     title="关闭审查弹窗"
                   >
                     关闭
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={reviewLoading || reviewBusy || !reviewItem}
+                    onClick={() => void deleteReviewItem()}
+                    title="仅从待审队列删除，不写入知识库，也不进入禁答列表"
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    删除
                   </Button>
                   <Button
                     type="button"

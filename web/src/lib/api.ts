@@ -1,6 +1,7 @@
 import type {
   AdminChatRequest,
   AdminChatResponse,
+  AdminLoginResponse,
   AdminStreamEvent,
   AdminUser,
   ContextEstimateResponse,
@@ -41,10 +42,16 @@ export type PublicAnswerMeta = {
   question_created_at?: string;
 };
 
+const adminSessionStorageKey = "wikios.admin.session";
+let memoryAdminSessionToken = "";
+let memoryAdminSessionExpiresAt = "";
+
 async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
-  const response = await fetch(normalizeInput(input), {
+  const normalizedInput = normalizeInput(input);
+  const response = await fetch(normalizedInput, {
     credentials: "include",
     ...init,
+    headers: withAdminAuthHeaders(normalizedInput, init?.headers),
   });
   if (!response.ok) {
     const text = await response.text();
@@ -99,17 +106,23 @@ export const api = {
     }
     await consumeSSE(response, onEvent);
   },
-  login(username: string, password: string) {
-    return request<{ user: AdminUser }>(apiURL("/api/v1/admin/auth/login"), {
+  async login(username: string, password: string) {
+    const response = await request<AdminLoginResponse>(apiURL("/api/v1/admin/auth/login"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
     });
+    storeAdminSessionToken(response.token, response.expires_at);
+    return response;
   },
-  logout() {
-    return request<{ ok: boolean }>(apiURL("/api/v1/admin/auth/logout"), {
-      method: "POST",
-    });
+  async logout() {
+    try {
+      return await request<{ ok: boolean }>(apiURL("/api/v1/admin/auth/logout"), {
+        method: "POST",
+      });
+    } finally {
+      clearAdminSessionToken();
+    }
   },
   me() {
     return request<{ user: AdminUser }>(apiURL("/api/v1/admin/auth/me"));
@@ -148,6 +161,12 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal,
+    });
+  },
+  reviewDelete(id: string, signal?: AbortSignal) {
+    return request<ReviewActionResponse>(apiURL(`/api/v1/admin/reviews/${encodeURIComponent(id)}/delete`), {
+      method: "POST",
       signal,
     });
   },
@@ -204,10 +223,11 @@ export const api = {
     });
   },
   async adminChatStream(payload: AdminChatRequest, onEvent: (event: AdminStreamEvent) => void, signal?: AbortSignal) {
-    const response = await fetch(apiURL("/api/v1/admin/chat/stream"), {
+    const url = apiURL("/api/v1/admin/chat/stream");
+    const response = await fetch(url, {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": "application/json" },
+      headers: withAdminAuthHeaders(url, { "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
       signal,
     });
@@ -232,9 +252,11 @@ export const api = {
   async uploadStream(file: File, onEvent: (event: UploadStreamEvent) => void, signal?: AbortSignal) {
     const body = new FormData();
     body.append("file", file);
-    const response = await fetch(apiURL("/api/v1/admin/upload/stream"), {
+    const url = apiURL("/api/v1/admin/upload/stream");
+    const response = await fetch(url, {
       method: "POST",
       credentials: "include",
+      headers: withAdminAuthHeaders(url),
       body,
       signal,
     });
@@ -266,6 +288,134 @@ function normalizeInput(input: RequestInfo) {
     return input;
   }
   return input;
+}
+
+function withAdminAuthHeaders(input: RequestInfo, initHeaders?: HeadersInit) {
+  const headers = new Headers(initHeaders);
+  if (!isAdminAPIRequest(input) || headers.has("Authorization")) {
+    return headers;
+  }
+  const token = currentAdminSessionToken();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  return headers;
+}
+
+function isAdminAPIRequest(input: RequestInfo) {
+  const url = typeof input === "string" ? input : input.url;
+  if (url.startsWith("/api/v1/admin/")) {
+    return true;
+  }
+  try {
+    const base = typeof window === "undefined" ? "http://localhost" : window.location.origin;
+    return new URL(url, base).pathname.startsWith("/api/v1/admin/");
+  } catch {
+    return false;
+  }
+}
+
+function storeAdminSessionToken(token?: string, expiresAt?: string) {
+  const cleanToken = token?.trim();
+  if (!cleanToken) {
+    clearAdminSessionToken();
+    return;
+  }
+  memoryAdminSessionToken = cleanToken;
+  memoryAdminSessionExpiresAt = expiresAt ?? "";
+  if (typeof window === "undefined") {
+    return;
+  }
+  const payload = JSON.stringify({
+    token: cleanToken,
+    expires_at: expiresAt,
+  });
+  try {
+    window.localStorage.setItem(adminSessionStorageKey, payload);
+  } catch {
+    // Some embedded contexts restrict storage. Keep the in-memory token for the current page.
+  }
+  try {
+    window.sessionStorage.setItem(adminSessionStorageKey, payload);
+  } catch {
+    // Some embedded contexts restrict storage. Keep the in-memory token for the current page.
+  }
+}
+
+function clearAdminSessionToken() {
+  memoryAdminSessionToken = "";
+  memoryAdminSessionExpiresAt = "";
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.removeItem(adminSessionStorageKey);
+  } catch {
+    // Storage may be unavailable in embedded contexts.
+  }
+  try {
+    window.sessionStorage.removeItem(adminSessionStorageKey);
+  } catch {
+    // Storage may be unavailable in embedded contexts.
+  }
+}
+
+function currentAdminSessionToken() {
+  if (typeof window === "undefined") {
+    return currentMemoryAdminSessionToken();
+  }
+  const raw = storedAdminSessionRaw();
+  if (!raw) {
+    return currentMemoryAdminSessionToken();
+  }
+  try {
+    const session = JSON.parse(raw) as { token?: unknown; expires_at?: unknown };
+    const token = typeof session.token === "string" ? session.token.trim() : "";
+    if (!token) {
+      clearAdminSessionToken();
+      return "";
+    }
+    const expiresAt = typeof session.expires_at === "string" ? Date.parse(session.expires_at) : 0;
+    if (expiresAt > 0 && expiresAt <= Date.now() + 5_000) {
+      clearAdminSessionToken();
+      return "";
+    }
+    return token;
+  } catch {
+    clearAdminSessionToken();
+    return "";
+  }
+}
+
+function storedAdminSessionRaw() {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  try {
+    const localValue = window.localStorage.getItem(adminSessionStorageKey);
+    if (localValue) {
+      return localValue;
+    }
+  } catch {
+    // Fall through to session storage.
+  }
+  try {
+    return window.sessionStorage.getItem(adminSessionStorageKey) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function currentMemoryAdminSessionToken() {
+  if (!memoryAdminSessionToken) {
+    return "";
+  }
+  const expiresAt = memoryAdminSessionExpiresAt ? Date.parse(memoryAdminSessionExpiresAt) : 0;
+  if (expiresAt > 0 && expiresAt <= Date.now() + 5_000) {
+    clearAdminSessionToken();
+    return "";
+  }
+  return memoryAdminSessionToken;
 }
 
 function resolveAPIBaseURL() {

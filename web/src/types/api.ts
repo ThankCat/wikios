@@ -78,6 +78,12 @@ export type AdminUser = {
   username: string;
 };
 
+export type AdminLoginResponse = {
+  user: AdminUser;
+  token?: string;
+  expires_at?: string;
+};
+
 export type UploadResponse = {
   reply: string;
   details: Record<string, unknown>;

@@ -33,7 +33,7 @@ http://127.0.0.1:9025
 | 接口类型 | 鉴权方式 |
 | --- | --- |
 | Public API | 不需要管理员登录。调用方应在自己的 AI 客服系统侧做用户鉴权、限流和风控。 |
-| Admin API | 需要管理员 Cookie Session。先调用 `POST /api/v1/admin/auth/login`，成功后服务端写入 HTTP-only Cookie。 |
+| Admin API | 需要管理员会话。先调用 `POST /api/v1/admin/auth/login`，成功后服务端写入 HTTP-only Cookie，同时返回 `token`。后续请求可以使用 Cookie，也可以使用 `Authorization: Bearer <token>` 或 `X-WikiOS-Admin-Session: <token>`。 |
 
 ### 1.4 统一错误结构
 
@@ -76,8 +76,10 @@ http://127.0.0.1:9025
 
 | 字段 | 类型 | 必填 | 可为空 | 默认值 | 含义 | 约束/示例 |
 | --- | --- | --- | --- | --- | --- | --- |
+| `id` | `string` | 否 | 是 | `""` | 调用方消息 ID，用于排查和审查队列追踪。 | `"msg_123"` |
 | `role` | `enum` | 是 | 否 | 无 | 消息角色。 | 仅允许 `"user"` 或 `"assistant"`。 |
 | `content` | `string` | 是 | 否 | 无 | 消息正文。 | `"住宅IP套餐都有什么？"` |
+| `created_at` | `ISO-8601 datetime string` | 否 | 是 | `""` | 消息创建时间。建议调用方传入，方便多轮上下文排序和问题排查。 | `"2026-04-30T14:05:00+08:00"` |
 
 ### 2.2 AdminAttachment
 
@@ -186,16 +188,23 @@ Content-Type：`application/json`
 | `question` | `string` | 是 | 否 | 无 | 当前用户问题。 | `"我想买5M住宅IP，怎么购买？"` |
 | `user_id` | `string` | 否 | 是 | `""` | 调用方用户 ID，用于业务侧追踪；当前服务不强依赖。 | `"u_123"` |
 | `session_id` | `string` | 否 | 是 | `""` | 调用方会话 ID，用于业务侧追踪；当前服务不强依赖。 | `"s_456"` |
+| `question_message_id` | `string` | 否 | 是 | `""` | 本轮用户消息 ID，用于审查队列和日志追踪。 | `"msg_user_001"` |
+| `answer_message_id` | `string` | 否 | 是 | `""` | 调用方预生成的助手消息 ID，用于审查队列和日志追踪。 | `"msg_assistant_001"` |
+| `question_created_at` | `ISO-8601 datetime string` | 否 | 是 | `""` | 本轮用户消息创建时间；缺失时服务端使用接收时间。 | `"2026-04-30T14:05:00+08:00"` |
 | `context` | `object` | 否 | 是 | `{}` | 调用方扩展上下文。 | `{ "channel": "web" }` |
 | `history` | `array<ChatMessage>` | 否 | 是 | `[]` | 最近多轮对话上下文。 | 最近 8 轮以内较合适。 |
 
 多轮要求：如果用户问题省略主语，例如“这个怎么买？”，调用方必须传 `history`，否则检索无法知道“这个”指向住宅 IP、套餐或其他主题。
+
+Public Query 行为说明：服务端只做硬安全拦截、`wiki/forbidden` 命中判断、qmd 检索、候选页面读取和 LLM 调用；普通问题的语义理解、证据/自答/澄清/拒答选择由 `public_answer_system.md` 驱动。候选页面只会来自 public-safe 目录，`wiki/unconfirmed`、`wiki/forbidden`、模板和 outputs 不会作为正式证据传给 LLM。
 
 #### Response
 
 | 字段 | 类型 | 可为空 | 含义 | 示例 |
 | --- | --- | --- | --- | --- |
 | `answer` | `string` | 否 | 给终端客户展示的答案。不会返回内部 `details`、路径、trace 或 raw JSON。 | `"您可以选择住宅IP的5M带宽套餐后，在官网下单购买。"` |
+| `received_at` | `ISO-8601 datetime string` | 是 | 服务端接收本轮问题的时间。 | `"2026-04-30T06:05:00Z"` |
+| `answered_at` | `ISO-8601 datetime string` | 是 | 服务端生成完成答案的时间。 | `"2026-04-30T06:05:03Z"` |
 
 #### curl
 
@@ -204,9 +213,13 @@ curl -X POST http://127.0.0.1:9025/api/v1/public/answer \
   -H 'Content-Type: application/json' \
   -d '{
     "question": "这个怎么买？",
+    "session_id": "s_456",
+    "question_message_id": "msg_user_001",
+    "answer_message_id": "msg_assistant_001",
+    "question_created_at": "2026-04-30T14:05:00+08:00",
     "history": [
-      { "role": "user", "content": "住宅IP套餐都有什么？" },
-      { "role": "assistant", "content": "住宅IP通常有5M、10M、20M等带宽。" }
+      { "id": "msg_user_000", "role": "user", "content": "住宅IP套餐都有什么？", "created_at": "2026-04-30T14:04:30+08:00" },
+      { "id": "msg_assistant_000", "role": "assistant", "content": "住宅IP通常有5M、10M、20M等带宽。", "created_at": "2026-04-30T14:04:32+08:00" }
     ]
   }'
 ```
@@ -228,8 +241,10 @@ Request Body：同 `POST /api/v1/public/answer`。
 | 事件 | 字段 | 类型 | 可为空 | 含义 | 示例 |
 | --- | --- | --- | --- | --- | --- |
 | `meta` | `data.stream` | `boolean` | 否 | 表示当前为流式响应。 | `true` |
+| `meta` | `data.received_at` | `ISO-8601 datetime string` | 否 | 服务端接收本轮问题的时间。 | `"2026-04-30T06:05:00Z"` |
 | `delta` | `data.delta` | `string` | 否 | 答案增量文本。 | `"您可以选择"` |
 | `result` | `data.answer` | `string` | 否 | 完整答案。 | `"您可以选择住宅IP..."` |
+| `result` | `data.answered_at` | `ISO-8601 datetime string` | 否 | 服务端生成完成答案的时间。 | `"2026-04-30T06:05:03Z"` |
 | `error` | `data.message` | `string` | 否 | 错误信息。 | `"llm request timeout after 90s"` |
 | `done` | `data.ok` | `boolean` | 否 | 是否成功结束。 | `true` |
 
@@ -262,10 +277,12 @@ Content-Type：`application/json`
 
 | 字段 | 类型 | 可为空 | 含义 | 示例 |
 | --- | --- | --- | --- | --- |
+| `token` | `string` | 否 | 管理员会话 token。跨站 iframe 或 Cookie 受限场景可由调用端保存，并通过 `Authorization: Bearer <token>` 传回。 | `"sess_..."` |
+| `expires_at` | `ISO-8601 datetime string` | 否 | 会话过期时间。 | `"2026-05-07T06:05:00Z"` |
 | `user.id` | `string` | 否 | 管理员用户 ID。 | `"1"` |
 | `user.username` | `string` | 否 | 管理员用户名。 | `"admin"` |
 
-成功后服务端写入 HTTP-only Cookie，默认名称为 `wikios_admin_session`。
+成功后服务端写入 HTTP-only Cookie，默认名称为 `wikios_admin_session`。如果管理后台被放入跨站 iframe，浏览器可能拦截第三方 Cookie；此时调用端应优先使用响应里的 `token`，后续 Admin API 请求添加 `Authorization: Bearer <token>`。
 
 #### curl
 
@@ -279,7 +296,7 @@ curl -c cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/auth/login \
 
 用途：管理员退出登录。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 Content-Type：无请求体。
 
@@ -299,7 +316,7 @@ curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/auth/logout
 
 用途：获取当前登录管理员。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 Content-Type：无请求体。
 
@@ -318,13 +335,19 @@ Content-Type：无请求体。
 curl -b cookie.txt http://127.0.0.1:9025/api/v1/admin/auth/me
 ```
 
+Bearer token 示例：
+
+```bash
+curl -H "Authorization: Bearer <token>" http://127.0.0.1:9025/api/v1/admin/auth/me
+```
+
 ## 7. Admin Chat API
 
 ### POST `/api/v1/admin/chat`
 
 用途：管理员非流式对话和 Wiki 治理操作。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 Content-Type：`application/json`
 
@@ -381,7 +404,7 @@ curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/chat \
 
 用途：管理员流式对话和 Wiki 治理操作。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 Content-Type：`application/json`
 
@@ -436,7 +459,7 @@ curl -N -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/chat/stream \
 
 用途：估算管理员请求上下文大小。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 Content-Type：`application/json`
 
@@ -470,7 +493,7 @@ curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/context/estimate \
 
 用途：上传并摄入资料。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 Content-Type：`multipart/form-data`
 
@@ -499,7 +522,7 @@ curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/upload \
 
 用途：上传并流式返回摄入过程。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 Content-Type：`multipart/form-data`
 
@@ -522,7 +545,7 @@ curl -N -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/upload/stream \
 
 用途：查看外挂 Wiki 目录。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 #### Query 参数
 
@@ -560,7 +583,7 @@ curl -b cookie.txt 'http://127.0.0.1:9025/api/v1/admin/wiki/tree?path=wiki%2Ffaq
 
 用途：在线查看 Wiki 文件。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 #### Query 参数
 
@@ -601,7 +624,7 @@ curl -b cookie.txt 'http://127.0.0.1:9025/api/v1/admin/wiki/file?path=wiki%2Ffaq
 
 用途：下载 Wiki 文件。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 #### Query 参数
 
@@ -625,7 +648,7 @@ curl -b cookie.txt -o demo.pdf 'http://127.0.0.1:9025/api/v1/admin/wiki/download
 
 用途：查看外挂 Wiki git 状态、待提交文件和待推送提交。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 #### Response
 
@@ -674,7 +697,7 @@ curl -b cookie.txt http://127.0.0.1:9025/api/v1/admin/sync/status
 
 用途：根据选择文件生成提交信息。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 Content-Type：`application/json`
 
@@ -704,7 +727,7 @@ curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/sync/generate-mess
 
 用途：提交选择的 Wiki 文件。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 Content-Type：`application/json`
 
@@ -740,7 +763,7 @@ curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/sync/commit \
 
 用途：推送当前分支到远端。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 Content-Type：`application/json`
 
@@ -772,9 +795,35 @@ curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/sync/push \
   -d '{"remote":"origin","branch":"main"}'
 ```
 
-## 11. Review API
+## 11. LLM Balance API
 
-审查队列以 mounted wiki 文件为事实来源：`wiki/unconfirmed/` 保存待审问题，`wiki/forbidden/` 保存驳回后的禁答问题。所有接口都需要管理员 Cookie。
+### GET `/api/v1/admin/llm/balance`
+
+用途：查询当前 DeepSeek API Key 余额，用于管理员后台余额刷新按钮。
+
+鉴权：管理员 Cookie 或 Bearer token。
+
+Response：
+
+| 字段 | 类型 | 可为空 | 含义 | 示例 |
+| --- | --- | --- | --- | --- |
+| `is_available` | `boolean` | 否 | DeepSeek 余额接口返回的可用状态。 | `true` |
+| `balance_infos` | `array<object>` | 否 | 分币种余额信息。 | `[]` |
+| `balance_infos[].currency` | `string` | 否 | 币种。 | `"CNY"` |
+| `balance_infos[].total_balance` | `string` | 否 | 总余额。 | `"110.00"` |
+| `balance_infos[].granted_balance` | `string` | 否 | 赠送余额。 | `"10.00"` |
+| `balance_infos[].topped_up_balance` | `string` | 否 | 充值余额。 | `"100.00"` |
+| `checked_at` | `ISO-8601 datetime string` | 否 | 服务端查询完成时间。 | `"2026-04-30T06:05:00Z"` |
+
+#### curl
+
+```bash
+curl -b cookie.txt http://127.0.0.1:9025/api/v1/admin/llm/balance
+```
+
+## 12. Review API
+
+审查队列以 mounted wiki 文件为事实来源：`wiki/unconfirmed/` 保存待审问题，`wiki/forbidden/` 保存驳回后的禁答问题。所有接口都需要管理员 Cookie 或 Bearer token。
 
 ### GET `/api/v1/admin/reviews/count`
 
@@ -821,13 +870,21 @@ Request Body：
 
 Response：`{ "ok": true, "item": {...}, "pending_count": 2 }`
 
-## 12. Public Intents API
+### POST `/api/v1/admin/reviews/:id/delete`
+
+用途：删除当前待审问题，不写入正式 FAQ，也不写入 `wiki/forbidden/`。适用于误输入、无意义内容、重复测试等不需要沉淀的问题。
+
+Request Body：无。
+
+Response：`{ "ok": true, "item": {...}, "pending_count": 2 }`
+
+## 13. Public Intents API
 
 ### GET `/api/v1/admin/public-intents`
 
 用途：读取前置话术 YAML 源码和加载状态。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 #### Response
 
@@ -856,7 +913,7 @@ curl -b cookie.txt http://127.0.0.1:9025/api/v1/admin/public-intents
 
 用途：保存完整前置话术 YAML。保存前会强校验；校验失败不写文件、不替换内存缓存。
 
-鉴权：管理员 Cookie。
+鉴权：管理员 Cookie 或 Bearer token。
 
 Content-Type：`application/json`
 
@@ -876,7 +933,7 @@ curl -b cookie.txt -X PUT http://127.0.0.1:9025/api/v1/admin/public-intents \
   -d '{"source":"version: 1\nrules: []\n"}'
 ```
 
-## 13. 接入建议
+## 14. 接入建议
 
 - 终端 AI 客服只使用 `/api/v1/public/answer` 或 `/api/v1/public/answer/stream`。
 - 终端 AI 客服必须自己维护用户会话，并把最近对话作为 `history` 传入。

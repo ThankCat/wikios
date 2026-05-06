@@ -19,7 +19,7 @@ type Props = {
     details?: unknown;
   } | null;
   onClear: () => void;
-  onResizeStart: () => void;
+  onResizeStart: (clientX?: number) => void;
 };
 
 export function ChatDetailDrawer({ title, open, width, selected, onClear, onResizeStart }: Props) {
@@ -50,7 +50,7 @@ export function ChatDetailDrawer({ title, open, width, selected, onClear, onResi
       />
       <aside
         className={cn(
-          "absolute inset-y-0 right-0 z-30 flex min-h-0 max-w-[calc(100%-40px)] flex-col overflow-hidden rounded-l-3xl border-l border-slate-200 bg-white shadow-2xl transition-transform duration-200",
+          "absolute inset-y-0 right-0 z-30 flex min-h-0 max-w-[calc(100%-40px)] flex-col overflow-visible rounded-l-3xl border-l border-slate-200 bg-white shadow-2xl transition-transform duration-200",
           open ? "translate-x-0" : "translate-x-full",
         )}
         style={{ width }}
@@ -58,8 +58,12 @@ export function ChatDetailDrawer({ title, open, width, selected, onClear, onResi
         <button
           type="button"
           aria-label="调整详情抽屉宽度"
-          onMouseDown={onResizeStart}
-          className="absolute left-0 top-0 flex h-full w-4 -translate-x-1/2 cursor-col-resize items-center justify-center"
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onResizeStart(event.clientX);
+          }}
+          className="absolute left-0 top-0 z-40 flex h-full w-6 -translate-x-1/2 touch-none cursor-col-resize items-center justify-center"
         >
           <span className="flex h-16 w-3 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-400 shadow-sm">
             <GripVertical className="h-4 w-4" />

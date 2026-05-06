@@ -55,10 +55,13 @@ type LLMConfig struct {
 }
 
 type AuthConfig struct {
-	DefaultAdminUsername string `yaml:"default_admin_username"`
-	DefaultAdminPassword string `yaml:"default_admin_password"`
-	SessionCookieName    string `yaml:"session_cookie_name"`
-	SessionTTLHours      int    `yaml:"session_ttl_hours"`
+	DefaultAdminUsername  string `yaml:"default_admin_username"`
+	DefaultAdminPassword  string `yaml:"default_admin_password"`
+	SessionCookieName     string `yaml:"session_cookie_name"`
+	SessionTTLHours       int    `yaml:"session_ttl_hours"`
+	SessionCookieDomain   string `yaml:"session_cookie_domain"`
+	SessionCookieSecure   bool   `yaml:"session_cookie_secure"`
+	SessionCookieSameSite string `yaml:"session_cookie_same_site"`
 }
 
 type RetrievalConfig struct {
@@ -196,7 +199,7 @@ func (c *Config) normalizeAndValidate() error {
 		return fmt.Errorf("mounted_wiki.root is not a directory: %s", c.MountedWiki.Root)
 	}
 	if strings.TrimSpace(c.MountedWiki.QMDIndex) == "" {
-		c.MountedWiki.QMDIndex = firstEnv("WIKIOS_QMD_INDEX", "zy-knowledge-base")
+		c.MountedWiki.QMDIndex = firstEnv("WIKIOS_QMD_INDEX", "knowledge-base")
 	}
 	if c.LLM.BaseURL == "" {
 		return errors.New("llm.base_url is required")
@@ -290,6 +293,18 @@ func (c *Config) normalizeAndValidate() error {
 	if c.Auth.SessionTTLHours <= 0 {
 		c.Auth.SessionTTLHours = 24 * 7
 	}
+	if value := strings.TrimSpace(os.Getenv("WIKIOS_AUTH_COOKIE_DOMAIN")); value != "" {
+		c.Auth.SessionCookieDomain = value
+	}
+	if value := strings.TrimSpace(os.Getenv("WIKIOS_AUTH_COOKIE_SECURE")); value != "" {
+		c.Auth.SessionCookieSecure = parseEnvBool(value, c.Auth.SessionCookieSecure)
+	}
+	if value := strings.TrimSpace(os.Getenv("WIKIOS_AUTH_COOKIE_SAME_SITE")); value != "" {
+		c.Auth.SessionCookieSameSite = value
+	}
+	if strings.TrimSpace(c.Auth.SessionCookieSameSite) == "" {
+		c.Auth.SessionCookieSameSite = "lax"
+	}
 	c.Web.DistDir = filepath.Clean(c.Web.DistDir)
 	c.PublicIntents.Path = filepath.Clean(c.PublicIntents.Path)
 	return nil
@@ -312,4 +327,15 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func parseEnvBool(value string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return fallback
+	}
 }

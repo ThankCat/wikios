@@ -314,6 +314,61 @@ func TestPublicMissSelfAnswersAndCreatesUnconfirmedReview(t *testing.T) {
 	}
 }
 
+func TestPublicLowConfidenceWithoutReviewRequiredDoesNotCreateReview(t *testing.T) {
+	deps, _, root := newReviewQueueTestDeps(t, `{
+  "answer_mode": "clarification",
+  "answer_markdown": "您好，请问您具体想咨询什么问题？",
+  "confidence": 0.42,
+  "evidence_confidence": 0,
+  "review_reason": "",
+  "suggested_faq_path": "",
+  "review_required": false
+}`)
+	svc := service.NewPublicQueryService(deps)
+	resp, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "随便聊聊"})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if !strings.Contains(resp.Answer, "具体想咨询") {
+		t.Fatalf("expected clarification answer, got %+v", resp)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "wiki/unconfirmed"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read unconfirmed: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no unconfirmed review, got %d", len(entries))
+	}
+}
+
+func TestPublicPureNoiseDoesNotCreateReviewEvenIfLLMRequestsIt(t *testing.T) {
+	deps, _, root := newReviewQueueTestDeps(t, `{
+  "answer_mode": "clarification",
+  "answer_markdown": "您好，我注意到您输入的内容像是测试或误输入。请问您具体想咨询什么问题？",
+  "review_question": "用户输入无意义数字时如何回复？",
+  "confidence": 0.45,
+  "evidence_confidence": 0,
+  "review_reason": "测试输入不应沉淀为 FAQ。",
+  "suggested_faq_path": "wiki/faq/customer-qa.md",
+  "review_required": true
+}`)
+	svc := service.NewPublicQueryService(deps)
+	resp, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "123455667"})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if !strings.Contains(resp.Answer, "误输入") {
+		t.Fatalf("expected clarification answer, got %+v", resp)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "wiki/unconfirmed"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read unconfirmed: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no unconfirmed review for pure noise, got %d", len(entries))
+	}
+}
+
 func TestPublicNetworkConceptMissSelfAnswersAndCreatesReview(t *testing.T) {
 	deps, _, root := newReviewQueueTestDeps(t, `{
   "answer_markdown": "子网掩码可以理解为用来划分一个 IP 地址里“网络部分”和“主机部分”的规则。您是想在客户端里填写网络配置，还是想了解它和 IP 地址的关系？",
@@ -553,12 +608,27 @@ func TestReviewApproveWritesFAQAndRemovesPending(t *testing.T) {
 	if qmd.updateCalls != 1 {
 		t.Fatalf("expected one qmd update, got %d", qmd.updateCalls)
 	}
+	sourcePath := filepath.Join(root, "wiki/sources", item.ID+".md")
+	sourceRaw, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("expected review source archive: %v", err)
+	}
+	if !strings.Contains(string(sourceRaw), "review-ingest-source") || !strings.Contains(string(sourceRaw), "重新选择线路连接") {
+		t.Fatalf("expected approved review source archive, got %s", string(sourceRaw))
+	}
 	raw, err := os.ReadFile(filepath.Join(root, "wiki/faq/customer-qa.md"))
 	if err != nil {
 		t.Fatalf("read faq: %v", err)
 	}
-	if !strings.Contains(string(raw), "重新选择线路连接") {
+	if !strings.Contains(string(raw), "重新选择线路连接") || !strings.Contains(string(raw), "wiki/sources/"+item.ID+".md") {
 		t.Fatalf("expected approved FAQ entry, got %s", string(raw))
+	}
+	logRaw, err := os.ReadFile(filepath.Join(root, "wiki/log.md"))
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.Contains(string(logRaw), "ingest | review-approve") {
+		t.Fatalf("expected approve to be logged as ingest, got %s", string(logRaw))
 	}
 	if count, err := queue.PendingCount(context.Background()); err != nil || count != 0 {
 		t.Fatalf("expected pending count 0, got %d err=%v", count, err)
@@ -600,6 +670,9 @@ func TestReviewApproveRollsBackExistingFAQWhenQMDUpdateFails(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, item.Path)); err != nil {
 		t.Fatalf("expected pending file to remain: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(root, "wiki/sources", item.ID+".md")); !os.IsNotExist(err) {
+		t.Fatalf("expected source archive rollback, err=%v", err)
+	}
 }
 
 func TestReviewApproveRemovesNewFAQWhenQMDUpdateFails(t *testing.T) {
@@ -631,7 +704,7 @@ func TestReviewApproveRemovesNewFAQWhenQMDUpdateFails(t *testing.T) {
 }
 
 func TestReviewRejectMovesToForbiddenAndBlocksSimilarQuestions(t *testing.T) {
-	deps, _, root := newReviewQueueTestDeps(t, "")
+	deps, _, root, qmd := newReviewQueueTestDepsWithQMD(t, "", &qmdTestTool{})
 	queue := service.NewReviewQueueService(deps)
 	item, err := queue.CreatePending(context.Background(), service.ReviewCreateRequest{
 		Question:    "代理客户端缓存怎么清理？",
@@ -644,10 +717,76 @@ func TestReviewRejectMovesToForbiddenAndBlocksSimilarQuestions(t *testing.T) {
 	if _, err := queue.Reject(context.Background(), item.ID, service.ReviewRejectRequest{Reason: "不适合自动回复"}); err != nil {
 		t.Fatalf("reject: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "wiki/forbidden", item.ID+".md")); err != nil {
+	if qmd.updateCalls != 1 {
+		t.Fatalf("expected one qmd update for reject ingest, got %d", qmd.updateCalls)
+	}
+	forbiddenRaw, err := os.ReadFile(filepath.Join(root, "wiki/forbidden", item.ID+".md"))
+	if err != nil {
 		t.Fatalf("expected forbidden file: %v", err)
+	}
+	if !strings.Contains(string(forbiddenRaw), "review-rejected") || !strings.Contains(string(forbiddenRaw), "不适合自动回复") {
+		t.Fatalf("expected rejected review ingest, got %s", string(forbiddenRaw))
+	}
+	logRaw, err := os.ReadFile(filepath.Join(root, "wiki/log.md"))
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.Contains(string(logRaw), "ingest | review-reject") {
+		t.Fatalf("expected reject to be logged as ingest, got %s", string(logRaw))
 	}
 	if _, ok, err := queue.MatchForbidden(context.Background(), "代理客户端缓存如何清理？"); err != nil || !ok {
 		t.Fatalf("expected similar forbidden match, ok=%t err=%v", ok, err)
+	}
+}
+
+func TestReviewRejectRollsBackForbiddenWhenQMDUpdateFails(t *testing.T) {
+	deps, _, root, _ := newReviewQueueTestDepsWithQMD(t, "", &qmdTestTool{updateErr: true})
+	queue := service.NewReviewQueueService(deps)
+	item, err := queue.CreatePending(context.Background(), service.ReviewCreateRequest{
+		Question:    "代理客户端缓存怎么清理？",
+		DraftAnswer: "可以先重启客户端。",
+		Confidence:  0.4,
+	})
+	if err != nil {
+		t.Fatalf("create pending: %v", err)
+	}
+	_, err = queue.Reject(context.Background(), item.ID, service.ReviewRejectRequest{Reason: "不适合自动回复"})
+	if err == nil || !strings.Contains(err.Error(), "qmd update") {
+		t.Fatalf("expected qmd update error, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "wiki/forbidden", item.ID+".md")); !os.IsNotExist(err) {
+		t.Fatalf("expected forbidden rollback, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, item.Path)); err != nil {
+		t.Fatalf("expected pending file to remain: %v", err)
+	}
+}
+
+func TestReviewDeleteRemovesPendingWithoutForbiddenRecord(t *testing.T) {
+	deps, _, root := newReviewQueueTestDeps(t, "")
+	queue := service.NewReviewQueueService(deps)
+	item, err := queue.CreatePending(context.Background(), service.ReviewCreateRequest{
+		Question:    "123455667",
+		DraftAnswer: "看起来像测试输入。",
+		Confidence:  0.4,
+	})
+	if err != nil {
+		t.Fatalf("create pending: %v", err)
+	}
+	deleted, err := queue.Delete(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if deleted.ID != item.ID {
+		t.Fatalf("expected deleted item %s, got %s", item.ID, deleted.ID)
+	}
+	if _, err := os.Stat(filepath.Join(root, item.Path)); !os.IsNotExist(err) {
+		t.Fatalf("expected pending file removed, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "wiki/forbidden", item.ID+".md")); !os.IsNotExist(err) {
+		t.Fatalf("expected no forbidden file, err=%v", err)
+	}
+	if count, err := queue.PendingCount(context.Background()); err != nil || count != 0 {
+		t.Fatalf("expected pending count 0, got %d err=%v", count, err)
 	}
 }

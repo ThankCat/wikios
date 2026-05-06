@@ -264,6 +264,34 @@ func TestWikiSearchPagesMatchesChineseQuestionFallback(t *testing.T) {
 	}
 }
 
+func TestWikiSearchPagesMatchesMixedLatinTypo(t *testing.T) {
+	root := createFixtureWiki(t)
+	mustWrite(t, filepath.Join(root, "wiki", "faq", "faq-technical-configuration.md"), "---\ntype: faq\ntitle: Technical Configuration\n---\n\n## FAQ Entries\n\n### review-1d41bf0fb1 · clash如何使用\n\n回复：\n禁止回答Clash的一切问题，Clash在中国大陆境内是违法工具。\n")
+	cfg := testConfig(root, t.TempDir())
+	rt := newRuntime(cfg)
+	env := &runtime.ExecEnv{
+		WikiRoot:     root,
+		WorkspaceDir: cfg.Workspace.BaseDir,
+		Mode:         "public",
+		QMDIndex:     cfg.MountedWiki.QMDIndex,
+	}
+	result, err := rt.Execute(context.Background(), env, runtime.ToolCall{
+		Name: "wiki.search_pages",
+		Args: map[string]any{"query": "如何使用clahs"},
+	})
+	if err != nil || !result.Success {
+		t.Fatalf("wiki.search_pages failed: %+v %v", result, err)
+	}
+	rawMatches, ok := result.Data["matches"].([]map[string]any)
+	if !ok || len(rawMatches) == 0 {
+		t.Fatalf("expected typo match, got %+v", result.Data["matches"])
+	}
+	firstPath, _ := rawMatches[0]["path"].(string)
+	if firstPath != "wiki/faq/faq-technical-configuration.md" {
+		t.Fatalf("expected clash FAQ to rank first for typo, got %s", firstPath)
+	}
+}
+
 func newRuntime(cfg *config.Config) *runtime.Runtime {
 	registry := runtime.NewRegistry()
 	tools.RegisterAll(registry, tools.Dependencies{

@@ -229,8 +229,10 @@ func (h *Handlers) AdminLogin(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
-	c.SetCookie(h.AuthConfig.SessionCookieName, token, int(time.Until(expiresAt).Seconds()), "/", "", false, true)
+	h.setAdminSessionCookie(c, token, int(time.Until(expiresAt).Seconds()))
 	c.JSON(http.StatusOK, gin.H{
+		"token":      token,
+		"expires_at": expiresAt.UTC().Format(time.RFC3339Nano),
 		"user": gin.H{
 			"id":       user.ID,
 			"username": user.Username,
@@ -239,11 +241,41 @@ func (h *Handlers) AdminLogin(c *gin.Context) {
 }
 
 func (h *Handlers) AdminLogout(c *gin.Context) {
-	if token, err := c.Cookie(h.AuthConfig.SessionCookieName); err == nil && token != "" {
+	if token, ok := middleware.AuthenticatedAdminSessionToken(c); ok {
 		_ = h.Store.DeleteSession(c.Request.Context(), token)
 	}
-	c.SetCookie(h.AuthConfig.SessionCookieName, "", -1, "/", "", false, true)
+	h.setAdminSessionCookie(c, "", -1)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (h *Handlers) setAdminSessionCookie(c *gin.Context, value string, maxAge int) {
+	cookie := &http.Cookie{
+		Name:     h.AuthConfig.SessionCookieName,
+		Value:    value,
+		Path:     "/",
+		Domain:   strings.TrimSpace(h.AuthConfig.SessionCookieDomain),
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   h.AuthConfig.SessionCookieSecure,
+		SameSite: adminCookieSameSite(h.AuthConfig.SessionCookieSameSite),
+	}
+	if maxAge < 0 {
+		cookie.Expires = time.Unix(0, 0)
+	}
+	http.SetCookie(c.Writer, cookie)
+}
+
+func adminCookieSameSite(value string) http.SameSite {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "none":
+		return http.SameSiteNoneMode
+	case "strict":
+		return http.SameSiteStrictMode
+	case "lax", "":
+		return http.SameSiteLaxMode
+	default:
+		return http.SameSiteLaxMode
+	}
 }
 
 func (h *Handlers) AdminMe(c *gin.Context) {
@@ -372,6 +404,22 @@ func (h *Handlers) AdminReviewReject(c *gin.Context) {
 		return
 	}
 	item, err := h.ReviewQueue.Reject(c.Request.Context(), c.Param("id"), service.ReviewRejectRequest{Reason: req.Reason})
+	if err != nil {
+		badRequest(c, err)
+		return
+	}
+	count, _ := h.ReviewQueue.PendingCount(c.Request.Context())
+	c.JSON(http.StatusOK, gin.H{"ok": true, "item": item, "pending_count": count})
+}
+
+func (h *Handlers) AdminReviewDelete(c *gin.Context) {
+	if h.ReviewQueue == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{"code": "REVIEWS_UNAVAILABLE", "message": "review queue is unavailable"},
+		})
+		return
+	}
+	item, err := h.ReviewQueue.Delete(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		badRequest(c, err)
 		return

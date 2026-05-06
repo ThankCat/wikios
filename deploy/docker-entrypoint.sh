@@ -8,7 +8,7 @@ wiki_branch="${WIKIOS_WIKI_GIT_BRANCH:-main}"
 pull_on_start="${WIKIOS_WIKI_GIT_PULL_ON_START:-true}"
 reset_on_start="${WIKIOS_WIKI_GIT_RESET_ON_START:-false}"
 qmd_auto_collection="${WIKIOS_QMD_AUTO_COLLECTION:-true}"
-qmd_index="${WIKIOS_QMD_INDEX:-zy-knowledge-base}"
+qmd_index="${WIKIOS_QMD_INDEX:-knowledge-base}"
 
 log() {
   printf '[wikios-entrypoint] %s\n' "$*"

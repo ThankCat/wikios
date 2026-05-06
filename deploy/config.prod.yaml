@@ -21,6 +21,9 @@ auth:
   default_admin_password: ${WIKIOS_DEFAULT_ADMIN_PASSWORD}
   session_cookie_name: wikios_admin_session
   session_ttl_hours: 168
+  session_cookie_domain: ${WIKIOS_AUTH_COOKIE_DOMAIN}
+  session_cookie_secure: ${WIKIOS_AUTH_COOKIE_SECURE}
+  session_cookie_same_site: ${WIKIOS_AUTH_COOKIE_SAME_SITE}
 
 retrieval:
   top_k: 5

@@ -231,6 +231,10 @@ func searchTerms(query string) []string {
 		terms = append(terms, segment)
 		if isHanString(segment) {
 			terms = append(terms, hanNGrams(segment, 2)...)
+			continue
+		}
+		if isAlphaNumString(segment) {
+			terms = append(terms, alphaNumNGrams(segment)...)
 		}
 	}
 	return dedupeSearchTerms(terms)
@@ -303,6 +307,18 @@ func isHanString(text string) bool {
 	return text != ""
 }
 
+func isAlphaNumString(text string) bool {
+	for _, r := range text {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			return false
+		}
+		if unicode.Is(unicode.Han, r) {
+			return false
+		}
+	}
+	return text != ""
+}
+
 func hanNGrams(text string, size int) []string {
 	runes := []rune(text)
 	if len(runes) <= size {
@@ -311,6 +327,23 @@ func hanNGrams(text string, size int) []string {
 	out := make([]string, 0, len(runes)-size+1)
 	for i := 0; i <= len(runes)-size; i++ {
 		out = append(out, string(runes[i:i+size]))
+	}
+	return out
+}
+
+func alphaNumNGrams(text string) []string {
+	runes := []rune(text)
+	if len(runes) < 3 {
+		return nil
+	}
+	out := make([]string, 0)
+	for _, size := range []int{3, 2} {
+		if len(runes) <= size {
+			continue
+		}
+		for i := 0; i <= len(runes)-size; i++ {
+			out = append(out, string(runes[i:i+size]))
+		}
 	}
 	return out
 }

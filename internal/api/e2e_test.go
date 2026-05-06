@@ -247,6 +247,43 @@ func TestAdminLoginAndChat(t *testing.T) {
 	}
 }
 
+func TestAdminBearerSessionAuthWorksWithoutCookie(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := buildRouter(t)
+
+	loginBody, _ := json.Marshal(map[string]any{
+		"username": "admin",
+		"password": "admin123",
+	})
+	loginRec := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/auth/login", bytes.NewReader(loginBody))
+	loginReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login failed: %d %s", loginRec.Code, loginRec.Body.String())
+	}
+	var loginResp struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(loginRec.Body.Bytes(), &loginResp); err != nil {
+		t.Fatalf("decode login response: %v", err)
+	}
+	if loginResp.Token == "" {
+		t.Fatalf("login response did not include bearer token: %s", loginRec.Body.String())
+	}
+
+	meRec := httptest.NewRecorder()
+	meReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/auth/me", nil)
+	meReq.Header.Set("Authorization", "Bearer "+loginResp.Token)
+	router.ServeHTTP(meRec, meReq)
+	if meRec.Code != http.StatusOK {
+		t.Fatalf("me with bearer failed: %d %s", meRec.Code, meRec.Body.String())
+	}
+	if !strings.Contains(meRec.Body.String(), "admin") {
+		t.Fatalf("unexpected me response: %s", meRec.Body.String())
+	}
+}
+
 func TestAdminPublicIntentsRequiresAuth(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := buildRouter(t)
@@ -336,6 +373,31 @@ graph-excluded: true
 	if _, err := os.Stat(filepath.Join(root, "wiki/forbidden/review-api-reject.md")); err != nil {
 		t.Fatalf("expected forbidden file: %v", err)
 	}
+
+	mustWrite(t, filepath.Join(root, "wiki/unconfirmed/review-api-delete.md"), `---
+type: unconfirmed-qa
+status: pending
+question: 123455667
+draft_answer: 看起来像测试输入。
+confidence: 0.4
+graph-excluded: true
+---
+
+# 待确认问题
+`)
+	deleteRec := httptest.NewRecorder()
+	deleteReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/reviews/review-api-delete/delete", nil)
+	deleteReq.AddCookie(cookie)
+	router.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete failed: %d %s", deleteRec.Code, deleteRec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "wiki/unconfirmed/review-api-delete.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected pending file deleted, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "wiki/forbidden/review-api-delete.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected no forbidden record for deleted review, err=%v", err)
+	}
 }
 
 func TestAdminContextEstimateRequiresAuthAndReturnsUsage(t *testing.T) {
@@ -409,7 +471,7 @@ func TestAdminWikiFilePreview(t *testing.T) {
 	}
 }
 
-func TestAdminPublicIntentsSaveValidatesWithoutPublicBypass(t *testing.T) {
+func TestAdminPublicIntentsSaveValidatesAndAppliesPublicBypass(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := buildRouter(t)
 	cookie := loginCookie(t, router)
@@ -470,8 +532,8 @@ rules:
 	if answerRec.Code != http.StatusOK {
 		t.Fatalf("expected public answer success, got %d %s", answerRec.Code, answerRec.Body.String())
 	}
-	if strings.Contains(answerRec.Body.String(), "请问有什么可以帮您") {
-		t.Fatalf("expected ordinary public question to go through LLM instead of intent bypass, got %s", answerRec.Body.String())
+	if !strings.Contains(answerRec.Body.String(), "请问有什么可以帮您") {
+		t.Fatalf("expected saved public intent to bypass LLM, got %s", answerRec.Body.String())
 	}
 }
 

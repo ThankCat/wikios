@@ -17,4 +17,7 @@ func TestLoadLocalConfig(t *testing.T) {
 	if cfg.MountedWiki.QMDIndex == "" {
 		t.Fatalf("expected qmd index")
 	}
+	if cfg.Auth.SessionCookieSameSite == "" {
+		t.Fatalf("expected auth cookie same_site default")
+	}
 }

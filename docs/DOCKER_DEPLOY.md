@@ -21,6 +21,9 @@
 DEEPSEEK_API_KEY=your-deepseek-api-key
 WIKIOS_DEFAULT_ADMIN_USERNAME=admin
 WIKIOS_DEFAULT_ADMIN_PASSWORD=change-me
+WIKIOS_AUTH_COOKIE_SECURE=false
+WIKIOS_AUTH_COOKIE_SAME_SITE=lax
+WIKIOS_AUTH_COOKIE_DOMAIN=
 WIKIOS_WIKI_GIT_URL=ssh://git@ssh.github.com:443/ThankCat/knowledge-base.git
 WIKIOS_WIKI_GIT_BRANCH=main
 WIKIOS_WIKI_GIT_PULL_ON_START=true
@@ -33,6 +36,7 @@ WIKIOS_SUPPORT_WECOM=企业微信
 
 - `DEEPSEEK_API_KEY` 必须是真实可用的 LLM API Key。
 - `WIKIOS_DEFAULT_ADMIN_PASSWORD` 必须改掉，不要使用默认值。
+- 如果后台需要嵌入跨站 iframe，浏览器通常要求管理员 Cookie 使用 `SameSite=None; Secure`。此时需要 HTTPS，并设置 `WIKIOS_AUTH_COOKIE_SAME_SITE=none`、`WIKIOS_AUTH_COOKIE_SECURE=true`；同站直接访问保持默认 `lax/false` 即可。
 - `WIKIOS_WIKI_GIT_URL` 推荐使用 `ssh://git@ssh.github.com:443/...`，适合普通 SSH 22 端口被网络限制的场景。
 - `WIKIOS_WIKI_GIT_RESET_ON_START=false` 是安全默认值；改成 `true` 会在启动时丢弃 Wiki 仓库内未提交改动。
 - `WIKIOS_SUPPORT_PHONE` 和 `WIKIOS_SUPPORT_WECOM` 是 public query 注入给 LLM 的公开客服联系方式。
@@ -120,7 +124,7 @@ qmd collection 会自动初始化：
 
 ```env
 WIKIOS_QMD_AUTO_COLLECTION=true
-WIKIOS_QMD_INDEX=zy-knowledge-base
+WIKIOS_QMD_INDEX=knowledge-base
 ```
 
 入口脚本会执行等价于下面的操作：
@@ -203,6 +207,8 @@ docker compose --env-file deploy/.env.prod -f docker-compose.yml exec wikios \
 git pull --ff-only
 docker compose --env-file deploy/.env.prod -f docker-compose.yml up -d --build
 ```
+
+只要修改了 Go 代码、Web 前端、`internal/llm/prompts/*.md` 或 `configs/*.yaml`，都需要重新 build 镜像。当前 Dockerfile 会把 prompt 和配置复制进镜像，单纯 `restart` 不会应用这些文件的变更。
 
 只重启服务：
 

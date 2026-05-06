@@ -59,6 +59,7 @@ func NewRouter(cfg *config.Config, handlers *api.Handlers, dataStore *store.Stor
 	admin.GET("/reviews/next", handlers.AdminReviewNext)
 	admin.POST("/reviews/:id/approve", handlers.AdminReviewApprove)
 	admin.POST("/reviews/:id/reject", handlers.AdminReviewReject)
+	admin.POST("/reviews/:id/delete", handlers.AdminReviewDelete)
 
 	registerWebRoutes(r, cfg)
 

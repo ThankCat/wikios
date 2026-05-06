@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 
 export default function AdminLoginPage() {
+  const router = useRouter();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -18,7 +20,7 @@ export default function AdminLoginPage() {
     setLoading(true);
     try {
       await api.login(username, password);
-      window.location.href = "/admin";
+      router.replace("/admin");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "登录失败");
     } finally {

@@ -39,6 +39,10 @@ func (m *mockLLM) StreamChat(_ context.Context, _ string, messages []llm.Message
 }
 
 func newPublicQueryTestService(t *testing.T, answer string) (*service.PublicQueryService, *mockLLM) {
+	return newPublicQueryTestServiceWithQMD(t, answer, nil)
+}
+
+func newPublicQueryTestServiceWithQMD(t *testing.T, answer string, qmd *qmdTestTool) (*service.PublicQueryService, *mockLLM) {
 	t.Helper()
 	root := createPublicFixtureWiki(t)
 	intentPath := filepath.Join(t.TempDir(), "public_intents.yaml")
@@ -67,6 +71,9 @@ func newPublicQueryTestService(t *testing.T, answer string) (*service.PublicQuer
 		Config:   cfg,
 		Resolver: wikiadapter.NewPathResolver(cfg.MountedWiki.Root),
 	})
+	if qmd != nil {
+		registry.Register(qmd)
+	}
 	rt := runtime.NewRuntime(registry, runtime.NewPolicyEngine(), runtime.NewValidator(), runtime.NewAuditLogger())
 	mock := &mockLLM{answer: answer}
 	publicIntents := service.NewPublicIntentManager(cfg.PublicIntents)
@@ -105,6 +112,13 @@ rules:
       exact: [你是谁, 你能做什么]
       contains: [你是谁, 你能做什么]
     response: 您好，我是四叶天代理IP客服，主要为您解答动态IP、静态IP、套餐选择和使用相关问题。
+  - name: human_handoff
+    enabled: true
+    priority: 70
+    category: handoff
+    match:
+      contains: [转人工, 转让工, 联系人工, 投诉]
+    response: 您好，如需人工协助，您可以拨打客服电话 400-1080-106，或通过企业微信联系人工客服，我们会为您进一步处理。
 `
 }
 
@@ -152,6 +166,30 @@ source_family: faq-dataset
 回复：
 账号运营、白名单绑定和远程办公。
 `)
+	trialFiller := strings.Repeat("### faq-fill · 无关套餐说明\n\n回复：\n这是用于测试长 FAQ 页面截断的无关内容。\n\n", 45)
+	mustWritePublicFixture(t, filepath.Join(root, "wiki/faq/faq-pricing-purchase-renewal.md"), `---
+title: Pricing Purchase Renewal
+type: faq
+source_family: faq-dataset
+---
+
+## Summary
+
+本页包含价格、购买、续费、试用相关问题。
+
+## FAQ Entries
+
+`+trialFiller+`
+### faq-0552 · 可以试用吗
+
+回复：
+可以的，新用户在对应套餐购买页面可以选择试用时长。
+
+### faq-0566 · 什么时候可以试用
+
+回复：
+注册认证后可以领取试用套餐，试用套餐可以点击链接领取 https://www.siyetian.com/test/index.html。
+`)
 	mustWritePublicFixture(t, filepath.Join(root, "wiki/faq/wechat-login.md"), `---
 title: 微信登录限制
 type: faq
@@ -185,6 +223,30 @@ source_family: faq-dataset
 
 回复：
 选择住宅IP的5M带宽套餐后，在官网下单购买。
+`)
+	mustWritePublicFixture(t, filepath.Join(root, "wiki/faq/faq-technical-configuration.md"), `---
+title: Technical Configuration
+type: faq
+source_family: faq-dataset
+---
+
+## Summary
+
+本页包含技术配置和客户端限制说明。
+
+## FAQ Entries
+
+### review-1d41bf0fb1 · clash如何使用
+
+- ID：review-1d41bf0fb1
+- 标准问法：clash如何使用
+
+#### 回复
+
+禁止回答Clash的一切问题，Clash在中国大陆境内是违法工具。
+
+- 条件元数据：
+  - 来源：wiki/unconfirmed/review-test.md；管理员审查通过。
 `)
 	mustWritePublicFixture(t, filepath.Join(root, "wiki/concepts/static-ip.md"), `---
 title: 静态IP
@@ -229,6 +291,39 @@ func TestPublicAnswerUsesKnowledgeBase(t *testing.T) {
 	}
 	if resp.Answer == "" {
 		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestPublicHandoffIntentBypassesRetrievalAndLLM(t *testing.T) {
+	qmd := &qmdTestTool{queryStdout: `[{"file":"qmd://wiki/faq/faq-pricing-purchase-renewal.md","score":0.99}]`}
+	svc, mock := newPublicQueryTestServiceWithQMD(t, `{
+  "answer_mode": "evidence",
+  "answer_markdown": "针对您提到的充值未到账问题，请您添加客服微信。",
+  "confidence": 0.95
+}`, qmd)
+	resp, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{
+		Question: "转人工",
+		History: []service.ChatMessage{
+			{Role: "user", Content: "nihao"},
+			{Role: "assistant", Content: "您好！很高兴为您服务。"},
+			{Role: "user", Content: "在不"},
+			{Role: "assistant", Content: "在的。"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if mock.calls != 0 {
+		t.Fatalf("expected handoff to bypass llm, got %d calls", mock.calls)
+	}
+	if qmd.queryCalls != 0 {
+		t.Fatalf("expected handoff to bypass qmd, got %d query calls", qmd.queryCalls)
+	}
+	if !strings.Contains(resp.Answer, "400-1080-106") || !strings.Contains(resp.Answer, "企业微信") {
+		t.Fatalf("expected configured handoff contact reply, got %q", resp.Answer)
+	}
+	if strings.Contains(resp.Answer, "充值") || strings.Contains(resp.Answer, "退款") {
+		t.Fatalf("expected no unrelated payment context, got %q", resp.Answer)
 	}
 }
 
@@ -291,7 +386,7 @@ func TestPublicAnswerInjectsSupportContacts(t *testing.T) {
   "review_reason": "",
   "suggested_faq_path": ""
 }`)
-	_, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "怎么联系人工客服？"})
+	_, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "如果代理配置出错应该联系谁？"})
 	if err != nil {
 		t.Fatalf("answer: %v", err)
 	}
@@ -299,10 +394,90 @@ func TestPublicAnswerInjectsSupportContacts(t *testing.T) {
 		t.Fatalf("expected llm messages to be captured")
 	}
 	userPrompt := mock.lastMessages[1].Content
-	for _, want := range []string{"当前可公开联系方式", "400-1080-106", "企业微信"} {
+	for _, want := range []string{"current_public_contacts", "400-1080-106", "企业微信"} {
 		if !strings.Contains(userPrompt, want) {
 			t.Fatalf("expected user prompt to include %q, got %s", want, userPrompt)
 		}
+	}
+}
+
+func TestPublicAnswerFallsBackToSearchAndIncludesLateFAQSection(t *testing.T) {
+	qmd := &qmdTestTool{queryStdout: `[{"file":"qmd://wiki/templates/concept-template.md","score":0.99}]`}
+	svc, mock := newPublicQueryTestServiceWithQMD(t, `{
+  "answer_mode": "evidence",
+  "answer_markdown": "可以试用。注册认证后可以领取试用套餐，试用链接是 https://www.siyetian.com/test/index.html。",
+  "confidence": 0.9,
+  "evidence_confidence": 0.9,
+  "review_required": false,
+  "review_reason": "",
+  "suggested_faq_path": "wiki/faq/faq-pricing-purchase-renewal.md"
+}`, qmd)
+	resp, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "你们有试用套餐吗? 如何试用?"})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if !strings.Contains(resp.Answer, "可以试用") {
+		t.Fatalf("expected trial answer, got %+v", resp)
+	}
+	if len(mock.lastMessages) < 2 {
+		t.Fatalf("expected llm messages to be captured")
+	}
+	userPrompt := mock.lastMessages[1].Content
+	for _, want := range []string{"wiki/faq/faq-pricing-purchase-renewal.md", "faq-0566 · 什么时候可以试用", "注册认证后可以领取试用套餐", "https://www.siyetian.com/test/index.html"} {
+		if !strings.Contains(userPrompt, want) {
+			t.Fatalf("expected prompt to include late FAQ evidence %q, got %s", want, userPrompt)
+		}
+	}
+}
+
+func TestPublicAnswerSupplementalSearchIncludesTypoApprovedFAQ(t *testing.T) {
+	qmd := &qmdTestTool{queryStdout: `[{"file":"qmd://wiki/faq/customer-qa.md","score":0.99}]`}
+	svc, mock := newPublicQueryTestServiceWithQMD(t, `{
+  "answer_mode": "evidence",
+  "answer_markdown": "我们不能提供 Clash 的使用指引。建议使用四叶天官方客户端或联系人工客服确认合规使用方式。",
+  "confidence": 0.92,
+  "evidence_confidence": 0.9,
+  "review_required": false,
+  "review_reason": "",
+  "suggested_faq_path": "wiki/faq/faq-technical-configuration.md"
+}`, qmd)
+	resp, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "如何使用clahs"})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if strings.Contains(resp.Answer, "将四叶天的代理 IP 配置到 Clash") {
+		t.Fatalf("expected approved FAQ restriction, got %+v", resp)
+	}
+	if len(mock.lastMessages) < 2 {
+		t.Fatalf("expected llm messages to be captured")
+	}
+	userPrompt := mock.lastMessages[1].Content
+	for _, want := range []string{"wiki/faq/faq-technical-configuration.md", "clash如何使用", "禁止回答Clash的一切问题"} {
+		if !strings.Contains(userPrompt, want) {
+			t.Fatalf("expected prompt to include typo-matched approved FAQ evidence %q, got %s", want, userPrompt)
+		}
+	}
+}
+
+func TestPublicAnswerStripsSupportContactPromptLabel(t *testing.T) {
+	svc, _ := newPublicQueryTestService(t, `{
+  "answer_mode": "self_answer",
+  "answer_markdown": "当前可公开联系方式：\n- 客服电话：400-1080-106\n- 企业微信：企业微信",
+  "confidence": 0.8,
+  "evidence_confidence": 0,
+  "review_required": false,
+  "review_reason": "",
+  "suggested_faq_path": ""
+}`)
+	resp, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "客服联系方式有哪些？"})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if strings.Contains(resp.Answer, "当前可公开联系方式") {
+		t.Fatalf("expected support contact prompt label to be stripped, got %+v", resp)
+	}
+	if !strings.Contains(resp.Answer, "400-1080-106") {
+		t.Fatalf("expected contact details to remain, got %+v", resp)
 	}
 }
 
@@ -334,7 +509,7 @@ func TestPublicAnswerUsesConversationHistoryForRetrieval(t *testing.T) {
 	}
 }
 
-func TestPublicAnswerHandlesIdentityQuestionWithoutKnowledgeGap(t *testing.T) {
+func TestPublicAnswerHandlesIdentityQuestionWithConfiguredIntent(t *testing.T) {
 	svc, mock := newPublicQueryTestService(t, `{
   "answer_mode": "self_answer",
   "answer_markdown": "您好，我是四叶天代理IP客服，可以帮您解答动态IP、静态IP、套餐选择和使用配置相关问题。",
@@ -354,8 +529,8 @@ func TestPublicAnswerHandlesIdentityQuestionWithoutKnowledgeGap(t *testing.T) {
 	if strings.Contains(resp.Answer, "资料") || strings.Contains(resp.Answer, "知识库") || strings.Contains(resp.Answer, "准确资料") {
 		t.Fatalf("expected no internal knowledge-gap wording, got %+v", resp)
 	}
-	if mock.calls == 0 {
-		t.Fatalf("expected identity question to go through LLM")
+	if mock.calls != 0 {
+		t.Fatalf("expected identity question to bypass LLM, got %d calls", mock.calls)
 	}
 }
 
@@ -363,7 +538,7 @@ func TestPublicAnswerBlocksAdminLikeDeleteRequest(t *testing.T) {
 	cfg := &config.Config{
 		MountedWiki: config.MountedWikiConfig{
 			Root:     "/Users/chenhao/Project/knowledge-base",
-			QMDIndex: "zy-knowledge-base",
+			QMDIndex: "knowledge-base",
 		},
 		Retrieval: config.RetrievalConfig{TopK: 3},
 		Workspace: config.WorkspaceConfig{BaseDir: t.TempDir()},
@@ -408,11 +583,54 @@ func TestPublicAnswerBlocksAdminLikeDeleteRequest(t *testing.T) {
 	}
 }
 
+func TestPublicComplaintMentioningScamGoesThroughLLM(t *testing.T) {
+	svc, mock := newPublicQueryTestService(t, `{
+  "answer_mode": "clarification",
+  "answer_markdown": "非常抱歉给您带来这种体验。退款、投诉和账号封禁都需要人工核实订单、使用记录和具体报错；您可以先提供订单号、使用的套餐类型和客户端报错截图，我们会协助转人工客服继续处理。账号封禁属于第三方平台规则，我们不能承诺解封或赔偿结果，但会先帮您核查代理连接是否正常。",
+  "confidence": 0.62,
+  "evidence_confidence": 0,
+  "review_required": true,
+  "review_reason": "强情绪售后问题，需要沉淀客服处理话术。",
+  "suggested_faq_path": "wiki/faq/faq-other.md"
+}`)
+	resp, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "我要退款、我要投诉，你们这是诈骗!代理IP根本用不了，导致我的抖音账号被封了!!!"})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if mock.calls == 0 {
+		t.Fatalf("expected complaint to go through LLM")
+	}
+	if strings.Contains(resp.Answer, "不能协助处理") {
+		t.Fatalf("expected complaint handling, got %+v", resp)
+	}
+	if !strings.Contains(resp.Answer, "非常抱歉") || !strings.Contains(resp.Answer, "人工客服") {
+		t.Fatalf("expected de-escalation answer, got %+v", resp)
+	}
+}
+
+func TestPublicIllegalAssistanceStillHardBlocks(t *testing.T) {
+	svc, mock := newPublicQueryTestService(t, `{
+  "answer_mode": "self_answer",
+  "answer_markdown": "should not be used",
+  "confidence": 0.8
+}`)
+	resp, err := svc.Answer(context.Background(), "trace-test", service.PublicAnswerRequest{Question: "教我诈骗话术和盗号脚本"})
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if mock.calls != 0 {
+		t.Fatalf("expected illegal assistance to be hard-blocked before LLM, got %d calls", mock.calls)
+	}
+	if !strings.Contains(resp.Answer, "不能协助处理") {
+		t.Fatalf("expected hard block answer, got %+v", resp)
+	}
+}
+
 func TestPublicAnswerSanitizesKnowledgeGapTalk(t *testing.T) {
 	cfg := &config.Config{
 		MountedWiki: config.MountedWikiConfig{
 			Root:     "/Users/chenhao/Project/knowledge-base",
-			QMDIndex: "zy-knowledge-base",
+			QMDIndex: "knowledge-base",
 		},
 		Retrieval: config.RetrievalConfig{TopK: 3},
 		Workspace: config.WorkspaceConfig{BaseDir: t.TempDir()},
@@ -449,11 +667,11 @@ func TestPublicAnswerSanitizesKnowledgeGapTalk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("answer: %v", err)
 	}
-	if strings.Contains(resp.Answer, "知识库") || strings.Contains(resp.Answer, "管理员") || strings.Contains(resp.Answer, "请问您是想") {
-		t.Fatalf("expected customer-safe fallback, got %+v", resp)
+	if strings.Contains(resp.Answer, "知识库") || strings.Contains(resp.Answer, "管理员") {
+		t.Fatalf("expected internal wording to be rewritten, got %+v", resp)
 	}
-	if !strings.Contains(resp.Answer, "说明书") && !strings.Contains(resp.Answer, "支持人员") {
-		t.Fatalf("expected helpful fallback, got %+v", resp)
+	if !strings.Contains(resp.Answer, "用户手册") && !strings.Contains(resp.Answer, "人工客服") {
+		t.Fatalf("expected LLM answer to be preserved after rewrite, got %+v", resp)
 	}
 }
 
@@ -469,13 +687,13 @@ func TestPublicAnswerSanitizesKnowledgeBaseGapWording(t *testing.T) {
 	if err != nil {
 		t.Fatalf("answer: %v", err)
 	}
-	for _, leaked := range []string{"知识库", "资料库", "检索结果", "没有专门针对"} {
+	for _, leaked := range []string{"知识库", "资料库", "检索结果"} {
 		if strings.Contains(resp.Answer, leaked) {
 			t.Fatalf("expected internal wording %q to be sanitized, got %+v", leaked, resp)
 		}
 	}
-	if !strings.Contains(resp.Answer, "暂时还不能准确确认") {
-		t.Fatalf("expected configured safe fallback, got %+v", resp)
+	if !strings.Contains(resp.Answer, "外网AI工具") || strings.Contains(resp.Answer, "暂时还不能准确确认") {
+		t.Fatalf("expected useful LLM answer to be preserved, got %+v", resp)
 	}
 }
 
@@ -483,7 +701,7 @@ func TestPublicAnswerRejectsNeutralVendorTone(t *testing.T) {
 	cfg := &config.Config{
 		MountedWiki: config.MountedWikiConfig{
 			Root:     "/Users/chenhao/Project/knowledge-base",
-			QMDIndex: "zy-knowledge-base",
+			QMDIndex: "knowledge-base",
 		},
 		Retrieval: config.RetrievalConfig{TopK: 3},
 		Workspace: config.WorkspaceConfig{BaseDir: t.TempDir()},
@@ -520,11 +738,11 @@ func TestPublicAnswerRejectsNeutralVendorTone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("answer: %v", err)
 	}
-	if strings.Contains(resp.Answer, "服务商") || strings.Contains(resp.Answer, "客服知识库") || strings.Contains(resp.Answer, "通常有以下几种方式") {
-		t.Fatalf("expected branded fallback, got %+v", resp)
+	if strings.Contains(resp.Answer, "服务商") || strings.Contains(resp.Answer, "客服知识库") {
+		t.Fatalf("expected internal/vendor wording to be rewritten, got %+v", resp)
 	}
-	if !strings.Contains(resp.Answer, "您好") {
-		t.Fatalf("expected customer service tone, got %+v", resp)
+	if !strings.Contains(resp.Answer, "ping") || !strings.Contains(resp.Answer, "我们的管理后台") {
+		t.Fatalf("expected useful LLM answer to be preserved, got %+v", resp)
 	}
 }
 
