@@ -1301,6 +1301,7 @@ func badRequest(c *gin.Context, err error) {
 }
 
 func internalError(c *gin.Context, err error) {
+	log.Printf("error %s %s trace=%s err=%v", c.Request.Method, c.Request.URL.Path, traceID(c), err)
 	c.JSON(http.StatusInternalServerError, gin.H{
 		"error": gin.H{
 			"code":    "INTERNAL_ERROR",

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -92,12 +93,12 @@ func (s *PublicQueryService) Answer(ctx context.Context, traceID string, req Pub
 	}
 
 	env := s.env("public", traceID, "", "")
-	candidateTopK := s.deps.Config.Retrieval.TopK * 4
-	if candidateTopK < 8 {
-		candidateTopK = 8
+	candidateTopK := s.deps.Config.Retrieval.TopK
+	if candidateTopK < 3 {
+		candidateTopK = 3
 	}
-	if candidateTopK > 12 {
-		candidateTopK = 12
+	if candidateTopK > 6 {
+		candidateTopK = 6
 	}
 	retrievalQuestion := buildPublicRetrievalQuestion(req.Question, req.History)
 	pages, err := s.deps.Retriever.Retrieve(ctx, env, retrievalQuestion, candidateTopK)
@@ -142,7 +143,8 @@ func (s *PublicQueryService) Answer(ctx context.Context, traceID string, req Pub
 		{Role: "user", Content: userPrompt},
 	}, "llm public answer")
 	if err != nil {
-		return nil, err
+		log.Printf("public answer llm failed trace=%s question=%q err=%v", traceID, truncateForPrompt(req.Question, 80), err)
+		return publicAnswerResponse(s.publicFallback(req.Question), receivedAt), nil
 	}
 	parsed := s.parsePublicAnswerOutput(ctx, llmText)
 	parsed.Sources = filterPublicAnswerSources(parsed.Sources, sources)
@@ -487,7 +489,7 @@ func (s *PublicQueryService) readPublicEvidencePage(
 		Title:      displayTitle,
 		Confidence: publicSourceConfidence(path),
 	}
-	*contentBlocks = append(*contentBlocks, formatCandidatePageBlock(source, truncateForPrompt(preview, 3200)))
+	*contentBlocks = append(*contentBlocks, formatCandidatePageBlock(source, truncateForPrompt(preview, 2000)))
 	*sources = append(*sources, source)
 	return body, true
 }
@@ -526,17 +528,17 @@ func buildPublicEvidencePreview(body string, path string, question string) strin
 	}
 	terms := publicEvidenceTerms(question)
 	if len(terms) == 0 {
-		return truncateForPrompt(body, 3200)
+		return truncateForPrompt(body, 2000)
 	}
 	if strings.HasPrefix(filepath.ToSlash(path), "wiki/faq/") {
-		if preview := relevantFAQSections(body, terms, 4); strings.TrimSpace(preview) != "" {
+		if preview := relevantFAQSections(body, terms, 3); strings.TrimSpace(preview) != "" {
 			return preview
 		}
 	}
-	if preview := relevantTextWindows(body, terms, 3); strings.TrimSpace(preview) != "" {
+	if preview := relevantTextWindows(body, terms, 2); strings.TrimSpace(preview) != "" {
 		return preview
 	}
-	return truncateForPrompt(body, 3200)
+	return truncateForPrompt(body, 2000)
 }
 
 func relevantFAQSections(body string, terms []string, limit int) string {
