@@ -60,6 +60,8 @@ public_intents:
   path: configs/public_intents.yaml
 
 public_query:
+  candidate_top_k: ${WIKIOS_PUBLIC_CANDIDATE_TOP_K}
+  max_evidence_chars: ${WIKIOS_PUBLIC_MAX_EVIDENCE_CHARS}
   confidence:
     direct_min: 0.70
     review_min: 0.25

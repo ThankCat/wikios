@@ -107,7 +107,9 @@ type PublicIntentsConfig struct {
 }
 
 type PublicQueryConfig struct {
-	Confidence PublicQueryConfidenceConfig `yaml:"confidence"`
+	Confidence       PublicQueryConfidenceConfig `yaml:"confidence"`
+	CandidateTopK    int                        `yaml:"candidate_top_k"`
+	MaxEvidenceChars int                        `yaml:"max_evidence_chars"`
 }
 
 type PublicQueryConfidenceConfig struct {
@@ -247,6 +249,12 @@ func (c *Config) normalizeAndValidate() error {
 	}
 	if c.PublicQuery.Confidence.ReviewMin > c.PublicQuery.Confidence.DirectMin {
 		c.PublicQuery.Confidence.ReviewMin = c.PublicQuery.Confidence.DirectMin
+	}
+	if c.PublicQuery.CandidateTopK <= 0 {
+		c.PublicQuery.CandidateTopK = 6
+	}
+	if c.PublicQuery.MaxEvidenceChars <= 0 {
+		c.PublicQuery.MaxEvidenceChars = 2400
 	}
 	if strings.TrimSpace(c.Support.Phone) == "" {
 		c.Support.Phone = firstEnv("WIKIOS_SUPPORT_PHONE", "400-1080-106")
