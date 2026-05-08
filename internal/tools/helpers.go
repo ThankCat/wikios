@@ -48,8 +48,6 @@ func RegisterAll(registry *runtime.Registry, deps Dependencies) {
 		NewExecPythonTool(deps),
 		NewExecShellTool(deps),
 		NewLintRunTool(deps),
-		NewRepairApplyLowRiskTool(deps),
-		NewRepairCreateHighRiskProposalTool(deps),
 		NewGitStatusTool(deps),
 		NewGitCommitTool(deps),
 		NewGitPushTool(deps),

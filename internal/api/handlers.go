@@ -2,13 +2,11 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -78,6 +76,7 @@ type adminChatRequest struct {
 
 type publicAnswerRequest struct {
 	Question          string         `json:"question"`
+	Stream            bool           `json:"stream,omitempty"`
 	UserID            string         `json:"user_id"`
 	SessionID         string         `json:"session_id"`
 	QuestionMessageID string         `json:"question_message_id"`
@@ -152,9 +151,14 @@ func (h *Handlers) PublicAnswer(c *gin.Context) {
 		badRequest(c, err)
 		return
 	}
+	if req.Stream {
+		h.handlePublicAnswerStream(c, req)
+		return
+	}
 	receivedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	resp, err := h.PublicQuery.Answer(c.Request.Context(), traceID(c), service.PublicAnswerRequest{
 		Question:          req.Question,
+		Stream:            false,
 		UserID:            req.UserID,
 		SessionID:         req.SessionID,
 		QuestionMessageID: req.QuestionMessageID,
@@ -177,14 +181,23 @@ func (h *Handlers) PublicAnswerStream(c *gin.Context) {
 		badRequest(c, err)
 		return
 	}
+	req.Stream = true
+	h.handlePublicAnswerStream(c, req)
+}
+
+func (h *Handlers) handlePublicAnswerStream(c *gin.Context, req publicAnswerRequest) {
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	mu := &sync.Mutex{}
+	stopKeepalive := startSSEKeepalive(c, mu, 8*time.Second)
+	defer stopKeepalive()
 	receivedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	writeSSE(c, "meta", gin.H{"stream": true, "received_at": receivedAt})
-	resp, err := h.PublicQuery.Answer(c.Request.Context(), traceID(c), service.PublicAnswerRequest{
+	writeSSEWithLock(c, "meta", gin.H{"stream": true, "received_at": receivedAt}, mu)
+	resp, err := h.PublicQuery.AnswerStream(c.Request.Context(), traceID(c), service.PublicAnswerRequest{
 		Question:          req.Question,
+		Stream:            true,
 		UserID:            req.UserID,
 		SessionID:         req.SessionID,
 		QuestionMessageID: req.QuestionMessageID,
@@ -193,17 +206,14 @@ func (h *Handlers) PublicAnswerStream(c *gin.Context) {
 		ReceivedAt:        receivedAt,
 		Context:           req.Context,
 		History:           toServiceHistory(req.History),
-	})
+	}, &sseEmitter{c: c, mu: mu})
 	if err != nil {
-		writeSSE(c, "error", gin.H{"message": err.Error()})
-		writeSSE(c, "done", gin.H{"ok": false})
+		writeSSEWithLock(c, "error", gin.H{"message": err.Error()}, mu)
+		writeSSEWithLock(c, "done", gin.H{"ok": false}, mu)
 		return
 	}
-	for _, chunk := range chunkText(resp.Answer, 24) {
-		writeSSE(c, "delta", gin.H{"delta": chunk})
-	}
-	writeSSE(c, "result", gin.H{"answer": resp.Answer, "answered_at": resp.AnsweredAt})
-	writeSSE(c, "done", gin.H{"ok": true})
+	writeSSEWithLock(c, "result", gin.H{"answer": resp.Answer, "answered_at": resp.AnsweredAt, "user_intent": resp.UserIntent, "details": resp.Details}, mu)
+	writeSSEWithLock(c, "done", gin.H{"ok": true}, mu)
 }
 
 func (h *Handlers) AdminLogin(c *gin.Context) {
@@ -714,17 +724,7 @@ func (h *Handlers) AdminWikiFile(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
-	switch kind {
-	case "image":
-		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(rel)))
-		if mimeType == "" {
-			mimeType = http.DetectContentType(content)
-		}
-		resp["mime_type"] = mimeType
-		resp["data_url"] = "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(content)
-	default:
-		resp["content"] = string(content)
-	}
+	resp["content"] = string(content)
 	log.Printf("audit wiki.file path=%s preview=%s size=%d", rel, kind, info.Size())
 	c.JSON(http.StatusOK, resp)
 }
@@ -971,10 +971,6 @@ func wikiPreviewKind(path string) string {
 	switch ext {
 	case ".md", ".markdown":
 		return "markdown"
-	case ".json":
-		return "json"
-	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg":
-		return "image"
 	default:
 		return "download"
 	}
@@ -1527,23 +1523,4 @@ func truncateContextValue(text string, limit int) string {
 	}
 	runes := []rune(text)
 	return string(runes[:limit]) + "..."
-}
-
-func chunkText(text string, size int) []string {
-	runes := []rune(text)
-	if len(runes) == 0 {
-		return nil
-	}
-	if size <= 0 {
-		size = 24
-	}
-	chunks := make([]string, 0, (len(runes)+size-1)/size)
-	for start := 0; start < len(runes); start += size {
-		end := start + size
-		if end > len(runes) {
-			end = len(runes)
-		}
-		chunks = append(chunks, string(runes[start:end]))
-	}
-	return chunks
 }

@@ -5,6 +5,10 @@ import remarkGfm from "remark-gfm";
 
 import { cn } from "@/lib/utils";
 
+type MarkdownCodeProps = React.ComponentPropsWithoutRef<"code"> & {
+  node?: unknown;
+};
+
 const markdownComponents = {
   a({ children, href }: React.ComponentPropsWithoutRef<"a">) {
     return (
@@ -37,7 +41,11 @@ const markdownComponents = {
   strong({ children }: React.ComponentPropsWithoutRef<"strong">) {
     return <strong className="font-semibold text-slate-950">{children}</strong>;
   },
-  code({ children }: React.ComponentPropsWithoutRef<"code">) {
+  code({ children, className }: MarkdownCodeProps) {
+    const isBlock = typeof children === "string" && children.includes("\n");
+    if (isBlock) {
+      return <code className={cn("block min-w-max whitespace-pre font-mono text-xs leading-6 text-slate-100", className)}>{children}</code>;
+    }
     return <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[0.92em] text-slate-900">{children}</code>;
   },
   pre({ children }: React.ComponentPropsWithoutRef<"pre">) {
@@ -86,5 +94,77 @@ export function MarkdownContent({ children, className }: Props) {
 }
 
 function normalizeBareLinks(markdown: string) {
-  return markdown.replace(/(https?:\/\/[^\s<>"'，。！？；、（）【】《》]+)(?=[\u4e00-\u9fff，。！？；、）】》])/g, "$1 ");
+  let inFence = false;
+  let fenceChar = "";
+  let fenceLength = 0;
+
+  return markdown.replace(/([^\r\n]*)(\r\n|\n|\r|$)/g, (match, line: string, lineEnding: string) => {
+    if (match === "") {
+      return match;
+    }
+
+    const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (!inFence && fenceMatch) {
+      fenceChar = fenceMatch[1][0];
+      fenceLength = fenceMatch[1].length;
+      inFence = true;
+      return match;
+    }
+
+    if (inFence) {
+      if (isClosingFence(line, fenceChar, fenceLength)) {
+        inFence = false;
+      }
+      return match;
+    }
+
+    return `${normalizeBareLinksOutsideCodeSpans(line)}${lineEnding}`;
+  });
+}
+
+function isClosingFence(line: string, marker: string, length: number) {
+  if (!marker || length <= 0) {
+    return false;
+  }
+  const trimmed = line.trimStart();
+  if (line.length - trimmed.length > 3 || !trimmed.startsWith(marker.repeat(length))) {
+    return false;
+  }
+
+  let index = 0;
+  while (trimmed[index] === marker) {
+    index += 1;
+  }
+  return index >= length && trimmed.slice(index).trim() === "";
+}
+
+function normalizeBareLinksOutsideCodeSpans(line: string) {
+  let result = "";
+  let index = 0;
+
+  while (index < line.length) {
+    if (line[index] === "`") {
+      const tickRun = line.slice(index).match(/^`+/)?.[0] ?? "`";
+      const closingIndex = line.indexOf(tickRun, index + tickRun.length);
+      if (closingIndex !== -1) {
+        const end = closingIndex + tickRun.length;
+        result += line.slice(index, end);
+        index = end;
+        continue;
+      }
+      result += normalizeBareLinksInText(line.slice(index));
+      break;
+    }
+
+    const nextCodeSpan = line.indexOf("`", index);
+    const end = nextCodeSpan === -1 ? line.length : nextCodeSpan;
+    result += normalizeBareLinksInText(line.slice(index, end));
+    index = end;
+  }
+
+  return result;
+}
+
+function normalizeBareLinksInText(text: string) {
+  return text.replace(/(https?:\/\/[A-Za-z0-9][^\s<>"'\u4e00-\u9fff，。！？；、（）【】《》]+)(?=[\u4e00-\u9fff，。！？；、）】》])/g, "$1 ");
 }

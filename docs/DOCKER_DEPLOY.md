@@ -222,7 +222,7 @@ docker compose --env-file deploy/.env.prod -f docker-compose.yml restart wikios
 docker compose --env-file deploy/.env.prod -f docker-compose.yml logs -f wikios
 ```
 
-## 7. 常见问题
+## 7. 排障说明
 
 ### API Key 丢失或 LLM 不可用
 

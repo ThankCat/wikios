@@ -1,17 +1,19 @@
 package service
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type UploadRequest struct {
@@ -25,14 +27,11 @@ type UploadService struct {
 }
 
 type preparedUpload struct {
-	base          string
-	ext           string
-	kind          string
-	storedRel     string
-	content       string
-	storedContent []byte
-	contentSHA    string
-	faqDataset    *canonicalFAQDataset
+	base      string
+	ext       string
+	kind      string
+	storedRel string
+	content   string
 }
 
 func NewUploadService(deps Deps) *UploadService {
@@ -60,54 +59,20 @@ func (s *UploadService) process(ctx context.Context, traceID string, req UploadR
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 		return nil, nil, err
 	}
-	storedContent := req.Content
-	if len(prepared.storedContent) > 0 {
-		storedContent = prepared.storedContent
-	}
-	if err := os.WriteFile(absPath, storedContent, 0o644); err != nil {
+	if err := os.WriteFile(absPath, req.Content, 0o644); err != nil {
 		return nil, nil, err
-	}
-	if prepared.kind == "image" {
-		result := map[string]any{
-			"summary":      fmt.Sprintf("图片已保存到 %s，当前版本不会自动执行视觉摄入。", prepared.storedRel),
-			"stored_path":  prepared.storedRel,
-			"media_kind":   "image",
-			"pending":      true,
-			"content_type": req.ContentType,
-		}
-		if stream {
-			emitStreamEvent(ctx, "meta", map[string]any{
-				"mode":        "upload",
-				"file_name":   req.Filename,
-				"media_kind":  prepared.kind,
-				"stored_path": prepared.storedRel,
-			})
-			emitStreamEvent(ctx, "result", map[string]any{
-				"reply":   result["summary"],
-				"details": result,
-			})
-		}
-		return result, nil, nil
 	}
 	execution := NewExecution("ingest")
 	if stream {
 		emitStreamEvent(ctx, "meta", map[string]any{
-			"mode":         "ingest",
-			"execution_id": execution.ID,
-			"started_at":   execution.StartedAt.Format(time.RFC3339Nano),
-			"file_name":    req.Filename,
-			"media_kind":   prepared.kind,
-			"stored_path":  prepared.storedRel,
-			"source_format": func() string {
-				if prepared.faqDataset != nil {
-					return prepared.faqDataset.Format
-				}
-				return prepared.kind
-			}(),
+			"mode":          "ingest",
+			"execution_id":  execution.ID,
+			"started_at":    execution.StartedAt.Format(time.RFC3339Nano),
+			"file_name":     req.Filename,
+			"media_kind":    prepared.kind,
+			"stored_path":   prepared.storedRel,
+			"source_format": prepared.kind,
 		})
-		if plan := buildUploadIngestPlan(prepared); plan != nil {
-			emitStreamEvent(ctx, "ingest_plan", plan)
-		}
 	}
 	var (
 		result    map[string]any
@@ -150,7 +115,6 @@ func (s *UploadService) process(ctx context.Context, traceID string, req UploadR
 }
 
 func (s *UploadService) prepareUpload(ctx context.Context, req UploadRequest) (*preparedUpload, error) {
-	knowledgeProfile, _ := s.loadKnowledgeProfile()
 	ext := strings.ToLower(filepath.Ext(req.Filename))
 	base := strings.TrimSuffix(filepath.Base(req.Filename), ext)
 	if base == "" {
@@ -160,116 +124,32 @@ func (s *UploadService) prepareUpload(ctx context.Context, req UploadRequest) (*
 	if name == "" {
 		name = "upload"
 	}
-	if ext == ".xlsx" {
-		parsed, err := parseStructuredFAQUploadWithProfile(req.Filename, base, ext, req.Content, "", knowledgeProfile)
-		if err != nil {
-			return nil, err
-		}
-		if parsed == nil || parsed.Dataset == nil {
-			return nil, ValidationError{Message: "FAQ Excel 中未识别到包含“标准问题”和“回复内容”的有效表格。"}
-		}
-		if err := s.validateUploadSizeWithStructured(ext, len(req.Content), true); err != nil {
-			return nil, err
-		}
-		shaSum := sha256.Sum256(req.Content)
-		storedRel := filepath.ToSlash(filepath.Join("raw/articles", fmt.Sprintf("%s-%s.json", nowDate(), name)))
-		return &preparedUpload{
-			base:          base,
-			ext:           ".json",
-			kind:          "article",
-			storedRel:     storedRel,
-			content:       parsed.Content,
-			storedContent: []byte(parsed.Content),
-			contentSHA:    hex.EncodeToString(shaSum[:]),
-			faqDataset:    parsed.Dataset,
-		}, nil
-	}
 	if ext == "" {
-		ext = ".txt"
+		return nil, unsupportedDocumentUploadError(ext)
 	}
-	storedRel := ""
 	kind := detectUploadKind(ext)
-	switch kind {
-	case "article", "document":
-		storedRel = filepath.ToSlash(filepath.Join("raw/articles", fmt.Sprintf("%s-%s%s", nowDate(), name, ext)))
-	case "image":
-		storedRel = filepath.ToSlash(filepath.Join("raw/images", fmt.Sprintf("%s-%s%s", nowDate(), name, ext)))
-	default:
-		return nil, ValidationError{Message: fmt.Sprintf("暂不支持该文件类型 %s。当前仅支持文章文档（txt、md、markdown、json、xlsx、doc、docx、rtf）和图片（png、jpg、jpeg、webp）。", ext)}
+	if kind == "" {
+		return nil, unsupportedDocumentUploadError(ext)
 	}
+	storedRel := filepath.ToSlash(filepath.Join("raw/articles", fmt.Sprintf("%s-%s%s", nowDate(), name, ext)))
 	content := string(req.Content)
-	if kind == "document" {
+	if isOfficeDocumentExt(ext) {
 		text, err := extractDocumentText(ctx, req.Content, ext)
 		if err != nil {
 			return nil, ValidationError{Message: fmt.Sprintf("文档正文提取失败：%s", err.Error())}
 		}
 		content = text
 	}
-	parsed, faqErr := parseStructuredFAQUploadWithProfile(req.Filename, base, ext, req.Content, content, knowledgeProfile)
-	if faqErr != nil {
-		return nil, faqErr
-	}
-	var faqDataset *canonicalFAQDataset
-	if parsed != nil {
-		content = parsed.Content
-		faqDataset = parsed.Dataset
-	}
-	if kind == "article" && ext == ".json" && faqDataset == nil {
-		return nil, ValidationError{Message: "当前仅支持 FAQ JSON 导入，文件中未识别到顶层 faq 数组。"}
-	}
-	if err := s.validateUploadSizeWithStructured(ext, len(req.Content), faqDataset != nil); err != nil {
+	if err := s.validateUploadSize(ext, len(req.Content)); err != nil {
 		return nil, err
 	}
-	if kind == "article" || kind == "document" {
-		if err := s.validateTextStructure(content, faqDataset != nil); err != nil {
-			return nil, err
-		}
-	}
-	shaSum := sha256.Sum256(req.Content)
 	return &preparedUpload{
-		base:       base,
-		ext:        ext,
-		kind:       kind,
-		storedRel:  storedRel,
-		content:    content,
-		contentSHA: hex.EncodeToString(shaSum[:]),
-		faqDataset: faqDataset,
+		base:      base,
+		ext:       ext,
+		kind:      kind,
+		storedRel: storedRel,
+		content:   content,
 	}, nil
-}
-
-func buildUploadIngestPlan(prepared *preparedUpload) map[string]any {
-	if prepared == nil {
-		return nil
-	}
-	if prepared.faqDataset == nil {
-		return map[string]any{
-			"source_format":      prepared.kind,
-			"segments_total":     1,
-			"segmented":          false,
-			"category_breakdown": nil,
-		}
-	}
-	segments := prepared.faqDataset.segments(faqSegmentSize)
-	segmentItems := make([]map[string]any, 0, len(segments))
-	categoryCounts := map[string]int{}
-	for _, segment := range segments {
-		category := firstNonEmpty(strings.TrimSpace(segment.Tag), "未分类")
-		categoryCounts[category] += len(segment.Entries)
-		segmentItems = append(segmentItems, map[string]any{
-			"index":       segment.Index,
-			"title":       segment.title(),
-			"slug":        segment.slug(),
-			"category":    category,
-			"entry_count": len(segment.Entries),
-		})
-	}
-	return map[string]any{
-		"source_format":      prepared.faqDataset.Format,
-		"segments_total":     len(segments),
-		"segmented":          true,
-		"category_breakdown": categoryCounts,
-		"segments":           segmentItems,
-	}
 }
 
 func (s *UploadService) runSingleUploadViaDirect(ctx context.Context, execution *Execution, traceID string, prepared *preparedUpload) (map[string]any, error) {
@@ -279,20 +159,11 @@ func (s *UploadService) runSingleUploadViaDirect(ctx context.Context, execution 
 		"file_name":     prepared.base + prepared.ext,
 		"source_format": prepared.kind,
 	}
-	if prepared.faqDataset != nil {
-		context["source_format"] = prepared.faqDataset.Format
-		context["faq_entry_count"] = len(prepared.faqDataset.Entries)
-		if plan := buildUploadIngestPlan(prepared); plan != nil {
-			if data, err := json.MarshalIndent(plan, "", "  "); err == nil {
-				context["ingest_plan"] = string(data)
-			}
-		}
-	}
 	if strings.TrimSpace(prepared.content) != "" {
-		context["segment_preview"] = truncateDirectPromptValue(prepared.content, 2200)
+		context["document_preview"] = truncateDirectPromptValue(prepared.content, 2200)
 	}
 	result, err := NewDirectAdminService(s.deps).Run(ctx, execution, traceID, DirectAdminRequest{
-		Message:  fmt.Sprintf("请处理刚上传的文件并完成后续管理员操作：%s", prepared.storedRel),
+		Message:  fmt.Sprintf("请按 AGENT.md 的 INGEST 流程处理刚上传的文档：%s", prepared.storedRel),
 		ModeHint: "ingest",
 		Attachments: []DirectAdminAttachment{
 			{Path: prepared.storedRel, Kind: prepared.kind, Name: prepared.base + prepared.ext},
@@ -311,11 +182,6 @@ func (s *UploadService) runSingleUploadViaDirect(ctx context.Context, execution 
 func uploadExecutionStatus(result map[string]any) ExecutionStatus {
 	if resultBoolValue(result, "partial_success") {
 		return ExecutionPartialSuccess
-	}
-	completed := resultIntValue(result, "segments_completed")
-	failed := resultIntValue(result, "segments_failed")
-	if failed > 0 && completed == 0 {
-		return ExecutionFailed
 	}
 	return ExecutionSuccess
 }
@@ -336,113 +202,6 @@ func resultBoolValue(result map[string]any, key string) bool {
 	return value
 }
 
-func resultIntValue(result map[string]any, key string) int {
-	if result == nil {
-		return 0
-	}
-	switch value := result[key].(type) {
-	case int:
-		return value
-	case int32:
-		return int(value)
-	case int64:
-		return int(value)
-	case float64:
-		return int(value)
-	default:
-		return 0
-	}
-}
-
-func stringSliceValue(result map[string]any, key string) []string {
-	if result == nil {
-		return nil
-	}
-	return appendUniqueStrings(nil, stringArrayValue(result[key])...)
-}
-
-func stringArrayValue(value any) []string {
-	switch typed := value.(type) {
-	case []string:
-		return appendUniqueStrings(nil, typed...)
-	case []any:
-		out := make([]string, 0, len(typed))
-		for _, item := range typed {
-			text, ok := item.(string)
-			if !ok {
-				continue
-			}
-			out = append(out, text)
-		}
-		return appendUniqueStrings(nil, out...)
-	default:
-		return nil
-	}
-}
-
-func appendUniqueStrings(base []string, values ...string) []string {
-	seen := map[string]bool{}
-	out := make([]string, 0, len(base)+len(values))
-	for _, item := range base {
-		item = strings.TrimSpace(item)
-		if item == "" || seen[item] {
-			continue
-		}
-		seen[item] = true
-		out = append(out, item)
-	}
-	for _, item := range values {
-		item = strings.TrimSpace(item)
-		if item == "" || seen[item] {
-			continue
-		}
-		seen[item] = true
-		out = append(out, item)
-	}
-	return out
-}
-
-func commandRecords(value any) []map[string]any {
-	items, ok := value.([]map[string]any)
-	if ok {
-		return items
-	}
-	raw, ok := value.([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]map[string]any, 0, len(raw))
-	for _, item := range raw {
-		record, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		out = append(out, record)
-	}
-	return out
-}
-
-func collectUploadFiles(result map[string]any) []string {
-	files := appendUniqueStrings(nil, resultStringValue(result, "output_file"), resultStringValue(result, "report_file"))
-	return appendUniqueStrings(files, stringSliceValue(result, "output_files")...)
-}
-
-func collectUploadArtifacts(result map[string]any) []string {
-	artifacts := appendUniqueStrings(nil, collectUploadFiles(result)...)
-	return appendUniqueStrings(artifacts, stringSliceValue(result, "artifacts")...)
-}
-
-func marshalCompactJSON(value any) string {
-	if value == nil {
-		return ""
-	}
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return ""
-	}
-	return string(raw)
-}
-
 func truncateDirectPromptValue(text string, limit int) string {
 	text = strings.TrimSpace(text)
 	if limit <= 0 || len([]rune(text)) <= limit {
@@ -454,72 +213,63 @@ func truncateDirectPromptValue(text string, limit int) string {
 
 func (s *UploadService) validateUploadSize(ext string, sizeBytes int) error {
 	kind := detectUploadKind(ext)
-	if kind != "article" && kind != "document" {
-		return nil
-	}
-	return s.validateUploadSizeWithStructured(ext, sizeBytes, false)
-}
-
-func (s *UploadService) validateUploadSizeWithStructured(ext string, sizeBytes int, structuredFAQ bool) error {
-	kind := detectUploadKind(ext)
-	if kind != "article" && kind != "document" {
+	if kind != "document" {
 		return nil
 	}
 	maxBytes := s.deps.Config.Upload.MaxTextFileKB * 1024
-	if structuredFAQ {
-		if workspaceMax := s.deps.Config.Workspace.MaxFileSizeMB * 1024 * 1024; workspaceMax > maxBytes {
-			maxBytes = workspaceMax
-		}
+	if isOfficeDocumentExt(ext) && s.deps.Config.Workspace.MaxFileSizeMB > 0 {
+		maxBytes = s.deps.Config.Workspace.MaxFileSizeMB * 1024 * 1024
 	}
 	if maxBytes <= 0 || sizeBytes <= maxBytes {
 		return nil
 	}
-	if structuredFAQ {
-		return ValidationError{Message: fmt.Sprintf(
-			"FAQ 数据文件过大，当前安全上限约为 %.1fMB，你这次上传约 %.1fKB。请先按业务主题或分类拆分后再上传。",
-			float64(maxBytes)/1024/1024,
-			float64(sizeBytes)/1024,
-		)}
-	}
 	return ValidationError{Message: fmt.Sprintf(
-		"文件过大，当前客服上传的文本/文档文件限制为 %dKB，你这次上传约 %.1fKB。请按主题拆分后再上传，例如拆成“下载与安装”“产品咨询”“价格与购买”“售后与排查”几个文件。",
-		s.deps.Config.Upload.MaxTextFileKB,
+		"文件过大，当前文档上传限制约为 %.1fKB，你这次上传约 %.1fKB。请压缩文档或拆成多个文档后再上传。",
+		float64(maxBytes)/1024,
 		float64(sizeBytes)/1024,
-	)}
-}
-
-func (s *UploadService) validateTextStructure(content string, structuredFAQ bool) error {
-	if structuredFAQ {
-		return nil
-	}
-	tableRows := countTableRows(content)
-	if tableRows <= s.deps.Config.Upload.MaxTableRows {
-		return nil
-	}
-	if !looksLikeFAQTable(content) {
-		return nil
-	}
-	return ValidationError{Message: fmt.Sprintf(
-		"检测到超大 FAQ 表格，当前版本最多支持约 %d 行表格，你这次文件检测到 %d 行。为避免表面摄入成功但实际只处理前面一部分，请拆分上传。建议按“下载与安装 / 产品咨询 / 价格与购买 / 售后与排查 / 人工服务”分别整理成多个文件。",
-		s.deps.Config.Upload.MaxTableRows,
-		tableRows,
 	)}
 }
 
 func detectUploadKind(ext string) string {
 	switch ext {
-	case ".txt", ".md", ".markdown", ".json", ".xlsx":
-		return "article"
-	case ".doc", ".docx", ".rtf":
+	case ".txt", ".text", ".md", ".markdown", ".doc", ".docx", ".rtf":
 		return "document"
-	case ".png", ".jpg", ".jpeg", ".webp":
-		return "image"
 	default:
 		return ""
 	}
 }
 
+func unsupportedDocumentUploadError(ext string) error {
+	if ext == "" {
+		ext = "unknown"
+	}
+	return ValidationError{Message: fmt.Sprintf("暂不支持该文件类型 %s。当前上传摄入只支持文档文件：.md、.markdown、.txt、.text、.doc、.docx、.rtf；不支持 Excel、CSV、TSV、JSON、图片或其它结构化数据。", ext)}
+}
+
+func isOfficeDocumentExt(ext string) bool {
+	switch strings.ToLower(ext) {
+	case ".doc", ".docx", ".rtf":
+		return true
+	default:
+		return false
+	}
+}
+
 func extractDocumentText(ctx context.Context, content []byte, ext string) (string, error) {
+	switch strings.ToLower(ext) {
+	case ".docx":
+		if text, err := extractDocxText(content); err == nil && strings.TrimSpace(text) != "" {
+			return text, nil
+		}
+	case ".rtf":
+		if text, err := extractRTFText(content); err == nil && strings.TrimSpace(text) != "" {
+			return text, nil
+		}
+	}
+	return extractDocumentTextWithTool(ctx, content, ext)
+}
+
+func extractDocumentTextWithTool(ctx context.Context, content []byte, ext string) (string, error) {
 	tmpFile, err := os.CreateTemp("", "wikios-upload-*"+ext)
 	if err != nil {
 		return "", err
@@ -535,29 +285,247 @@ func extractDocumentText(ctx context.Context, content []byte, ext string) (strin
 	if err := tmpFile.Close(); err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, "textutil", "-convert", "txt", "-stdout", tmpPath)
-	output, err := cmd.Output()
+	commands := documentTextCommands(tmpPath, ext)
+	if len(commands) == 0 {
+		return "", fmt.Errorf("no document text extraction tool available")
+	}
+	var lastErr error
+	for _, command := range commands {
+		cmd := exec.CommandContext(ctx, command.name, command.args...)
+		output, err := cmd.Output()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		text := strings.TrimSpace(string(output))
+		if text != "" {
+			return text, nil
+		}
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("document text is empty")
+}
+
+type documentTextCommand struct {
+	name string
+	args []string
+}
+
+func documentTextCommands(path string, ext string) []documentTextCommand {
+	out := []documentTextCommand{}
+	if _, err := exec.LookPath("textutil"); err == nil {
+		out = append(out, documentTextCommand{name: "textutil", args: []string{"-convert", "txt", "-stdout", path}})
+	}
+	if _, err := exec.LookPath("pandoc"); err == nil {
+		out = append(out, documentTextCommand{name: "pandoc", args: []string{path, "-t", "plain"}})
+	}
+	if strings.EqualFold(ext, ".doc") {
+		if _, err := exec.LookPath("antiword"); err == nil {
+			out = append(out, documentTextCommand{name: "antiword", args: []string{path}})
+		}
+		if _, err := exec.LookPath("catdoc"); err == nil {
+			out = append(out, documentTextCommand{name: "catdoc", args: []string{path}})
+		}
+	}
+	return out
+}
+
+func extractDocxText(content []byte) (string, error) {
+	reader, err := zip.NewReader(bytes.NewReader(content), int64(len(content)))
 	if err != nil {
 		return "", err
 	}
-	text := strings.TrimSpace(string(output))
+	parts := []string{}
+	for _, name := range []string{"word/document.xml", "word/footnotes.xml", "word/endnotes.xml"} {
+		for _, file := range reader.File {
+			if file.Name != name {
+				continue
+			}
+			text, err := extractDocxXMLText(file)
+			if err != nil {
+				return "", err
+			}
+			if strings.TrimSpace(text) != "" {
+				parts = append(parts, text)
+			}
+			break
+		}
+	}
+	text := normalizeExtractedText(strings.Join(parts, "\n\n"))
 	if text == "" {
 		return "", fmt.Errorf("document text is empty")
 	}
 	return text, nil
 }
 
-var tableRowPattern = regexp.MustCompile(`(?m)^\|`)
-
-func countTableRows(content string) int {
-	return len(tableRowPattern.FindAllString(content, -1))
+func extractDocxXMLText(file *zip.File) (string, error) {
+	rc, err := file.Open()
+	if err != nil {
+		return "", err
+	}
+	defer rc.Close()
+	decoder := xml.NewDecoder(rc)
+	var b strings.Builder
+	inText := false
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		switch typed := token.(type) {
+		case xml.StartElement:
+			switch typed.Name.Local {
+			case "t":
+				inText = true
+			case "tab":
+				b.WriteByte('\t')
+			case "br", "cr":
+				b.WriteByte('\n')
+			}
+		case xml.EndElement:
+			switch typed.Name.Local {
+			case "t":
+				inText = false
+			case "p":
+				b.WriteByte('\n')
+			}
+		case xml.CharData:
+			if inText {
+				b.Write([]byte(typed))
+			}
+		}
+	}
+	return normalizeExtractedText(b.String()), nil
 }
 
-func looksLikeFAQTable(content string) bool {
-	lower := strings.ToLower(content)
-	return strings.Contains(content, "标准问题") ||
-		strings.Contains(content, "相似问法") ||
-		strings.Contains(content, "回复内容") ||
-		strings.Contains(content, "快捷短语") ||
-		(strings.Contains(lower, "faq") && countTableRows(content) > 0)
+func extractRTFText(content []byte) (string, error) {
+	text := string(content)
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		ch := text[i]
+		switch ch {
+		case '{', '}':
+			i++
+		case '\\':
+			i = consumeRTFControl(text, i+1, &b)
+		case '\r', '\n':
+			i++
+		default:
+			b.WriteByte(ch)
+			i++
+		}
+	}
+	out := normalizeExtractedText(b.String())
+	if out == "" {
+		return "", fmt.Errorf("document text is empty")
+	}
+	return out, nil
+}
+
+func consumeRTFControl(text string, i int, b *strings.Builder) int {
+	if i >= len(text) {
+		return i
+	}
+	switch text[i] {
+	case '\\', '{', '}':
+		b.WriteByte(text[i])
+		return i + 1
+	case '\'':
+		if i+2 < len(text) {
+			if value, err := strconv.ParseUint(text[i+1:i+3], 16, 8); err == nil {
+				b.WriteByte(byte(value))
+				return i + 3
+			}
+		}
+		return i + 1
+	}
+	start := i
+	for i < len(text) && ((text[i] >= 'a' && text[i] <= 'z') || (text[i] >= 'A' && text[i] <= 'Z')) {
+		i++
+	}
+	word := text[start:i]
+	sign := 1
+	if i < len(text) && text[i] == '-' {
+		sign = -1
+		i++
+	}
+	numStart := i
+	for i < len(text) && text[i] >= '0' && text[i] <= '9' {
+		i++
+	}
+	num := 0
+	if numStart < i {
+		if parsed, err := strconv.Atoi(text[numStart:i]); err == nil {
+			num = parsed * sign
+		}
+	}
+	if i < len(text) && text[i] == ' ' {
+		i++
+	}
+	switch strings.ToLower(word) {
+	case "par", "line":
+		b.WriteByte('\n')
+	case "tab":
+		b.WriteByte('\t')
+	case "emdash":
+		b.WriteString("--")
+	case "endash":
+		b.WriteString("-")
+	case "bullet":
+		b.WriteString("- ")
+	case "u":
+		if num < 0 {
+			num += 65536
+		}
+		if num > 0 {
+			b.WriteRune(rune(num))
+		}
+		if i < len(text) && text[i] != '\\' && text[i] != '{' && text[i] != '}' {
+			i++
+		}
+	}
+	return i
+}
+
+func normalizeExtractedText(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	blank := false
+	for _, line := range lines {
+		line = strings.TrimSpace(collapseHorizontalWhitespace(line))
+		if line == "" {
+			if !blank && len(out) > 0 {
+				out = append(out, "")
+				blank = true
+			}
+			continue
+		}
+		out = append(out, line)
+		blank = false
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func collapseHorizontalWhitespace(text string) string {
+	var b strings.Builder
+	lastSpace := false
+	for _, r := range text {
+		if unicode.IsSpace(r) && r != '\n' {
+			if !lastSpace {
+				b.WriteByte(' ')
+				lastSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		lastSpace = false
+	}
+	return b.String()
 }

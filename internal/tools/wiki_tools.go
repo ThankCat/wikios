@@ -10,8 +10,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/google/uuid"
-
 	"wikios/internal/runtime"
 	"wikios/internal/wikiadapter"
 )
@@ -130,11 +128,15 @@ func (t *wikiFindBySlugTool) Validate(args map[string]any) error {
 func (t *wikiFindBySlugTool) Execute(_ context.Context, _ *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
 	slug, _ := requireString(args, "slug")
 	paths := []string{
+		"wiki/sources/" + slug + ".md",
+		"wiki/knowledge/" + slug + ".md",
+		"wiki/policies/" + slug + ".md",
+		"wiki/procedures/" + slug + ".md",
+		"wiki/comparisons/" + slug + ".md",
 		"wiki/concepts/" + slug + ".md",
 		"wiki/entities/" + slug + ".md",
-		"wiki/faq/" + slug + ".md",
-		"wiki/sources/" + slug + ".md",
 		"wiki/synthesis/" + slug + ".md",
+		"wiki/intents/" + slug + ".md",
 	}
 	for _, path := range paths {
 		if _, _, err := t.deps.Resolver.ResolveReadPath(path); err == nil {
@@ -198,15 +200,19 @@ func searchScore(haystack string, rel string, terms []string) int {
 		score += strings.Count(rel, term) * (weight + 2)
 	}
 	switch {
-	case strings.Contains(rel, "wiki/faq/"):
-		score += 7
+	case strings.Contains(rel, "wiki/knowledge/"):
+		score += 10
+	case strings.Contains(rel, "wiki/policies/"), strings.Contains(rel, "wiki/procedures/"), strings.Contains(rel, "wiki/comparisons/"):
+		score += 9
+	case strings.Contains(rel, "wiki/synthesis/"):
+		score += 8
 	case strings.Contains(rel, "wiki/sources/"):
-		score += 5
+		score += 6
 	case strings.Contains(rel, "wiki/concepts/"):
 		score += 4
 	case strings.Contains(rel, "wiki/entities/"):
 		score += 3
-	case strings.Contains(rel, "wiki/synthesis/"):
+	case strings.Contains(rel, "wiki/intents/"):
 		score += 2
 	case strings.Contains(rel, "wiki/index.md"):
 		score -= 2
@@ -642,8 +648,4 @@ graph-excluded: true
 
 %s
 `, title, nowDate(), sourceCount, body)
-}
-
-func newProposalID() string {
-	return "proposal_" + uuid.NewString()
 }

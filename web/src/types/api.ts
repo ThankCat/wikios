@@ -1,7 +1,28 @@
+export type PublicPriceInfo = {
+  expected_price: string;
+  product_type: "static" | "dynamic" | "box";
+  product_bandwidth: number;
+  intended_purchase_quantity: number;
+  box_usage_time: number;
+  box_usage_quantity_min: number;
+  box_usage_quantity_max: number;
+};
+
+export type PublicUserIntent =
+  | {
+      type: "price_adjustment";
+      price_info: PublicPriceInfo;
+    }
+  | {
+      type: "switch_ip";
+    };
+
 export type PublicAnswerResponse = {
   answer: string;
   received_at?: string;
   answered_at?: string;
+  user_intent: PublicUserIntent | null;
+  details?: Record<string, unknown>;
 };
 
 export type PublicChatHistoryItem = {
@@ -127,7 +148,7 @@ export type ReviewItem = {
   question: string;
   original_question?: string;
   draft_answer: string;
-  suggested_faq_path: string;
+  suggested_target_path: string;
   confidence: number;
   boundary_reason: string;
   matched_pages: string[];
@@ -188,7 +209,7 @@ export type WikiTreeItem = {
   is_dir: boolean;
   size: number;
   modified_at: string;
-  preview: "markdown" | "json" | "image" | "download";
+  preview: "markdown" | "download";
 };
 
 export type WikiTreeResponse = {
@@ -201,10 +222,8 @@ export type WikiFileResponse = {
   name: string;
   size: number;
   modified_at: string;
-  preview: "markdown" | "json" | "image" | "download";
+  preview: "markdown" | "download";
   content?: string;
-  data_url?: string;
-  mime_type?: string;
   download_url: string;
 };
 
@@ -214,7 +233,7 @@ export type SyncStatusFile = {
   status: string;
   index: string;
   worktree: string;
-  preview: "markdown" | "json" | "image" | "download";
+  preview: "markdown" | "download";
   default_on: boolean;
   deleted: boolean;
 };

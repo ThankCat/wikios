@@ -22,12 +22,12 @@ const (
 var (
 	reportSlugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 	reportPathPattern = map[Kind]*regexp.Regexp{
-		KindIngest:  regexp.MustCompile(`^wiki/outputs/ingest/\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*-ingest-report\.md$`),
-		KindLint:    regexp.MustCompile(`^wiki/outputs/lint/\d{4}-\d{2}-\d{2}-health-check-report\.md$`),
-		KindReflect: regexp.MustCompile(`^wiki/outputs/reflect/\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*-reflect-report\.md$`),
-		KindMerge:   regexp.MustCompile(`^wiki/outputs/merge/\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*-merge-report\.md$`),
-		KindRepair:  regexp.MustCompile(`^wiki/outputs/repair/\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*-repair-report\.md$`),
-		KindSync:    regexp.MustCompile(`^wiki/outputs/sync/\d{4}-\d{2}-\d{2}-sync-report\.md$`),
+		KindIngest:  regexp.MustCompile(`^outputs/ingest/\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*-ingest-report\.md$`),
+		KindLint:    regexp.MustCompile(`^outputs/lint/\d{4}-\d{2}-\d{2}-health-check-report\.md$`),
+		KindReflect: regexp.MustCompile(`^outputs/reflect/\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*-reflect-report\.md$`),
+		KindMerge:   regexp.MustCompile(`^outputs/merge/\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*-merge-report\.md$`),
+		KindRepair:  regexp.MustCompile(`^outputs/repair/\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*-repair-report\.md$`),
+		KindSync:    regexp.MustCompile(`^outputs/sync/\d{4}-\d{2}-\d{2}-sync-report\.md$`),
 	}
 )
 
@@ -35,15 +35,15 @@ func BuildPath(kind Kind, slug string, date time.Time) (string, error) {
 	day := date.Format("2006-01-02")
 	switch kind {
 	case KindLint:
-		return fmt.Sprintf("wiki/outputs/lint/%s-health-check-report.md", day), nil
+		return fmt.Sprintf("outputs/lint/%s-health-check-report.md", day), nil
 	case KindSync:
-		return fmt.Sprintf("wiki/outputs/sync/%s-sync-report.md", day), nil
+		return fmt.Sprintf("outputs/sync/%s-sync-report.md", day), nil
 	case KindIngest, KindReflect, KindMerge, KindRepair:
 		cleanSlug := NormalizeSlug(slug)
 		if cleanSlug == "" {
 			return "", fmt.Errorf("%s report slug is required", kind)
 		}
-		return fmt.Sprintf("wiki/outputs/%s/%s-%s-%s-report.md", kind, day, cleanSlug, kind), nil
+		return fmt.Sprintf("outputs/%s/%s-%s-%s-report.md", kind, day, cleanSlug, kind), nil
 	default:
 		return "", fmt.Errorf("unsupported report kind %q", kind)
 	}
@@ -51,40 +51,40 @@ func BuildPath(kind Kind, slug string, date time.Time) (string, error) {
 
 func ValidatePath(path string) error {
 	clean := cleanReportPath(path)
-	if !strings.HasPrefix(clean, "wiki/outputs/") {
-		return fmt.Errorf("report must be written under wiki/outputs/")
+	if !strings.HasPrefix(clean, "outputs/") {
+		return fmt.Errorf("report must be written under outputs/")
 	}
 	for kind, pattern := range reportPathPattern {
 		if pattern.MatchString(clean) {
 			return nil
 		}
-		if strings.HasPrefix(clean, "wiki/outputs/"+string(kind)+"/") {
+		if strings.HasPrefix(clean, "outputs/"+string(kind)+"/") {
 			return fmt.Errorf("invalid %s report path %q; expected %s", kind, clean, ExpectedPattern(kind))
 		}
 	}
-	return fmt.Errorf("invalid report path %q; expected wiki/outputs/<ingest|lint|reflect|merge|repair|sync>/...", clean)
+	return fmt.Errorf("invalid report path %q; expected outputs/<ingest|lint|reflect|merge|repair|sync>/...", clean)
 }
 
 func IsOutputPath(path string) bool {
-	return strings.HasPrefix(cleanReportPath(path), "wiki/outputs/")
+	return strings.HasPrefix(cleanReportPath(path), "outputs/")
 }
 
 func ExpectedPattern(kind Kind) string {
 	switch kind {
 	case KindIngest:
-		return "wiki/outputs/ingest/YYYY-MM-DD-<source-slug>-ingest-report.md"
+		return "outputs/ingest/YYYY-MM-DD-<source-slug>-ingest-report.md"
 	case KindLint:
-		return "wiki/outputs/lint/YYYY-MM-DD-health-check-report.md"
+		return "outputs/lint/YYYY-MM-DD-health-check-report.md"
 	case KindReflect:
-		return "wiki/outputs/reflect/YYYY-MM-DD-<topic>-reflect-report.md"
+		return "outputs/reflect/YYYY-MM-DD-<topic>-reflect-report.md"
 	case KindMerge:
-		return "wiki/outputs/merge/YYYY-MM-DD-<primary-slug>-merge-report.md"
+		return "outputs/merge/YYYY-MM-DD-<primary-slug>-merge-report.md"
 	case KindRepair:
-		return "wiki/outputs/repair/YYYY-MM-DD-<topic>-repair-report.md"
+		return "outputs/repair/YYYY-MM-DD-<topic>-repair-report.md"
 	case KindSync:
-		return "wiki/outputs/sync/YYYY-MM-DD-sync-report.md"
+		return "outputs/sync/YYYY-MM-DD-sync-report.md"
 	default:
-		return "wiki/outputs/<kind>/YYYY-MM-DD-<slug>-<kind>-report.md"
+		return "outputs/<kind>/YYYY-MM-DD-<slug>-<kind>-report.md"
 	}
 }
 

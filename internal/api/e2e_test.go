@@ -1,11 +1,9 @@
 package api_test
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -28,23 +26,171 @@ import (
 	"wikios/internal/wikiadapter"
 )
 
-type mockLLM struct{}
+type apiTestFixture struct {
+	router http.Handler
+	root   string
+	deps   service.Deps
+}
 
-type qmdAPITestTool struct{}
+type apiMockLLM struct{}
 
-func (qmdAPITestTool) Name() string {
+func (apiMockLLM) Chat(_ context.Context, _ string, messages []llm.Message) (string, error) {
+	if len(messages) > 0 && strings.Contains(messages[0].Content, "管理员全权限直连模式") {
+		lastUser := ""
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Role == "user" {
+				lastUser = messages[i].Content
+				break
+			}
+		}
+		if strings.Contains(lastUser, "shell_result:") {
+			return `{"action":"final","reply":"已按 AGENT 处理。","summary":"已按 AGENT 处理。","artifacts":["wiki/knowledge/static-ip.md"],"output_files":["wiki/knowledge/static-ip.md"],"warnings":[]}`, nil
+		}
+		if strings.Contains(lastUser, "人工审查通过") {
+			targetPath := apiTestLineValue(lastUser, "target_path: ")
+			sourcePath := apiTestLineValue(lastUser, "source_archive_path: ")
+			answer := apiTestSectionValue(lastUser, "confirmed_answer:")
+			if targetPath == "" {
+				targetPath = "wiki/knowledge/static-ip.md"
+			}
+			command := "mkdir -p " + apiShellQuote(filepath.ToSlash(filepath.Dir(targetPath))) + " && cat >> " + apiShellQuote(targetPath) + " <<'EOF'\n\n## Human Reviewed Knowledge\n\nsource_pages:\n- " + sourcePath + "\n\n" + answer + "\nEOF\n"
+			raw, err := json.Marshal(map[string]any{"action": "shell", "command": command, "reason": "沉淀人工审查知识"})
+			if err != nil {
+				return "", err
+			}
+			return string(raw), nil
+		}
+		return `{"action":"final","reply":"文档已按 AGENT 处理。","summary":"文档已按 AGENT 处理。","artifacts":["wiki/sources/uploaded-document.md"],"output_files":[],"warnings":[]}`, nil
+	}
+	return `{
+  "answer_type": "text",
+  "answer_markdown": "静态 IP 适合账号运营、白名单绑定和远程办公。",
+  "sources": [{"path":"wiki/knowledge/static-ip.md","confidence":"high"}],
+  "confidence": 0.9,
+  "notes": ""
+}`, nil
+}
+
+func apiTestLineValue(text string, prefix string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
+}
+
+func apiTestSectionValue(text string, heading string) string {
+	idx := strings.Index(text, heading)
+	if idx < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(text[idx+len(heading):])
+	if next := strings.Index(rest, "\n\n"); next >= 0 {
+		rest = rest[:next]
+	}
+	return strings.TrimSpace(rest)
+}
+
+func apiShellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func (m apiMockLLM) StreamChat(ctx context.Context, model string, messages []llm.Message, onDelta func(string)) (string, error) {
+	text, err := m.Chat(ctx, model, messages)
+	if err != nil {
+		return "", err
+	}
+	if onDelta != nil {
+		onDelta(text)
+	}
+	return text, nil
+}
+
+type apiStreamingMockLLM struct {
+	apiMockLLM
+}
+
+func (m apiStreamingMockLLM) Chat(ctx context.Context, model string, messages []llm.Message) (string, error) {
+	return m.streamText(ctx, model, messages, nil)
+}
+
+func (m apiStreamingMockLLM) StreamChat(ctx context.Context, model string, messages []llm.Message, onDelta func(string)) (string, error) {
+	return m.streamText(ctx, model, messages, func(delta llm.StreamDelta) {
+		if onDelta != nil && delta.Content != "" {
+			onDelta(delta.Content)
+		}
+	})
+}
+
+func (m apiStreamingMockLLM) StreamChatEvents(ctx context.Context, model string, messages []llm.Message, onDelta func(llm.StreamDelta)) (string, error) {
+	return m.streamText(ctx, model, messages, onDelta)
+}
+
+func (m apiStreamingMockLLM) streamText(ctx context.Context, model string, messages []llm.Message, onDelta func(llm.StreamDelta)) (string, error) {
+	if len(messages) > 0 && strings.Contains(messages[0].Content, "管理员全权限直连模式") {
+		return m.apiMockLLM.Chat(ctx, model, messages)
+	}
+	chunks := []string{
+		`{"answer_mode":"evidence",`,
+		`"answer_markdown":"静态 IP 适合稳定账号和`,
+		`白名单绑定。",`,
+		`"review_question":"",`,
+		`"confidence":0.9,`,
+		`"evidence_confidence":0.9,`,
+		`"review_required":false,`,
+		`"review_reason":"",`,
+		`"suggested_target_path":"",`,
+		`"sources":[{"path":"wiki/knowledge/static-ip.md","confidence":"high"}],`,
+		`"notes":""}`,
+	}
+	if onDelta != nil {
+		onDelta(llm.StreamDelta{ReasoningContent: "先确认是否有正式知识证据。"})
+		for _, chunk := range chunks {
+			onDelta(llm.StreamDelta{Content: chunk})
+		}
+	}
+	return strings.Join(chunks, ""), nil
+}
+
+type apiPublicAnswerTextLLM struct {
+	text string
+}
+
+func (m apiPublicAnswerTextLLM) Chat(ctx context.Context, model string, messages []llm.Message) (string, error) {
+	if len(messages) > 0 && strings.Contains(messages[0].Content, "管理员全权限直连模式") {
+		return apiMockLLM{}.Chat(ctx, model, messages)
+	}
+	return m.text, nil
+}
+
+func (m apiPublicAnswerTextLLM) StreamChat(ctx context.Context, model string, messages []llm.Message, onDelta func(string)) (string, error) {
+	text, err := m.Chat(ctx, model, messages)
+	if err != nil {
+		return "", err
+	}
+	if onDelta != nil {
+		onDelta(text)
+	}
+	return text, nil
+}
+
+type apiQMDTool struct{}
+
+func (apiQMDTool) Name() string {
 	return "exec.qmd"
 }
 
-func (qmdAPITestTool) RiskLevel() runtime.RiskLevel {
+func (apiQMDTool) RiskLevel() runtime.RiskLevel {
 	return runtime.RiskMedium
 }
 
-func (qmdAPITestTool) Validate(_ map[string]any) error {
+func (apiQMDTool) Validate(map[string]any) error {
 	return nil
 }
 
-func (qmdAPITestTool) Execute(_ context.Context, _ *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+func (apiQMDTool) Execute(_ context.Context, _ *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
 	subcommand, _ := args["subcommand"].(string)
 	return runtime.ToolResult{
 		Success:   true,
@@ -53,782 +199,331 @@ func (qmdAPITestTool) Execute(_ context.Context, _ *runtime.ExecEnv, args map[st
 	}, nil
 }
 
-func (mockLLM) Chat(_ context.Context, _ string, messages []llm.Message) (string, error) {
-	if len(messages) > 0 && strings.Contains(messages[0].Content, "管理员全权限直连模式") {
-		return mockDirectAdminResponse(messages), nil
-	}
-	if len(messages) > 0 && strings.Contains(messages[0].Content, "后台深度查询助手") {
-		return `{
-  "answer": "静态IP适合需要长期稳定网络环境的场景，例如账号长期运营、白名单绑定和远程办公。",
-  "matched_pages": ["wiki/sources/customer-qa.md"],
-  "source_paths": ["wiki/sources/customer-qa.md"],
-  "contradictions": [],
-  "limitations": []
-}`, nil
-	}
-	if len(messages) > 0 && strings.Contains(messages[0].Content, "结构化 FAQ 摄入分析器") {
-		return `{
-  "summary": "这是 FAQ 数据分段",
-  "source_title": "FAQ 分段",
-  "source_slug": "faq-segment",
-  "key_points": ["这是 FAQ 数据分段"],
-  "concepts_affected": [],
-  "entities_affected": [],
-  "concepts": [],
-  "entities": [],
-  "contradictions": [],
-  "low_risk_fixes": [],
-  "high_risk_proposals": [],
-  "warnings": [],
-  "possibly_outdated": false
-}`, nil
-	}
-	if len(messages) > 0 && strings.Contains(messages[0].Content, "摄入助手") {
-		return `{
-  "summary": "已完成来源摄入",
-  "source_title": "Customer QA",
-  "source_slug": "customer-qa",
-  "key_points": ["静态IP适合稳定场景"],
-  "concepts_affected": ["静态IP"],
-  "entities_affected": ["四叶天"],
-  "concepts": [],
-  "entities": [],
-  "contradictions": [],
-  "low_risk_fixes": [],
-  "high_risk_proposals": [],
-  "warnings": [],
-  "possibly_outdated": false
-}`, nil
-	}
-	return `{
-  "answer_type": "text",
-  "answer_markdown": "静态IP适合账号运营、白名单绑定和远程办公。",
-  "sources": [{"path":"wiki/sources/customer-qa.md","confidence":"medium"}],
-  "confidence": 0.9,
-  "notes": ""
-}`, nil
-}
+func TestAdminUploadAcceptsDocumentAndRejectsStructuredFiles(t *testing.T) {
+	fixture := newAPITestFixture(t, apiMockLLM{})
+	cookie := loginCookie(t, fixture.router)
 
-func (m mockLLM) StreamChat(ctx context.Context, model string, messages []llm.Message, onDelta func(string)) (string, error) {
-	text, err := m.Chat(ctx, model, messages)
-	if err != nil {
-		return "", err
-	}
-	if onDelta != nil {
-		onDelta(text)
-	}
-	return text, nil
-}
-
-type partialFailFAQStreamLLM struct{}
-
-func (partialFailFAQStreamLLM) Chat(_ context.Context, _ string, messages []llm.Message) (string, error) {
-	if len(messages) > 0 && strings.Contains(messages[0].Content, "管理员全权限直连模式") {
-		userPrompt := ""
-		for i := len(messages) - 1; i >= 0; i-- {
-			if messages[i].Role == "user" {
-				userPrompt = messages[i].Content
-				break
-			}
-		}
-		if strings.Contains(userPrompt, "segment_index: 2") && !strings.Contains(userPrompt, "shell_result:") {
-			return "", fmt.Errorf("context deadline exceeded (Client.Timeout or context cancellation while reading body)")
-		}
-		return mockDirectAdminResponse(messages), nil
-	}
-	if len(messages) > 1 && strings.Contains(messages[0].Content, "结构化 FAQ 摄入分析器") {
-		if strings.Contains(messages[1].Content, "segment_index=2") {
-			return "", fmt.Errorf("context deadline exceeded (Client.Timeout or context cancellation while reading body)")
-		}
-		return `{
-  "summary": "这是 FAQ 数据分段",
-  "source_title": "FAQ 分段",
-  "source_slug": "faq-segment",
-  "key_points": ["这是 FAQ 数据分段"],
-  "concepts_affected": [],
-  "entities_affected": [],
-  "concepts": [],
-  "entities": [],
-  "contradictions": [],
-  "low_risk_fixes": [],
-  "high_risk_proposals": [],
-  "warnings": [],
-  "possibly_outdated": false
-}`, nil
-	}
-	return mockLLM{}.Chat(context.Background(), "", messages)
-}
-
-func (m partialFailFAQStreamLLM) StreamChat(ctx context.Context, model string, messages []llm.Message, onDelta func(string)) (string, error) {
-	text, err := m.Chat(ctx, model, messages)
-	if err != nil {
-		return "", err
-	}
-	if onDelta != nil {
-		onDelta(text)
-	}
-	return text, nil
-}
-
-func mockDirectAdminResponse(messages []llm.Message) string {
-	userPrompt := ""
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" {
-			userPrompt = messages[i].Content
-			break
-		}
-	}
-	fullPrompt := ""
-	if len(messages) > 1 {
-		fullPrompt = messages[1].Content
-	}
-	if strings.Contains(userPrompt, "shell_result:") {
-		switch {
-		case strings.Contains(fullPrompt, "模式提示：\ningest"):
-			return `{"action":"final","reply":"FAQ 数据兼容摄入已完成。","summary":"FAQ 数据兼容摄入已完成。","artifacts":["wiki/sources/faq-generated.md"],"output_files":["wiki/sources/faq-generated.md"],"warnings":[]}`
-		default:
-			return `{"action":"final","reply":"管理员直连执行完成。","summary":"管理员直连执行完成"}`
-		}
-	}
-	switch {
-	case strings.Contains(fullPrompt, "模式提示：\nquery"):
-		return `{"action":"final","reply":"静态IP适合需要长期稳定网络环境的场景，例如账号长期运营、白名单绑定和远程办公。","summary":"管理员查询完成","answer":"静态IP适合需要长期稳定网络环境的场景，例如账号长期运营、白名单绑定和远程办公。","artifacts":["wiki/sources/customer-qa.md"],"output_files":[],"warnings":[]}`
-	case strings.Contains(fullPrompt, "模式提示：\ningest") && strings.Contains(fullPrompt, "source_format: faq"):
-		return `{"action":"final","reply":"FAQ 数据兼容摄入已交由 LLM 按 AGENT 处理。","summary":"FAQ 数据兼容摄入已交由 LLM 按 AGENT 处理。","artifacts":["raw/articles/faq.json"],"output_files":[],"warnings":[]}`
-	case strings.Contains(fullPrompt, "模式提示：\ningest") && strings.Contains(fullPrompt, "segment_title:"):
-		return `{"action":"shell","command":"mkdir -p wiki/sources && printf '%s' '## Summary\n\nmock\n\n## Key Points\n\n- mock\n\n## FAQ Entries\n\n### 测试问题\n\n分类：常见问题\n\n回复：\n测试回复\n' > wiki/sources/faq-generated.md","reason":"写入 FAQ source 页"}`
-	case strings.Contains(fullPrompt, "模式提示：\ningest"):
-		return `{"action":"final","reply":"已完成来源摄入","summary":"已完成来源摄入","artifacts":["wiki/sources/customer-qa.md"],"output_files":["wiki/sources/customer-qa.md"],"warnings":[]}`
-	case strings.Contains(fullPrompt, "模式提示：\nlint"):
-		return `{"action":"final","reply":"健康检查完成","summary":"健康检查完成","warnings":[]}`
-	case strings.Contains(fullPrompt, "模式提示：\nreflect"):
-		return `{"action":"final","reply":"反思分析完成","summary":"反思分析完成","warnings":[]}`
-	case strings.Contains(fullPrompt, "模式提示：\nrepair"):
-		return `{"action":"final","reply":"修复完成","summary":"修复完成","warnings":[]}`
-	case strings.Contains(fullPrompt, "模式提示：\nsync"):
-		return `{"action":"final","reply":"同步完成","summary":"同步完成","warnings":[]}`
-	default:
-		return `{"action":"final","reply":"管理员直连执行完成。","summary":"管理员直连执行完成","warnings":[]}`
-	}
-}
-
-func TestAdminLoginAndChat(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := buildRouter(t)
-
-	loginBody, _ := json.Marshal(map[string]any{
-		"username": "admin",
-		"password": "admin123",
-	})
-	loginRec := httptest.NewRecorder()
-	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/auth/login", bytes.NewReader(loginBody))
-	loginReq.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(loginRec, loginReq)
-	if loginRec.Code != http.StatusOK {
-		t.Fatalf("login failed: %d %s", loginRec.Code, loginRec.Body.String())
-	}
-	cookie := loginRec.Result().Cookies()[0]
-
-	chatBody, _ := json.Marshal(map[string]any{
-		"message":   "静态IP适用什么场景？",
-		"stream":    false,
-		"mode_hint": "query",
-	})
-	chatRec := httptest.NewRecorder()
-	chatReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/chat", bytes.NewReader(chatBody))
-	chatReq.Header.Set("Content-Type", "application/json")
-	chatReq.AddCookie(cookie)
-	router.ServeHTTP(chatRec, chatReq)
-	if chatRec.Code != http.StatusOK {
-		t.Fatalf("chat failed: %d %s", chatRec.Code, chatRec.Body.String())
-	}
-	if !strings.Contains(chatRec.Body.String(), "长期稳定网络环境") {
-		t.Fatalf("unexpected chat response: %s", chatRec.Body.String())
-	}
-}
-
-func TestAdminBearerSessionAuthWorksWithoutCookie(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := buildRouter(t)
-
-	loginBody, _ := json.Marshal(map[string]any{
-		"username": "admin",
-		"password": "admin123",
-	})
-	loginRec := httptest.NewRecorder()
-	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/auth/login", bytes.NewReader(loginBody))
-	loginReq.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(loginRec, loginReq)
-	if loginRec.Code != http.StatusOK {
-		t.Fatalf("login failed: %d %s", loginRec.Code, loginRec.Body.String())
-	}
-	var loginResp struct {
-		Token string `json:"token"`
-	}
-	if err := json.Unmarshal(loginRec.Body.Bytes(), &loginResp); err != nil {
-		t.Fatalf("decode login response: %v", err)
-	}
-	if loginResp.Token == "" {
-		t.Fatalf("login response did not include bearer token: %s", loginRec.Body.String())
-	}
-
-	meRec := httptest.NewRecorder()
-	meReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/auth/me", nil)
-	meReq.Header.Set("Authorization", "Bearer "+loginResp.Token)
-	router.ServeHTTP(meRec, meReq)
-	if meRec.Code != http.StatusOK {
-		t.Fatalf("me with bearer failed: %d %s", meRec.Code, meRec.Body.String())
-	}
-	if !strings.Contains(meRec.Body.String(), "admin") {
-		t.Fatalf("unexpected me response: %s", meRec.Body.String())
-	}
-}
-
-func TestAdminPublicIntentsRequiresAuth(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := buildRouter(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/public-intents", nil)
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected unauthorized, got %d %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestAdminReviewsRequireAuthAndApproveReject(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	root := createFixtureWiki(t)
-	router := buildRouterWithRoot(t, root)
-
-	unauth := httptest.NewRecorder()
-	unauthReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/reviews/count", nil)
-	router.ServeHTTP(unauth, unauthReq)
-	if unauth.Code != http.StatusUnauthorized {
-		t.Fatalf("expected unauthorized, got %d %s", unauth.Code, unauth.Body.String())
-	}
-
-	cookie := loginCookie(t, router)
-	mustWrite(t, filepath.Join(root, "wiki/unconfirmed/review-api-approve.md"), `---
-type: unconfirmed-qa
-status: pending
-question: 代理客户端缓存怎么清理
-draft_answer: 可以先重启客户端。
-suggested_faq_path: wiki/faq/faq-needs-human-taxonomy-review.md
-confidence: 0.4
-graph-excluded: true
----
-
-# 待确认问题
-`)
-
-	nextRec := httptest.NewRecorder()
-	nextReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/reviews/next", nil)
-	nextReq.AddCookie(cookie)
-	router.ServeHTTP(nextRec, nextReq)
-	if nextRec.Code != http.StatusOK || !strings.Contains(nextRec.Body.String(), "代理客户端缓存怎么清理") {
-		t.Fatalf("expected next review, got %d %s", nextRec.Code, nextRec.Body.String())
-	}
-
-	approveBody, _ := json.Marshal(map[string]any{
-		"answer":      "可以先重启客户端，再重新选择线路连接。",
-		"target_path": "wiki/faq/faq-needs-human-taxonomy-review.md",
-	})
-	approveRec := httptest.NewRecorder()
-	approveReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/reviews/review-api-approve/approve", bytes.NewReader(approveBody))
-	approveReq.Header.Set("Content-Type", "application/json")
-	approveReq.AddCookie(cookie)
-	router.ServeHTTP(approveRec, approveReq)
-	if approveRec.Code != http.StatusOK {
-		t.Fatalf("approve failed: %d %s", approveRec.Code, approveRec.Body.String())
-	}
-	approvedFAQ, err := os.ReadFile(filepath.Join(root, "wiki/faq/faq-needs-human-taxonomy-review.md"))
-	if err != nil {
-		t.Fatalf("read approved FAQ: %v", err)
-	}
-	if !strings.Contains(string(approvedFAQ), "重新选择线路连接") {
-		t.Fatalf("expected approved FAQ content, got %s", string(approvedFAQ))
-	}
-
-	mustWrite(t, filepath.Join(root, "wiki/unconfirmed/review-api-reject.md"), `---
-type: unconfirmed-qa
-status: pending
-question: 代理客户端日志怎么删除
-draft_answer: 可以删除日志。
-confidence: 0.4
-graph-excluded: true
----
-
-# 待确认问题
-`)
-	rejectBody, _ := json.Marshal(map[string]any{"reason": "不适合自动回复"})
-	rejectRec := httptest.NewRecorder()
-	rejectReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/reviews/review-api-reject/reject", bytes.NewReader(rejectBody))
-	rejectReq.Header.Set("Content-Type", "application/json")
-	rejectReq.AddCookie(cookie)
-	router.ServeHTTP(rejectRec, rejectReq)
-	if rejectRec.Code != http.StatusOK {
-		t.Fatalf("reject failed: %d %s", rejectRec.Code, rejectRec.Body.String())
-	}
-	if _, err := os.Stat(filepath.Join(root, "wiki/forbidden/review-api-reject.md")); err != nil {
-		t.Fatalf("expected forbidden file: %v", err)
-	}
-
-	mustWrite(t, filepath.Join(root, "wiki/unconfirmed/review-api-delete.md"), `---
-type: unconfirmed-qa
-status: pending
-question: 123455667
-draft_answer: 看起来像测试输入。
-confidence: 0.4
-graph-excluded: true
----
-
-# 待确认问题
-`)
-	deleteRec := httptest.NewRecorder()
-	deleteReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/reviews/review-api-delete/delete", nil)
-	deleteReq.AddCookie(cookie)
-	router.ServeHTTP(deleteRec, deleteReq)
-	if deleteRec.Code != http.StatusOK {
-		t.Fatalf("delete failed: %d %s", deleteRec.Code, deleteRec.Body.String())
-	}
-	if _, err := os.Stat(filepath.Join(root, "wiki/unconfirmed/review-api-delete.md")); !os.IsNotExist(err) {
-		t.Fatalf("expected pending file deleted, err=%v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "wiki/forbidden/review-api-delete.md")); !os.IsNotExist(err) {
-		t.Fatalf("expected no forbidden record for deleted review, err=%v", err)
-	}
-}
-
-func TestAdminContextEstimateRequiresAuthAndReturnsUsage(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := buildRouter(t)
-
-	unauth := httptest.NewRecorder()
-	unauthReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/context/estimate", bytes.NewReader([]byte(`{"message":"hello","stream":true}`)))
-	unauthReq.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(unauth, unauthReq)
-	if unauth.Code != http.StatusUnauthorized {
-		t.Fatalf("expected unauthorized, got %d %s", unauth.Code, unauth.Body.String())
-	}
-
-	cookie := loginCookie(t, router)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/context/estimate", bytes.NewReader([]byte(`{"message":"执行一次健康检查","stream":true,"mode_hint":"lint"}`)))
-	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(cookie)
-	router.ServeHTTP(rec, req)
+	rec := uploadFile(t, fixture.router, cookie, "/api/v1/admin/upload", "product-knowledge.md", []byte("# 产品知识\n\n静态 IP 适合稳定场景。"))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("estimate failed: %d %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `"used_tokens"`) || !strings.Contains(rec.Body.String(), `"remaining_tokens"`) {
-		t.Fatalf("expected context usage, got %s", rec.Body.String())
-	}
-}
-
-func TestAdminChatLintUsesDirectAdmin(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := buildRouter(t)
-	cookie := loginCookie(t, router)
-
-	body, _ := json.Marshal(map[string]any{
-		"message":   "执行一次健康检查",
-		"stream":    false,
-		"mode_hint": "lint",
-	})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/chat", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(cookie)
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("lint chat failed: %d %s", rec.Code, rec.Body.String())
-	}
-	response := rec.Body.String()
-	if strings.Contains(response, "wiki_health") || strings.Contains(response, "qmd_status") {
-		t.Fatalf("lint should not use server LintService details, got %s", response)
-	}
-	if !strings.Contains(response, "健康检查完成") {
-		t.Fatalf("expected health summary, got %s", response)
-	}
-}
-
-func TestAdminWikiFilePreview(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := buildRouter(t)
-	cookie := loginCookie(t, router)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/wiki/file?path=wiki/sources/customer-qa.md", nil)
-	req.AddCookie(cookie)
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("wiki file failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("upload markdown failed: %d %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `"preview":"markdown"`) || !strings.Contains(body, "静态IP适合长期稳定网络环境") {
-		t.Fatalf("unexpected wiki file response: %s", body)
+	if !strings.Contains(body, `"stored_path":"raw/articles/`) || !strings.Contains(body, `"source_format":"document"`) {
+		t.Fatalf("expected document upload details, got %s", body)
 	}
-}
-
-func TestAdminPublicIntentsSaveValidatesAndAppliesPublicBypass(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := buildRouter(t)
-	cookie := loginCookie(t, router)
-
-	getRec := httptest.NewRecorder()
-	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/public-intents", nil)
-	getReq.AddCookie(cookie)
-	router.ServeHTTP(getRec, getReq)
-	if getRec.Code != http.StatusOK || !strings.Contains(getRec.Body.String(), "source") {
-		t.Fatalf("unexpected get response: %d %s", getRec.Code, getRec.Body.String())
-	}
-
-	badBody, _ := json.Marshal(map[string]any{"source": `version: 1
-rules:
-  - name: bad
-    enabled: true
-    priority: 10
-    match:
-      exact: [你好]
-    response: 根据知识库回复
-`})
-	badRec := httptest.NewRecorder()
-	badReq := httptest.NewRequest(http.MethodPut, "/api/v1/admin/public-intents", bytes.NewReader(badBody))
-	badReq.Header.Set("Content-Type", "application/json")
-	badReq.AddCookie(cookie)
-	router.ServeHTTP(badRec, badReq)
-	if badRec.Code != http.StatusBadRequest {
-		t.Fatalf("expected validation failure, got %d %s", badRec.Code, badRec.Body.String())
-	}
-
-	source := `version: 1
-fallbacks:
-  generic: 您好，这个问题我这边暂时没有准确资料，您可以补充一下具体场景，我再为您确认。
-rules:
-  - name: greeting
-    enabled: true
-    priority: 50
-    category: smalltalk
-    match:
-      exact: [你好]
-    response: 您好，请问有什么可以帮您？
-`
-	goodBody, _ := json.Marshal(map[string]any{"source": source})
-	goodRec := httptest.NewRecorder()
-	goodReq := httptest.NewRequest(http.MethodPut, "/api/v1/admin/public-intents", bytes.NewReader(goodBody))
-	goodReq.Header.Set("Content-Type", "application/json")
-	goodReq.AddCookie(cookie)
-	router.ServeHTTP(goodRec, goodReq)
-	if goodRec.Code != http.StatusOK {
-		t.Fatalf("expected save success, got %d %s", goodRec.Code, goodRec.Body.String())
-	}
-
-	answerBody, _ := json.Marshal(map[string]any{"question": "你好"})
-	answerRec := httptest.NewRecorder()
-	answerReq := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(answerBody))
-	answerReq.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(answerRec, answerReq)
-	if answerRec.Code != http.StatusOK {
-		t.Fatalf("expected public answer success, got %d %s", answerRec.Code, answerRec.Body.String())
-	}
-	if !strings.Contains(answerRec.Body.String(), "请问有什么可以帮您") {
-		t.Fatalf("expected saved public intent to bypass LLM, got %s", answerRec.Body.String())
-	}
-}
-
-func TestAdminUploadStoresAndAutoIngestsText(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := buildRouter(t)
-	cookie := loginCookie(t, router)
-
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", "customer.txt")
-	if err != nil {
-		t.Fatalf("create part: %v", err)
-	}
-	_, _ = part.Write([]byte("# Customer QA\n静态IP适合账号运营。"))
-	_ = writer.Close()
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/upload", &body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.AddCookie(cookie)
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("upload failed: %d %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "已完成来源摄入") {
-		t.Fatalf("unexpected upload response: %s", rec.Body.String())
-	}
-}
-
-func TestAdminUploadAutoSegmentsLargeFAQTable(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := buildRouter(t)
-	cookie := loginCookie(t, router)
-
-	var builder strings.Builder
-	builder.WriteString("| 技能分类 | 标准问题 | 回复内容 |\n")
-	builder.WriteString("| --- | --- | --- |\n")
-	for i := 0; i < 140; i++ {
-		builder.WriteString(fmt.Sprintf("| 产品咨询 | 问题 %d？ | 回复内容 %d |\n", i, i))
-	}
-
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", "faq.md")
-	if err != nil {
-		t.Fatalf("create part: %v", err)
-	}
-	_, _ = part.Write([]byte(builder.String()))
-	_ = writer.Close()
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/upload", &body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.AddCookie(cookie)
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected success, got %d %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "FAQ 数据兼容摄入已交由 LLM") {
-		t.Fatalf("unexpected upload reply: %s", rec.Body.String())
-	}
-}
-
-func TestAdminUploadSupportsFAQJSON(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := buildRouter(t)
-	cookie := loginCookie(t, router)
-
-	raw := `{
-  "types": [{"id": "type-1", "category": "账号与登录"}],
-  "faq": [{
-    "id": "faq-1",
-    "question": "你们的IP能访问微信不",
-    "answer": "<p>不可以用于微信登录业务。</p>",
-    "type_id": "type-1",
-    "condition_template": []
-  }],
-  "sims": [{
-    "parent_id": "faq-1",
-    "question": "你们的IP能访问微信不吗"
-  }],
-  "ws_info": {"wordslots": []}
-}`
-
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", "FAQ数据.json")
-	if err != nil {
-		t.Fatalf("create part: %v", err)
-	}
-	_, _ = part.Write([]byte(raw))
-	_ = writer.Close()
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/upload", &body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.AddCookie(cookie)
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected success, got %d %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "FAQ 数据兼容摄入已交由 LLM") {
-		t.Fatalf("unexpected upload reply: %s", rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), "classification_status") || strings.Contains(rec.Body.String(), "category_results") {
-		t.Fatalf("structured upload should not expose server ingest classification details, got %s", rec.Body.String())
-	}
-}
-
-func TestAdminUploadSupportsFAQXLSXViaDirectLLM(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	root := createFixtureWiki(t)
-	router := buildRouterWithRoot(t, root)
-	cookie := loginCookie(t, router)
-
-	raw := buildAPITestFAQXLSX(t, [][]string{
-		{"技能分类", "标准问题", "相似问法", "关键词", "回复内容", "标签", "快捷短语"},
-		{"下载与安装", "怎么下载", "下载什么软件\n下载地址在哪", "下载\n安装", "您可以通过官网下载页面进行下载。", "下载与安装", "Windows安装"},
-		{"产品咨询", "静态IP适合什么场景", "固定IP适合做什么", "静态ip\n固定ip", "静态IP适合长期稳定网络环境。", "产品咨询", "价格怎么咨询"},
-	})
-
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", "知识库问答整理.xlsx")
-	if err != nil {
-		t.Fatalf("create part: %v", err)
-	}
-	_, _ = part.Write(raw)
-	_ = writer.Close()
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/upload/stream", &body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.AddCookie(cookie)
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected success, got %d %s", rec.Code, rec.Body.String())
-	}
-	bodyText := rec.Body.String()
-	if !strings.Contains(bodyText, `"source_format":"faq-xlsx"`) || !strings.Contains(bodyText, "event: ingest_plan") || !strings.Contains(bodyText, "FAQ 数据兼容摄入已交由 LLM") {
-		t.Fatalf("expected xlsx normalized upload to enter direct LLM ingest, got %s", bodyText)
-	}
-	if strings.Contains(bodyText, "classification_status") || strings.Contains(bodyText, "category_results") {
-		t.Fatalf("xlsx structured ingest must not use server classification details, got %s", bodyText)
-	}
-	for _, forbidden := range []string{"segments", "docs", "content", "curated", "kb"} {
-		if _, err := os.Stat(filepath.Join(root, forbidden)); err == nil {
-			t.Fatalf("unexpected wiki structure path created: %s", forbidden)
+	for _, forbidden := range []string{"segments_total", "segment_results", "category_results"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("upload response must not contain %q: %s", forbidden, body)
 		}
 	}
-	entries, err := os.ReadDir(filepath.Join(root, "raw/articles"))
-	if err != nil {
-		t.Fatalf("read raw articles: %v", err)
+	if matches, err := filepath.Glob(filepath.Join(fixture.root, "raw", "articles", "*.md")); err != nil || len(matches) == 0 {
+		t.Fatalf("expected uploaded markdown in raw/articles, matches=%#v err=%v", matches, err)
 	}
-	foundJSON := false
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".json") {
-			foundJSON = true
-			break
+
+	for _, file := range []struct {
+		name    string
+		content []byte
+	}{
+		{name: "structured.json", content: []byte(`{"hello":"world"}`)},
+		{name: "table.xlsx", content: []byte("xlsx")},
+		{name: "rows.csv", content: []byte("a,b\n1,2\n")},
+	} {
+		rec := uploadFile(t, fixture.router, cookie, "/api/v1/admin/upload", file.name, file.content)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected %s to be rejected, got %d %s", file.name, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "只支持文档文件") || !strings.Contains(rec.Body.String(), "不支持 Excel、CSV、TSV、JSON、图片") {
+			t.Fatalf("unexpected reject body for %s: %s", file.name, rec.Body.String())
 		}
 	}
-	if !foundJSON {
-		t.Fatalf("expected uploaded xlsx to be normalized into raw/articles json, got %#v", entries)
-	}
 }
 
-func TestAdminUploadSupportsFAQJSONWithLegacySourceTemplate(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	root := createFixtureWiki(t)
-	mustWrite(t, filepath.Join(root, "wiki/templates/source-template.md"), "## Summary\n\n## Key Points\n\n## Concepts Extracted\n\n## Entities Extracted\n\n## Contradictions\n\n## My Notes\n")
-	router := buildRouterWithRoot(t, root)
-	cookie := loginCookie(t, router)
-
-	raw := `{
-  "types": [{"id": "type-1", "category": "账号与登录"}],
-  "faq": [{
-    "id": "faq-1",
-    "question": "你们的IP能访问微信不",
-    "answer": "<p>不可以用于微信登录业务。</p>",
-    "type_id": "type-1",
-    "condition_template": []
-  }]
-}`
-
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", "FAQ数据.json")
-	if err != nil {
-		t.Fatalf("create part: %v", err)
-	}
-	_, _ = part.Write([]byte(raw))
-	_ = writer.Close()
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/upload", &body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.AddCookie(cookie)
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected success with legacy template, got %d %s", rec.Code, rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), "category_results") || strings.Contains(rec.Body.String(), "classification_status") {
-		t.Fatalf("structured FAQ upload should be delegated to direct LLM, got %s", rec.Body.String())
-	}
-}
-
-func TestPublicAnswerStream(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := buildRouter(t)
-
-	body, _ := json.Marshal(map[string]any{
-		"question": "静态IP适用什么场景？",
-		"history": []map[string]any{
-			{"role": "user", "content": "静态IP是什么？"},
-		},
-	})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer/stream", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("stream failed: %d %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "event: delta") || !strings.Contains(rec.Body.String(), "event: result") {
-		t.Fatalf("expected stream events, got %s", rec.Body.String())
-	}
-}
-
-func TestAdminUploadStreamEmitsSegmentEvents(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := buildRouter(t)
-	cookie := loginCookie(t, router)
-
-	var builder strings.Builder
-	builder.WriteString("| 技能分类 | 标准问题 | 回复内容 |\n")
-	builder.WriteString("| --- | --- | --- |\n")
-	for i := 0; i < 140; i++ {
-		builder.WriteString(fmt.Sprintf("| 产品咨询 | 问题 %d？ | 回复内容 %d |\n", i, i))
-	}
-
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", "faq.md")
-	if err != nil {
-		t.Fatalf("create part: %v", err)
-	}
-	_, _ = part.Write([]byte(builder.String()))
-	_ = writer.Close()
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/upload/stream", &body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.AddCookie(cookie)
-	router.ServeHTTP(rec, req)
+func TestAdminUploadStreamEmitsDocumentOnlyEvents(t *testing.T) {
+	fixture := newAPITestFixture(t, apiMockLLM{})
+	cookie := loginCookie(t, fixture.router)
+	rec := uploadFile(t, fixture.router, cookie, "/api/v1/admin/upload/stream", "guide.txt", []byte("静态 IP 使用说明"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("stream upload failed: %d %s", rec.Code, rec.Body.String())
 	}
-	for _, marker := range []string{"event: meta", "event: ingest_plan", "event: result", "event: done"} {
-		if !strings.Contains(rec.Body.String(), marker) {
-			t.Fatalf("expected %s in stream body, got %s", marker, rec.Body.String())
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: meta") || !strings.Contains(body, `"source_format":"document"`) || !strings.Contains(body, "文档已按 AGENT 处理") {
+		t.Fatalf("expected document stream events, got %s", body)
+	}
+	for _, forbidden := range []string{"event: ingest_plan", "event: segment_start", "event: segment_result", "category_results"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("stream response must not contain %q: %s", forbidden, body)
 		}
 	}
 }
 
-func buildRouter(t *testing.T) http.Handler {
-	t.Helper()
-	return buildRouterWithRootAndClient(t, createFixtureWiki(t), mockLLM{})
-}
-
-func buildRouterWithRoot(t *testing.T, root string) http.Handler {
-	t.Helper()
-	return buildRouterWithRootAndClient(t, root, mockLLM{})
-}
-
-func buildRouterWithRootAndClient(t *testing.T, root string, client llm.Client) http.Handler {
-	t.Helper()
-	workspace := t.TempDir()
-	intentPath := filepath.Join(workspace, "public_intents.yaml")
-	if err := os.WriteFile(intentPath, []byte(`version: 1
-fallbacks:
-  generic: 您好，这个问题我这边暂时没有准确资料，您可以补充一下具体场景，我再为您确认。
-  operation: 您好，这方面我这边暂时没有可直接确认的操作说明，您可以补充一下具体场景，我再为您确认。
-  device_operation: 您好，这项操作我这边暂时没有准确资料，建议您先参考设备说明或联系对应支持人员处理。
-rules:
-  - name: identity
-    enabled: true
-    priority: 80
-    category: service_identity
-    match:
-      exact: [你是谁]
-    response: 您好，我是四叶天代理IP客服，主要为您解答动态IP、静态IP、套餐选择和使用相关问题。
-`), 0o644); err != nil {
-		t.Fatalf("write public intents: %v", err)
+func TestPublicAnswerStreamFlagDefaultsToJSONAndStreamsRealDeltas(t *testing.T) {
+	fixture := newAPITestFixture(t, apiStreamingMockLLM{})
+	plainBody, _ := json.Marshal(map[string]any{
+		"question": "静态 IP 适合什么？",
+	})
+	plainReq := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(plainBody))
+	plainReq.Header.Set("Content-Type", "application/json")
+	plainRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(plainRec, plainReq)
+	if plainRec.Code != http.StatusOK {
+		t.Fatalf("plain public answer failed: %d %s", plainRec.Code, plainRec.Body.String())
 	}
+	if strings.Contains(plainRec.Body.String(), "event:") {
+		t.Fatalf("public answer must default to non-stream JSON, got %s", plainRec.Body.String())
+	}
+	if !strings.Contains(plainRec.Body.String(), `"answer":"静态 IP 适合稳定账号和白名单绑定。"`) {
+		t.Fatalf("unexpected plain public answer: %s", plainRec.Body.String())
+	}
+
+	streamBody, _ := json.Marshal(map[string]any{
+		"question": "静态 IP 适合什么？",
+		"stream":   true,
+	})
+	streamReq := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(streamBody))
+	streamReq.Header.Set("Content-Type", "application/json")
+	streamRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(streamRec, streamReq)
+	if streamRec.Code != http.StatusOK {
+		t.Fatalf("stream public answer failed: %d %s", streamRec.Code, streamRec.Body.String())
+	}
+	if contentType := streamRec.Result().Header.Get("Content-Type"); !strings.Contains(contentType, "text/event-stream") {
+		t.Fatalf("expected text/event-stream, got %q", contentType)
+	}
+	stream := streamRec.Body.String()
+	for _, want := range []string{"event: meta", "event: delta", "event: result", "event: done", "静态 IP 适合稳定账号和白名单绑定。"} {
+		if !strings.Contains(stream, want) {
+			t.Fatalf("expected public stream to contain %q, got %s", want, stream)
+		}
+	}
+	if deltaAt, resultAt := strings.Index(stream, "event: delta"), strings.Index(stream, "event: result"); deltaAt < 0 || resultAt < 0 || deltaAt > resultAt {
+		t.Fatalf("expected answer delta before result, got %s", stream)
+	}
+	for _, forbidden := range []string{"event: prompt", "event: llm_delta", "answer_markdown"} {
+		if strings.Contains(stream, forbidden) {
+			t.Fatalf("public stream must not expose raw internals %q: %s", forbidden, stream)
+		}
+	}
+}
+
+func TestPublicAnswerOrdinaryPriceQuestionDoesNotExposeBulkDiscountIntent(t *testing.T) {
+	fixture := newAPITestFixture(t, apiPublicAnswerTextLLM{text: `{
+  "answer_mode": "evidence",
+  "answer_markdown": "5M 静态 IP 多买多优惠，10 个可以按 90元/个申请。",
+  "review_question": "",
+  "confidence": 0.9,
+  "evidence_confidence": 0.9,
+  "review_required": false,
+  "review_reason": "",
+  "suggested_target_path": "",
+  "sources": [{"path":"wiki/knowledge/static-ip.md","confidence":"high"}],
+  "user_intent": {
+    "type": "price_adjustment",
+    "price_info": {
+      "expected_price": "90元/个",
+      "product_type": "static",
+      "product_bandwidth": 5,
+      "intended_purchase_quantity": 10,
+      "box_usage_time": 0,
+      "box_usage_quantity_min": 0,
+      "box_usage_quantity_max": 0
+    }
+  },
+  "notes": ""
+}`})
+	body, _ := json.Marshal(map[string]any{"question": "5M静态IP多少钱？"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("plain price public answer failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Answer     string                    `json:"answer"`
+		UserIntent *service.PublicUserIntent `json:"user_intent"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.UserIntent != nil {
+		t.Fatalf("ordinary price question must not return user_intent, got %#v", payload.UserIntent)
+	}
+	for _, forbidden := range []string{"多买多优惠", "阶梯优惠", "批量优惠", "90元/个"} {
+		if strings.Contains(payload.Answer, forbidden) {
+			t.Fatalf("ordinary price answer exposed %q: %s", forbidden, payload.Answer)
+		}
+	}
+}
+
+func TestPublicAnswerStrongDiscountRequestReturnsPriceAdjustmentIntent(t *testing.T) {
+	fixture := newAPITestFixture(t, apiPublicAnswerTextLLM{text: priceAdjustmentLLMText()})
+	body, _ := json.Marshal(map[string]any{"question": "我想买10个5M静态IP，可以申请优惠吗？"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("discount public answer failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		UserIntent *service.PublicUserIntent `json:"user_intent"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.UserIntent == nil || payload.UserIntent.Type != "price_adjustment" || payload.UserIntent.PriceInfo == nil {
+		t.Fatalf("expected price_adjustment intent, got %#v", payload.UserIntent)
+	}
+	price := payload.UserIntent.PriceInfo
+	if price.ExpectedPrice != "90元/个" || price.ProductType != "static" || price.ProductBandwidth != 5 || price.IntendedPurchaseQuantity != 10 {
+		t.Fatalf("unexpected price_info: %#v", price)
+	}
+}
+
+func TestPublicAnswerStreamResultIncludesUserIntent(t *testing.T) {
+	fixture := newAPITestFixture(t, apiPublicAnswerTextLLM{text: priceAdjustmentLLMText()})
+	body, _ := json.Marshal(map[string]any{
+		"question": "我想买10个5M静态IP，可以申请优惠吗？",
+		"stream":   true,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stream discount public answer failed: %d %s", rec.Code, rec.Body.String())
+	}
+	stream := rec.Body.String()
+	for _, want := range []string{`event: result`, `"user_intent":{"type":"price_adjustment"`, `"expected_price":"90元/个"`} {
+		if !strings.Contains(stream, want) {
+			t.Fatalf("expected stream to contain %q, got %s", want, stream)
+		}
+	}
+}
+
+func TestPublicAnswerSwitchIPIntent(t *testing.T) {
+	fixture := newAPITestFixture(t, apiPublicAnswerTextLLM{text: `{
+  "answer_mode": "self_answer",
+  "answer_markdown": "可以的，您可以在产品支持的范围内发起切换 IP。",
+  "review_question": "",
+  "confidence": 0.8,
+  "evidence_confidence": 0,
+  "review_required": false,
+  "review_reason": "",
+  "suggested_target_path": "",
+  "sources": [],
+  "user_intent": {"type": "switch_ip"},
+  "notes": ""
+}`})
+	body, _ := json.Marshal(map[string]any{"question": "我要切换IP"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("switch ip public answer failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		UserIntent *service.PublicUserIntent `json:"user_intent"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.UserIntent == nil || payload.UserIntent.Type != "switch_ip" || payload.UserIntent.PriceInfo != nil {
+		t.Fatalf("expected switch_ip intent without price_info, got %#v", payload.UserIntent)
+	}
+}
+
+func priceAdjustmentLLMText() string {
+	return `{
+  "answer_mode": "evidence",
+  "answer_markdown": "可以帮您按 5M 静态 IP 10 个的方案申请 90元/个，最终以人工确认为准。",
+  "review_question": "",
+  "confidence": 0.9,
+  "evidence_confidence": 0.9,
+  "review_required": false,
+  "review_reason": "",
+  "suggested_target_path": "",
+  "sources": [{"path":"wiki/knowledge/static-ip.md","confidence":"high"}],
+  "user_intent": {
+    "type": "price_adjustment",
+    "price_info": {
+      "expected_price": "90元/个",
+      "product_type": "static",
+      "product_bandwidth": 5,
+      "intended_purchase_quantity": 10,
+      "box_usage_time": 0,
+      "box_usage_quantity_min": 0,
+      "box_usage_quantity_max": 0
+    }
+  },
+  "notes": ""
+}`
+}
+
+func TestReviewAPIUsesSuggestedTargetPathAndApprovesKnowledgePage(t *testing.T) {
+	fixture := newAPITestFixture(t, apiMockLLM{})
+	cookie := loginCookie(t, fixture.router)
+	reviewSvc := service.NewReviewQueueService(fixture.deps)
+	item, err := reviewSvc.CreatePending(context.Background(), service.ReviewCreateRequest{
+		Question:            "静态 IP 适合什么场景？",
+		DraftAnswer:         "适合账号运营、白名单绑定和远程办公。",
+		SuggestedTargetPath: "wiki/knowledge/static-ip.md",
+		MatchedPages:        []string{"wiki/knowledge/static-ip.md"},
+	})
+	if err != nil {
+		t.Fatalf("CreatePending: %v", err)
+	}
+
+	nextReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/reviews/next", nil)
+	nextReq.AddCookie(cookie)
+	nextRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(nextRec, nextReq)
+	if nextRec.Code != http.StatusOK {
+		t.Fatalf("review next failed: %d %s", nextRec.Code, nextRec.Body.String())
+	}
+	nextBody := nextRec.Body.String()
+	if !strings.Contains(nextBody, `"suggested_target_path":"wiki/knowledge/static-ip.md"`) {
+		t.Fatalf("expected suggested_target_path in response, got %s", nextBody)
+	}
+
+	approveBody, _ := json.Marshal(map[string]any{"target_path": "wiki/knowledge/static-ip.md"})
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/reviews/"+item.ID+"/approve", bytes.NewReader(approveBody))
+	approveReq.Header.Set("Content-Type", "application/json")
+	approveReq.AddCookie(cookie)
+	approveRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(approveRec, approveReq)
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("review approve failed: %d %s", approveRec.Code, approveRec.Body.String())
+	}
+	targetRaw, err := os.ReadFile(filepath.Join(fixture.root, "wiki", "knowledge", "static-ip.md"))
+	if err != nil {
+		t.Fatalf("read approved target: %v", err)
+	}
+	if target := string(targetRaw); !strings.Contains(target, "## Human Reviewed Knowledge") || !strings.Contains(target, "适合账号运营、白名单绑定和远程办公。") {
+		t.Fatalf("expected approved knowledge content, got %s", target)
+	}
+}
+
+func newAPITestFixture(t *testing.T, client llm.Client) apiTestFixture {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	root := createAPITestWiki(t)
+	workspace := filepath.Join(root, ".workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	intentPath := filepath.Join(root, "wiki", "intents", "public-intents.yaml")
+	mustWrite(t, intentPath, `version: 1
+fallbacks:
+  generic: 您好，这个问题我这边暂时还不能准确确认，您可以补充一下具体场景。
+  operation: 您好，这项操作我这边暂时没有准确资料，建议您先参考设备说明或联系对应支持人员处理。
+  device_operation: 您好，这项操作我这边暂时没有准确资料，建议您先参考设备说明或联系对应支持人员处理。
+rules: []
+`)
 	enabled := true
 	cfg := &config.Config{
 		Server:      config.ServerConfig{Mode: "debug"},
@@ -845,7 +540,7 @@ rules:
 		Sync:          config.SyncConfig{Remote: "origin", Branch: "main"},
 		LLM:           config.LLMConfig{ModelAdmin: "test", ModelPublic: "test"},
 		Storage:       config.StorageConfig{SQLitePath: filepath.Join(workspace, "service.db")},
-		Upload:        config.UploadConfig{MaxTextFileKB: 500, MaxTableRows: 120},
+		Upload:        config.UploadConfig{MaxTextFileKB: 500},
 		PublicIntents: config.PublicIntentsConfig{Enabled: &enabled, Path: intentPath},
 	}
 	dataStore, err := store.Open(cfg.Storage.SQLitePath)
@@ -857,7 +552,7 @@ rules:
 	}
 	registry := runtime.NewRegistry()
 	tools.RegisterAll(registry, tools.Dependencies{Config: cfg, Resolver: wikiadapter.NewPathResolver(cfg.MountedWiki.Root)})
-	registry.Register(qmdAPITestTool{})
+	registry.Register(apiQMDTool{})
 	rt := runtime.NewRuntime(registry, runtime.NewPolicyEngine(), runtime.NewValidator(), runtime.NewAuditLogger())
 	publicIntents := service.NewPublicIntentManager(cfg.PublicIntents)
 	deps := service.Deps{
@@ -882,7 +577,7 @@ rules:
 		publicIntents,
 		service.NewContextCounter(cfg.Context),
 	)
-	return app.NewRouter(cfg, handlers, dataStore)
+	return apiTestFixture{router: app.NewRouter(cfg, handlers, dataStore), root: root, deps: deps}
 }
 
 func loginCookie(t *testing.T, router http.Handler) *http.Cookie {
@@ -895,28 +590,102 @@ func loginCookie(t *testing.T, router http.Handler) *http.Cookie {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("login failed: %d %s", rec.Code, rec.Body.String())
 	}
-	return rec.Result().Cookies()[0]
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("login did not set cookie")
+	}
+	return cookies[0]
 }
 
-func createFixtureWiki(t *testing.T) string {
+func uploadFile(t *testing.T, router http.Handler, cookie *http.Cookie, path string, filename string, content []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, path, &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func createAPITestWiki(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	mustWrite(t, filepath.Join(root, "AGENT.md"), "# AGENT\n")
-	mustWrite(t, filepath.Join(root, "wiki/index.md"), "# index\n")
-	mustWrite(t, filepath.Join(root, "wiki/log.md"), "# log\n")
-	mustWrite(t, filepath.Join(root, "wiki/templates/source-template.md"), "## Summary\n\n## Key Points\n\n## FAQ Entries\n\n## Concepts Extracted\n\n## Entities Extracted\n\n## Contradictions\n\n## My Notes\n")
-	mustWrite(t, filepath.Join(root, "wiki/templates/concept-template.md"), "## Definition\n\n## Key Points\n\n## Contradictions\n\n## Sources\n\n## Evolution Log\n")
-	mustWrite(t, filepath.Join(root, "wiki/templates/entity-template.md"), "## Description\n\n## Key Contributions\n\n## Sources\n")
-	mustWrite(t, filepath.Join(root, "wiki/sources/customer-qa.md"), `---
-title: Customer QA
+	mustWrite(t, filepath.Join(root, "AGENT.md"), `# AGENT
+
+## 定位
+
+测试知识库治理规则。
+
+## INGEST
+
+raw/ 只读，正式知识写入 wiki/sources 和正式知识目录。
+
+## QUERY
+
+优先查询 knowledge、policies、procedures、comparisons、synthesis，再补充 concepts、entities、intents。
+
+## LINT / REPAIR / REFLECT / MERGE
+
+报告写入根目录 outputs/。
+`)
+	for _, dir := range []string{
+		"raw/articles",
+		"outputs",
+		"wiki/sources",
+		"wiki/knowledge",
+		"wiki/policies",
+		"wiki/procedures",
+		"wiki/comparisons",
+		"wiki/concepts",
+		"wiki/entities",
+		"wiki/synthesis",
+		"wiki/intents",
+		"wiki/templates",
+		"wiki/unconfirmed",
+		"wiki/forbidden",
+	} {
+		if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(dir)), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	mustWrite(t, filepath.Join(root, "wiki", "index.md"), "# index\n")
+	mustWrite(t, filepath.Join(root, "wiki", "log.md"), "# log\n")
+	mustWrite(t, filepath.Join(root, "wiki", "knowledge", "static-ip.md"), `---
+title: 静态 IP
+type: product_knowledge
+source_pages:
+  - wiki/sources/customer-doc.md
+---
+
+# 静态 IP
+
+## Summary
+
+静态 IP 适合账号运营、白名单绑定和远程办公。
+`)
+	mustWrite(t, filepath.Join(root, "wiki", "sources", "customer-doc.md"), `---
+title: Customer Document
+type: source
 raw_file: raw/articles/customer.txt
 ---
 
 ## Summary
 
-静态IP适合长期稳定网络环境。
+静态 IP 适合长期稳定网络环境。
 `)
-	mustWrite(t, filepath.Join(root, "raw/articles/customer.txt"), "# Customer QA\n静态IP适合账号运营。")
+	mustWrite(t, filepath.Join(root, "raw", "articles", "customer.txt"), "静态 IP 适合账号运营。")
 	return root
 }
 
@@ -928,93 +697,4 @@ func mustWrite(t *testing.T, path string, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
-}
-
-func buildAPITestFAQXLSX(t *testing.T, rows [][]string) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	zipper := zip.NewWriter(&buf)
-	writeZipFile(t, zipper, "[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
-</Types>`)
-	writeZipFile(t, zipper, "_rels/.rels", `<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
-</Relationships>`)
-	writeZipFile(t, zipper, "xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets><sheet name="FAQ" sheetId="1" r:id="rId1"/></sheets>
-</workbook>`)
-	writeZipFile(t, zipper, "xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
-</Relationships>`)
-	shared := []string{}
-	index := map[string]int{}
-	ref := func(value string) int {
-		if existing, ok := index[value]; ok {
-			return existing
-		}
-		index[value] = len(shared)
-		shared = append(shared, value)
-		return len(shared) - 1
-	}
-	var sheet strings.Builder
-	sheet.WriteString(`<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>`)
-	for r, row := range rows {
-		sheet.WriteString(fmt.Sprintf(`<row r="%d">`, r+1))
-		for c, cell := range row {
-			sheet.WriteString(fmt.Sprintf(`<c r="%s%d" t="s"><v>%d</v></c>`, excelColumnName(c+1), r+1, ref(cell)))
-		}
-		sheet.WriteString(`</row>`)
-	}
-	sheet.WriteString(`</sheetData></worksheet>`)
-	writeZipFile(t, zipper, "xl/worksheets/sheet1.xml", sheet.String())
-	var sharedXML strings.Builder
-	sharedXML.WriteString(fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="%d" uniqueCount="%d">`, len(shared), len(shared)))
-	for _, value := range shared {
-		sharedXML.WriteString(`<si><t>`)
-		sharedXML.WriteString(escapeXMLText(value))
-		sharedXML.WriteString(`</t></si>`)
-	}
-	sharedXML.WriteString(`</sst>`)
-	writeZipFile(t, zipper, "xl/sharedStrings.xml", sharedXML.String())
-	if err := zipper.Close(); err != nil {
-		t.Fatalf("close xlsx zip: %v", err)
-	}
-	return buf.Bytes()
-}
-
-func writeZipFile(t *testing.T, zipper *zip.Writer, name string, content string) {
-	t.Helper()
-	writer, err := zipper.Create(name)
-	if err != nil {
-		t.Fatalf("create zip entry %s: %v", name, err)
-	}
-	if _, err := writer.Write([]byte(content)); err != nil {
-		t.Fatalf("write zip entry %s: %v", name, err)
-	}
-}
-
-func excelColumnName(index int) string {
-	name := ""
-	for index > 0 {
-		index--
-		name = string(rune('A'+index%26)) + name
-		index /= 26
-	}
-	return name
-}
-
-func escapeXMLText(value string) string {
-	value = strings.ReplaceAll(value, "&", "&amp;")
-	value = strings.ReplaceAll(value, "<", "&lt;")
-	value = strings.ReplaceAll(value, ">", "&gt;")
-	return value
 }

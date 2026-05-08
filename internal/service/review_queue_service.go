@@ -24,7 +24,7 @@ type ReviewItem struct {
 	Question            string   `json:"question"`
 	OriginalQuestion    string   `json:"original_question"`
 	DraftAnswer         string   `json:"draft_answer"`
-	SuggestedFAQPath    string   `json:"suggested_faq_path"`
+	SuggestedTargetPath string   `json:"suggested_target_path"`
 	Confidence          float64  `json:"confidence"`
 	BoundaryReason      string   `json:"boundary_reason"`
 	MatchedPages        []string `json:"matched_pages"`
@@ -56,7 +56,7 @@ type ReviewCreateRequest struct {
 	Question            string
 	OriginalQuestion    string
 	DraftAnswer         string
-	SuggestedFAQPath    string
+	SuggestedTargetPath string
 	Confidence          float64
 	BoundaryReason      string
 	MatchedPages        []string
@@ -102,10 +102,7 @@ func (s *ReviewQueueService) Next(_ context.Context, cursor string) (*ReviewNext
 	if err != nil {
 		return nil, err
 	}
-	resp := &ReviewNextResponse{
-		PendingCount: len(items),
-		TargetPaths:  targets,
-	}
+	resp := &ReviewNextResponse{PendingCount: len(items), TargetPaths: targets}
 	if len(items) == 0 {
 		return resp, nil
 	}
@@ -136,9 +133,9 @@ func (s *ReviewQueueService) CreatePending(_ context.Context, req ReviewCreateRe
 	if answer == "" {
 		return nil, fmt.Errorf("draft answer is required")
 	}
-	targetPath, err := s.normalizeFAQTargetPath(req.SuggestedFAQPath)
+	targetPath, err := s.normalizeReviewTargetPath(req.SuggestedTargetPath)
 	if err != nil {
-		targetPath = s.defaultReviewFAQPath()
+		targetPath = s.defaultReviewTargetPath()
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	id := reviewIDForMessage(req, question, answer, now)
@@ -155,35 +152,33 @@ func (s *ReviewQueueService) CreatePending(_ context.Context, req ReviewCreateRe
 		rel = "wiki/unconfirmed/" + id + ".md"
 		abs = filepath.Join(s.deps.Config.MountedWiki.Root, filepath.FromSlash(rel))
 	}
-	confidence := req.Confidence
+	confidence := clampConfidence(req.Confidence)
 	if confidence <= 0 {
 		confidence = 0.45
 	}
-	confidence = clampConfidence(confidence)
-	evidenceConfidence := clampConfidence(req.EvidenceConfidence)
 	retrievedPages := trimStringSlice(firstNonEmptyStringSlice(req.RetrievedPages, req.MatchedPages), 0)
 	doc := &wikiadapter.Document{
 		Frontmatter: map[string]any{
-			"type":                 "unconfirmed-qa",
-			"status":               "pending",
-			"question":             oneLineFrontmatter(question),
-			"original_question":    oneLineFrontmatter(req.OriginalQuestion),
-			"draft_answer":         oneLineFrontmatter(answer),
-			"created_at":           now,
-			"confidence":           confidence,
-			"matched_pages":        trimStringSlice(req.MatchedPages, 0),
-			"suggested_faq_path":   targetPath,
-			"boundary_reason":      oneLineFrontmatter(req.BoundaryReason),
-			"session_id":           oneLineFrontmatter(req.SessionID),
-			"question_message_id":  oneLineFrontmatter(req.QuestionMessageID),
-			"answer_message_id":    oneLineFrontmatter(req.AnswerMessageID),
-			"question_created_at":  oneLineFrontmatter(req.QuestionCreatedAt),
-			"answer_created_at":    oneLineFrontmatter(req.AnswerCreatedAt),
-			"answer_mode":          oneLineFrontmatter(req.AnswerMode),
-			"evidence_confidence":  evidenceConfidence,
-			"retrieved_pages":      retrievedPages,
-			"conversation_excerpt": trimStringSlice(req.ConversationExcerpt, 0),
-			"graph-excluded":       true,
+			"type":                  "unconfirmed-knowledge",
+			"status":                "pending",
+			"question":              oneLineFrontmatter(question),
+			"original_question":     oneLineFrontmatter(req.OriginalQuestion),
+			"draft_answer":          oneLineFrontmatter(answer),
+			"created_at":            now,
+			"confidence":            confidence,
+			"matched_pages":         trimStringSlice(req.MatchedPages, 0),
+			"suggested_target_path": targetPath,
+			"boundary_reason":       oneLineFrontmatter(req.BoundaryReason),
+			"session_id":            oneLineFrontmatter(req.SessionID),
+			"question_message_id":   oneLineFrontmatter(req.QuestionMessageID),
+			"answer_message_id":     oneLineFrontmatter(req.AnswerMessageID),
+			"question_created_at":   oneLineFrontmatter(req.QuestionCreatedAt),
+			"answer_created_at":     oneLineFrontmatter(req.AnswerCreatedAt),
+			"answer_mode":           oneLineFrontmatter(req.AnswerMode),
+			"evidence_confidence":   clampConfidence(req.EvidenceConfidence),
+			"retrieved_pages":       retrievedPages,
+			"conversation_excerpt":  trimStringSlice(req.ConversationExcerpt, 0),
+			"graph-excluded":        true,
 		},
 		Body: buildPendingReviewBody(question, answer, req, targetPath, retrievedPages),
 	}
@@ -230,11 +225,11 @@ func (s *ReviewQueueService) Approve(ctx context.Context, id string, req ReviewA
 	if answer == "" {
 		return nil, fmt.Errorf("answer is required")
 	}
-	targetPath, err := s.normalizeFAQTargetPath(firstNonEmpty(req.TargetPath, item.SuggestedFAQPath))
+	targetPath, err := s.normalizeReviewTargetPath(firstNonEmpty(req.TargetPath, item.SuggestedTargetPath))
 	if err != nil {
 		return nil, err
 	}
-	faqBackup, err := s.backupWikiFile(targetPath)
+	targetBackup, err := s.backupWikiFile(targetPath)
 	if err != nil {
 		return nil, err
 	}
@@ -247,19 +242,19 @@ func (s *ReviewQueueService) Approve(ctx context.Context, id string, req ReviewA
 	if err := s.writeReviewSourceArchive(sourcePath, item, "approved", question, answer, targetPath, reviewedAt, "管理员审查通过"); err != nil {
 		return nil, err
 	}
-	if err := s.appendApprovedFAQEntry(targetPath, id, question, answer, sourcePath); err != nil {
+	if err := s.applyApprovedReviewViaLLM(ctx, item, question, answer, targetPath, sourcePath, reviewedAt); err != nil {
 		_ = s.restoreWikiFile(sourceBackup)
-		_ = s.restoreWikiFile(faqBackup)
+		_ = s.restoreWikiFile(targetBackup)
 		return nil, err
 	}
 	if err := s.runQMDUpdate(ctx, question); err != nil {
 		sourceRollbackErr := s.restoreWikiFile(sourceBackup)
-		faqRollbackErr := s.restoreWikiFile(faqBackup)
-		if sourceRollbackErr != nil || faqRollbackErr != nil {
-			rollbackErr := firstNonNilError(sourceRollbackErr, faqRollbackErr)
-			return nil, fmt.Errorf("qmd update failed and FAQ rollback failed: %w; rollback error: %v", err, rollbackErr)
+		targetRollbackErr := s.restoreWikiFile(targetBackup)
+		if sourceRollbackErr != nil || targetRollbackErr != nil {
+			rollbackErr := firstNonNilError(sourceRollbackErr, targetRollbackErr)
+			return nil, fmt.Errorf("qmd update failed and knowledge rollback failed: %w; rollback error: %v", err, rollbackErr)
 		}
-		return nil, fmt.Errorf("FAQ 已回滚，qmd update 失败，请修复 qmd 后重试: %w", err)
+		return nil, fmt.Errorf("知识页已回滚，qmd update 失败，请修复 qmd 后重试: %w", err)
 	}
 	if err := os.Remove(filepath.Join(s.deps.Config.MountedWiki.Root, filepath.FromSlash(item.Path))); err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -267,7 +262,7 @@ func (s *ReviewQueueService) Approve(ctx context.Context, id string, req ReviewA
 	s.afterReviewIngest(ctx, "approve", targetPath, sourcePath, question)
 	item.Question = question
 	item.DraftAnswer = answer
-	item.SuggestedFAQPath = targetPath
+	item.SuggestedTargetPath = targetPath
 	return item, nil
 }
 
@@ -293,7 +288,7 @@ func (s *ReviewQueueService) Reject(ctx context.Context, id string, req ReviewRe
 	reviewedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	doc := &wikiadapter.Document{
 		Frontmatter: map[string]any{
-			"type":                 "forbidden-qa",
+			"type":                 "forbidden-question",
 			"status":               "rejected",
 			"ingest_status":        "review-rejected",
 			"review_id":            id,
@@ -358,10 +353,9 @@ func (s *ReviewQueueService) pendingItems() ([]ReviewItem, error) {
 	}
 	out := make([]ReviewItem, 0, len(items))
 	for _, item := range items {
-		if strings.TrimSpace(item.Question) == "" {
-			continue
+		if strings.TrimSpace(item.Question) != "" {
+			out = append(out, item)
 		}
-		out = append(out, item)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt == out[j].CreatedAt {
@@ -387,10 +381,9 @@ func (s *ReviewQueueService) reviewItemsInDir(relDir string) ([]ReviewItem, erro
 			continue
 		}
 		item, err := s.readReviewItem(filepath.ToSlash(filepath.Join(relDir, entry.Name())))
-		if err != nil {
-			continue
+		if err == nil {
+			items = append(items, *item)
 		}
-		items = append(items, *item)
 	}
 	return items, nil
 }
@@ -416,7 +409,7 @@ func (s *ReviewQueueService) readReviewItem(rel string) (*ReviewItem, error) {
 		Question:            stringFromFrontmatter(doc.Frontmatter, "question"),
 		OriginalQuestion:    stringFromFrontmatter(doc.Frontmatter, "original_question"),
 		DraftAnswer:         stringFromFrontmatter(doc.Frontmatter, "draft_answer"),
-		SuggestedFAQPath:    stringFromFrontmatter(doc.Frontmatter, "suggested_faq_path"),
+		SuggestedTargetPath: stringFromFrontmatter(doc.Frontmatter, "suggested_target_path"),
 		BoundaryReason:      stringFromFrontmatter(doc.Frontmatter, "boundary_reason"),
 		MatchedPages:        stringsFromFrontmatter(doc.Frontmatter, "matched_pages"),
 		CreatedAt:           stringFromFrontmatter(doc.Frontmatter, "created_at"),
@@ -447,31 +440,25 @@ func (s *ReviewQueueService) readReviewItem(rel string) (*ReviewItem, error) {
 }
 
 func (s *ReviewQueueService) reviewTargets() ([]ReviewTarget, error) {
-	root := filepath.Join(s.deps.Config.MountedWiki.Root, "wiki", "faq")
-	entries, err := os.ReadDir(root)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
-	}
 	targets := []ReviewTarget{}
-	if err == nil {
+	for _, dir := range reviewWritableDirs() {
+		root := filepath.Join(s.deps.Config.MountedWiki.Root, filepath.FromSlash(dir))
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
 		for _, entry := range entries {
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 				continue
 			}
-			rel := filepath.ToSlash(filepath.Join("wiki/faq", entry.Name()))
-			title := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-			raw, readErr := os.ReadFile(filepath.Join(root, entry.Name()))
-			if readErr == nil {
-				if doc, parseErr := wikiadapter.ParseDocument(string(raw)); parseErr == nil {
-					if value, _ := doc.Frontmatter["title"].(string); strings.TrimSpace(value) != "" {
-						title = strings.TrimSpace(value)
-					}
-				}
-			}
-			targets = append(targets, ReviewTarget{Path: rel, Title: title})
+			rel := filepath.ToSlash(filepath.Join(dir, entry.Name()))
+			targets = append(targets, ReviewTarget{Path: rel, Title: s.targetTitle(rel)})
 		}
 	}
-	defaultPath := s.defaultReviewFAQPath()
+	defaultPath := s.defaultReviewTargetPath()
 	foundDefault := false
 	for _, target := range targets {
 		if target.Path == defaultPath {
@@ -480,7 +467,7 @@ func (s *ReviewQueueService) reviewTargets() ([]ReviewTarget, error) {
 		}
 	}
 	if !foundDefault {
-		targets = append(targets, ReviewTarget{Path: defaultPath, Title: s.defaultReviewFAQTitle()})
+		targets = append(targets, ReviewTarget{Path: defaultPath, Title: s.defaultReviewTargetTitle()})
 	}
 	sort.Slice(targets, func(i, j int) bool {
 		if targets[i].Title == targets[j].Title {
@@ -491,70 +478,62 @@ func (s *ReviewQueueService) reviewTargets() ([]ReviewTarget, error) {
 	return targets, nil
 }
 
-func (s *ReviewQueueService) appendApprovedFAQEntry(targetPath string, reviewID string, question string, answer string, sourceArchivePath string) error {
-	profile, _ := s.loadKnowledgeProfile()
-	entry := canonicalFAQEntry{
-		ID:       "review-" + stableShortHash(reviewID),
-		Category: "人工审查",
-		Question: strings.TrimSpace(question),
-		Tags:     []string{"manual-review", "review-ingest"},
-		Answer:   strings.TrimSpace(answer),
-		ConditionNotes: []string{
-			"来源归档：" + sourceArchivePath + "；管理员审查通过。",
-			"审查摄入：通过后作为正式 FAQ 证据。",
+func (s *ReviewQueueService) applyApprovedReviewViaLLM(ctx context.Context, item *ReviewItem, question string, answer string, targetPath string, sourceArchivePath string, reviewedAt string) error {
+	if s.deps.LLM == nil {
+		return fmt.Errorf("review approval requires an LLM client")
+	}
+	execution := NewExecution("review-approve")
+	_, err := NewDirectAdminService(s.deps).Run(ctx, execution, "review-approve-"+stableShortHash(item.ID+question), DirectAdminRequest{
+		Message:  buildReviewApprovalDirectMessage(item, question, answer, targetPath, sourceArchivePath, reviewedAt),
+		ModeHint: "ingest",
+		Context: map[string]any{
+			"stored_path":   sourceArchivePath,
+			"path":          sourceArchivePath,
+			"file_name":     filepath.Base(sourceArchivePath),
+			"source_format": "human-review",
 		},
+	})
+	if err != nil {
+		return err
 	}
-	entryBlock := renderFAQEntriesSectionWithProfile([]canonicalFAQEntry{entry}, profile, nil, nil, sourceArchivePath)
+	if err := s.verifyReviewTargetUpdated(targetPath, sourceArchivePath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func buildReviewApprovalDirectMessage(item *ReviewItem, question string, answer string, targetPath string, sourceArchivePath string, reviewedAt string) string {
+	return strings.Join([]string{
+		"请按 AGENT.md 将人工审查通过的知识沉淀到正式知识页或意图页。",
+		"",
+		"要求：",
+		"- 读取并保留来源归档中的关键信息，raw/ 只读。",
+		"- 创建或更新 target_path 指向的正式页面，并保持 source_pages 可追溯到 source_archive_path。",
+		"- 不追加问答模板章节；按 AGENT.md 的知识页、政策页、流程页、对比页、概念页、实体页、综合页或意图页结构沉淀。",
+		"- 更新 frontmatter 中的 source_pages 和 last_verified；必要时维护 wikilink、index/log。服务端会在你完成后执行 qmd update。",
+		"- 完成后返回 final，并在 artifacts 或 output_files 中列出更新页面。",
+		"",
+		"review_id: " + item.ID,
+		"reviewed_at: " + reviewedAt,
+		"target_path: " + targetPath,
+		"source_archive_path: " + sourceArchivePath,
+		"question:",
+		strings.TrimSpace(question),
+		"",
+		"confirmed_answer:",
+		strings.TrimSpace(answer),
+	}, "\n")
+}
+
+func (s *ReviewQueueService) verifyReviewTargetUpdated(targetPath string, sourceArchivePath string) error {
 	abs := filepath.Join(s.deps.Config.MountedWiki.Root, filepath.FromSlash(targetPath))
-	if _, err := os.Stat(abs); os.IsNotExist(err) {
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-			return err
-		}
-		title := s.targetTitle(targetPath)
-		doc := &wikiadapter.Document{
-			Frontmatter: map[string]any{
-				"title":           title,
-				"type":            "faq",
-				"date":            nowDate(),
-				"processed":       true,
-				"last_verified":   nowDate(),
-				"source_family":   "manual-review",
-				"source_format":   "review",
-				"category":        title,
-				"faq_entry_count": 0,
-			},
-			Body: strings.Join([]string{
-				"# " + title,
-				"",
-				"## Summary",
-				"",
-				"本页保存通过人工审查后沉淀的客服 FAQ。",
-				"",
-				"## Key Points",
-				"",
-				"- 人工审查通过的问题可以作为公开客服问答的直接依据。",
-				"",
-				"## FAQ Entries",
-				"",
-			}, "\n"),
-		}
-		if err := os.WriteFile(abs, []byte(wikiadapter.RenderDocument(doc)), 0o644); err != nil {
-			return err
-		}
-	}
 	raw, err := os.ReadFile(abs)
 	if err != nil {
-		return err
+		return fmt.Errorf("LLM did not create or update target knowledge page %s: %w", targetPath, err)
 	}
-	doc, err := wikiadapter.ParseDocument(string(raw))
-	if err != nil {
-		return err
-	}
-	doc.Body = appendFAQEntryBlock(doc.Body, entryBlock)
-	doc.Frontmatter["last_verified"] = nowDate()
-	doc.Frontmatter["faq_entry_count"] = intFromFrontmatter(doc.Frontmatter, "faq_entry_count") + 1
-	if err := os.WriteFile(abs, []byte(wikiadapter.RenderDocument(doc)), 0o644); err != nil {
-		return err
+	content := string(raw)
+	if !strings.Contains(content, sourceArchivePath) {
+		return fmt.Errorf("LLM-updated target page %s does not reference source archive %s", targetPath, sourceArchivePath)
 	}
 	return nil
 }
@@ -563,11 +542,12 @@ func (s *ReviewQueueService) writeReviewSourceArchive(rel string, item *ReviewIt
 	abs := filepath.Join(s.deps.Config.MountedWiki.Root, filepath.FromSlash(rel))
 	doc := &wikiadapter.Document{
 		Frontmatter: map[string]any{
-			"title":                item.ID + " 人工审查摄入归档",
-			"type":                 "review-ingest-source",
+			"title":                item.ID + " 人工审查来源归档",
+			"type":                 "source",
+			"source_kind":          "human-review",
 			"status":               status,
 			"review_id":            item.ID,
-			"source_path":          item.Path,
+			"raw_file":             item.Path,
 			"target_path":          targetPath,
 			"question":             oneLineFrontmatter(finalQuestion),
 			"original_question":    oneLineFrontmatter(firstNonEmpty(item.OriginalQuestion, item.Question)),
@@ -575,7 +555,7 @@ func (s *ReviewQueueService) writeReviewSourceArchive(rel string, item *ReviewIt
 			"final_answer":         oneLineFrontmatter(finalAnswer),
 			"created_at":           item.CreatedAt,
 			"reviewed_at":          reviewedAt,
-			"confidence":           item.Confidence,
+			"confidence":           "high",
 			"answer_mode":          oneLineFrontmatter(item.AnswerMode),
 			"evidence_confidence":  item.EvidenceConfidence,
 			"matched_pages":        trimStringSlice(item.MatchedPages, 0),
@@ -586,7 +566,6 @@ func (s *ReviewQueueService) writeReviewSourceArchive(rel string, item *ReviewIt
 			"question_created_at":  oneLineFrontmatter(item.QuestionCreatedAt),
 			"answer_created_at":    oneLineFrontmatter(item.AnswerCreatedAt),
 			"conversation_excerpt": trimStringSlice(item.ConversationExcerpt, 0),
-			"graph-excluded":       true,
 		},
 		Body: buildReviewSourceArchiveBody(item, status, finalQuestion, finalAnswer, targetPath, reviewedAt, reason),
 	}
@@ -598,22 +577,19 @@ func (s *ReviewQueueService) writeReviewSourceArchive(rel string, item *ReviewIt
 
 func (s *ReviewQueueService) afterReviewIngest(ctx context.Context, action string, path string, sourcePath string, question string) {
 	env := s.env("admin", "review-ingest-"+stableShortHash(action+question), "", "")
-	indexSection := "## Review Ingest"
-	indexEntry := fmt.Sprintf("- %s | ingest-review-%s | %s", nowDate(), action, path)
+	indexEntry := fmt.Sprintf("- %s | review-%s | %s", nowDate(), action, path)
 	if sourcePath != "" {
 		indexEntry += " | source=" + sourcePath
 	}
 	_, _ = s.deps.Runtime.Execute(ctx, env, runtimeCall("wiki.update_index_entry", map[string]any{
-		"section": indexSection,
+		"section": "## Review Ingest",
 		"entry":   indexEntry,
 	}))
 	logLine := fmt.Sprintf("%s | ingest | review-%s | %s", nowDate(), action, path)
 	if sourcePath != "" {
 		logLine += " | source=" + sourcePath
 	}
-	_, _ = s.deps.Runtime.Execute(ctx, env, runtimeCall("wiki.append_log", map[string]any{
-		"line": logLine,
-	}))
+	_, _ = s.deps.Runtime.Execute(ctx, env, runtimeCall("wiki.append_log", map[string]any{"line": logLine}))
 }
 
 type wikiFileBackup struct {
@@ -683,18 +659,28 @@ func (s *ReviewQueueService) runQMDUpdate(ctx context.Context, question string) 
 	return fmt.Errorf("%s", message)
 }
 
-func (s *ReviewQueueService) normalizeFAQTargetPath(raw string) (string, error) {
+func (s *ReviewQueueService) normalizeReviewTargetPath(raw string) (string, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
-		value = s.defaultReviewFAQPath()
+		value = s.defaultReviewTargetPath()
 	}
 	clean := filepath.ToSlash(filepath.Clean(value))
 	clean = strings.TrimPrefix(clean, "./")
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
 		return "", fmt.Errorf("invalid target path")
 	}
-	if !strings.HasPrefix(clean, "wiki/faq/") || !strings.HasSuffix(clean, ".md") {
-		return "", fmt.Errorf("target_path must be under wiki/faq")
+	if !strings.HasSuffix(clean, ".md") {
+		return "", fmt.Errorf("target_path must be a markdown file")
+	}
+	allowed := false
+	for _, dir := range reviewWritableDirs() {
+		if strings.HasPrefix(clean, dir+"/") {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return "", fmt.Errorf("target_path must be under an official knowledge directory")
 	}
 	slug := strings.TrimSuffix(filepath.Base(clean), filepath.Ext(clean))
 	if !wikiadapter.IsValidSlug(slug) {
@@ -703,60 +689,46 @@ func (s *ReviewQueueService) normalizeFAQTargetPath(raw string) (string, error) 
 	return clean, nil
 }
 
-func (s *ReviewQueueService) defaultReviewFAQPath() string {
-	return "wiki/faq/" + faqPageSlug(s.defaultReviewFAQSlug()) + ".md"
+func reviewWritableDirs() []string {
+	return []string{
+		"wiki/knowledge",
+		"wiki/policies",
+		"wiki/procedures",
+		"wiki/comparisons",
+		"wiki/concepts",
+		"wiki/entities",
+		"wiki/synthesis",
+		"wiki/intents",
+	}
 }
 
-func (s *ReviewQueueService) defaultReviewFAQSlug() string {
-	profile, _ := s.loadKnowledgeProfile()
-	return profile.reviewCategory().Slug
+func (s *ReviewQueueService) defaultReviewTargetPath() string {
+	return "wiki/intents/pending-customer-questions.md"
 }
 
-func (s *ReviewQueueService) defaultReviewFAQTitle() string {
-	profile, _ := s.loadKnowledgeProfile()
-	return profile.reviewCategory().Title
+func (s *ReviewQueueService) defaultReviewTargetTitle() string {
+	return "待沉淀用户意图"
 }
 
 func (s *ReviewQueueService) targetTitle(targetPath string) string {
-	defaultPath := s.defaultReviewFAQPath()
-	if targetPath == defaultPath {
-		return s.defaultReviewFAQTitle()
+	if targetPath == s.defaultReviewTargetPath() {
+		return s.defaultReviewTargetTitle()
+	}
+	abs := filepath.Join(s.deps.Config.MountedWiki.Root, filepath.FromSlash(targetPath))
+	if raw, err := os.ReadFile(abs); err == nil {
+		if doc, parseErr := wikiadapter.ParseDocument(string(raw)); parseErr == nil {
+			if value, _ := doc.Frontmatter["title"].(string); strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
 	}
 	slug := strings.TrimSuffix(filepath.Base(targetPath), filepath.Ext(targetPath))
-	profile, _ := s.loadKnowledgeProfile()
-	if hint, ok := profile.categoryHintBySlug(slug); ok && strings.TrimSpace(hint.Title) != "" {
-		return strings.TrimSpace(hint.Title)
-	}
-	return slug
-}
-
-func appendFAQEntryBlock(body string, entry string) string {
-	entry = strings.TrimSpace(entry)
-	heading := "## FAQ Entries"
-	idx := strings.Index(body, heading)
-	if idx < 0 {
-		return strings.TrimRight(body, "\n") + "\n\n" + heading + "\n\n" + entry + "\n"
-	}
-	afterStart := idx + len(heading)
-	after := body[afterStart:]
-	nextRel := strings.Index(after, "\n## ")
-	if nextRel < 0 {
-		base := strings.TrimRight(body, "\n")
-		base = strings.ReplaceAll(base, "\n\n暂无 FAQ 条目。", "")
-		base = strings.ReplaceAll(base, "\n暂无 FAQ 条目。", "")
-		return base + "\n\n" + entry + "\n"
-	}
-	insertAt := afterStart + nextRel
-	before := strings.TrimRight(body[:insertAt], "\n")
-	before = strings.ReplaceAll(before, "\n\n暂无 FAQ 条目。", "")
-	before = strings.ReplaceAll(before, "\n暂无 FAQ 条目。", "")
-	rest := strings.TrimLeft(body[insertAt:], "\n")
-	return before + "\n\n" + entry + "\n\n" + rest
+	return humanizeSlug(slug)
 }
 
 func buildPendingReviewBody(question string, answer string, req ReviewCreateRequest, targetPath string, retrievedPages []string) string {
 	lines := []string{
-		"# 待确认问题",
+		"# 待沉淀知识",
 		"",
 		"## Question",
 		"",
@@ -774,7 +746,7 @@ func buildPendingReviewBody(question string, answer string, req ReviewCreateRequ
 		"",
 		firstNonEmpty(strings.TrimSpace(req.BoundaryReason), "LLM 低可信回答，等待管理员确认。"),
 		"",
-		"## Suggested FAQ Path",
+		"## Suggested Target Path",
 		"",
 		targetPath,
 		"",
@@ -826,7 +798,7 @@ func buildPendingReviewBody(question string, answer string, req ReviewCreateRequ
 
 func buildReviewSourceArchiveBody(item *ReviewItem, status string, finalQuestion string, finalAnswer string, targetPath string, reviewedAt string, reason string) string {
 	lines := []string{
-		"# 人工审查摄入归档",
+		"# 人工审查来源归档",
 		"",
 		"## Status",
 		"",
@@ -1065,4 +1037,26 @@ func floatFromFrontmatter(frontmatter map[string]any, key string) float64 {
 	default:
 		return 0
 	}
+}
+
+func extractMarkdownSection(body string, heading string) string {
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == strings.TrimSpace(heading) {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	end := len(lines)
+	for i := start; i < len(lines); i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "## ") {
+			end = i
+			break
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines[start:end], "\n"))
 }

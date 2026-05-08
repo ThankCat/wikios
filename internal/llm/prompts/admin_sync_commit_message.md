@@ -17,8 +17,8 @@
 - 不夸大未给出的变更。
 
 优先级：
-1. 如果变更集中在 `wiki/faq/`，突出 FAQ。
-2. 如果变更集中在 `wiki/concepts/` 或 `wiki/entities/`，突出概念或实体。
+1. 如果变更集中在 `wiki/knowledge/`、`wiki/policies/`、`wiki/procedures/`、`wiki/comparisons/` 或 `wiki/synthesis/`，突出正式知识、政策、流程、对比或综合页。
+2. 如果变更集中在 `wiki/concepts/`、`wiki/entities/` 或 `wiki/intents/`，突出概念、实体或意图。
 3. 如果包含 `raw/`，说明补充或更新原始资料。
-4. 如果只有报告或日志，说明更新治理报告或日志。
+4. 如果只有 `outputs/`、报告或日志，说明更新治理报告或日志。
 5. 如果范围混合，用“更新 Wiki 内容”并附简短范围。

@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -117,7 +119,7 @@ func (s *DirectAdminService) Run(ctx context.Context, execution *Execution, trac
 			if reply == "" {
 				reply = "直连模式执行完成。"
 			}
-			return normalizeDirectResult(map[string]any{
+			result := map[string]any{
 				"reply":        reply,
 				"answer":       firstNonEmpty(strings.TrimSpace(action.Answer), reply),
 				"summary":      firstNonEmpty(strings.TrimSpace(action.Summary), directModeSummary(req.ModeHint, "管理员直连执行完成")),
@@ -128,7 +130,9 @@ func (s *DirectAdminService) Run(ctx context.Context, execution *Execution, trac
 				"report_file":  strings.TrimSpace(action.ReportFile),
 				"commands":     commands,
 				"raw_response": text,
-			}), nil
+			}
+			s.maybeRefreshDirectQMD(ctx, execution, traceID, req.ModeHint, result)
+			return normalizeDirectResult(result), nil
 		default:
 			reply := strings.TrimSpace(action.Reply)
 			if reply == "" {
@@ -174,79 +178,16 @@ func (s *DirectAdminService) InitialMessages(req DirectAdminRequest) []llm.Messa
 }
 
 func (s *DirectAdminService) directAdminWikiModeGuide(mode string) string {
-	switch strings.TrimSpace(strings.ToLower(mode)) {
-	case "query":
-		return s.loadWikiAgentSections("当前 mode_hint=query 的 Wiki 规则",
-			"## 系统概述",
-			"## QUERY 操作规范",
-			"## Source Integrity Rules",
-		)
-	case "ingest", "upload":
-		return s.loadWikiAgentSections("当前 mode_hint=ingest 的 Wiki 规则",
-			"## 系统概述",
-			"## INGEST 操作规范",
-			"## Wikilink 使用规范",
-			"## Wiki 语言规范",
-			"## Confidence 更新规则",
-			"## Source Integrity Rules",
-			"## 系统文件隔离规则",
-			"## 报告命名规范",
-		)
-	case "lint":
-		return s.loadWikiAgentSections("当前 mode_hint=lint 的 Wiki 规则",
-			"## 系统概述",
-			"## LINT 操作规范",
-			"## Source Integrity Rules",
-			"## 系统文件隔离规则",
-			"## 报告命名规范",
-		)
-	case "reflect":
-		return s.loadWikiAgentSections("当前 mode_hint=reflect 的 Wiki 规则",
-			"## 系统概述",
-			"## REFLECT 操作规范",
-			"## Wikilink 使用规范",
-			"## Wiki 语言规范",
-			"## Confidence 更新规则",
-			"## Source Integrity Rules",
-			"## 系统文件隔离规则",
-			"## 报告命名规范",
-		)
-	case "repair":
-		return s.loadWikiAgentSections("当前 mode_hint=repair 的 Wiki 规则",
-			"## 系统概述",
-			"## REPAIR 操作规范",
-			"## LINT 操作规范",
-			"## Wikilink 使用规范",
-			"## Wiki 语言规范",
-			"## Source Integrity Rules",
-			"## 系统文件隔离规则",
-			"## 报告命名规范",
-		)
-	case "merge":
-		return s.loadWikiAgentSections("当前 mode_hint=merge 的 Wiki 规则",
-			"## 系统概述",
-			"## MERGE 操作规范",
-			"## Wikilink 使用规范",
-			"## Wiki 语言规范",
-			"## 系统文件隔离规则",
-			"## 报告命名规范",
-		)
-	case "add-question":
-		return s.loadWikiAgentSections("当前 mode_hint=add-question 的 Wiki 规则",
-			"## 系统概述",
-			"## ADD-QUESTION 操作规范",
-			"## 系统文件隔离规则",
-		)
-	case "sync":
-		return s.loadWikiAgentSections("当前 mode_hint=sync 的 Wiki 规则",
-			"## 系统概述",
-			"## SYNC 操作规范",
-			"## LINT 操作规范",
-			"## 系统文件隔离规则",
-			"## 报告命名规范",
-		)
+	agentPath := filepath.Join(s.deps.Config.MountedWiki.Root, "AGENT.md")
+	raw, err := os.ReadFile(agentPath)
+	if err != nil || strings.TrimSpace(string(raw)) == "" {
+		return ""
 	}
-	return ""
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	if mode == "" {
+		mode = "query"
+	}
+	return "【mounted wiki AGENT.md 全文（Wiki 治理规则最高优先级；当前 mode_hint=" + mode + "）】\n" + strings.TrimSpace(string(raw))
 }
 
 func directAdminSystemPrompt(wikiRoot string) string {
@@ -262,10 +203,10 @@ func directAdminSystemPrompt(wikiRoot string) string {
 3. 你可以根据 mode_hint 和上下文，自行决定检索、读取、写入、修复、反思、同步、qmd、git、脚本等执行流程。
 4. 管理员只关心任务是否成功、做了什么、产物在哪，不需要解释实现细节。
 5. 如果 mode_hint=query，你服务的是管理员，不是客户；允许输出内部文件、命令、来源和限制信息。
-6. 如果上下文已经给出上传后的 stored_path、source_format、FAQ 分段计划或当前 segment 预览，优先基于这些预处理结果继续执行，不要重新实现上传预处理。
-7. 如果正在处理 FAQ segment，只处理当前 segment，不要把整份 FAQ 全文重新塞回上下文。
-8. 如果当前 mode_hint 注入了 mounted wiki 的 AGENT.md 规则，AGENT.md 是 Wiki 治理规则的最高优先级来源；除 server 安全与权限边界外，任何 ingest/lint/repair/reflect/merge/query/wikilink/目录/报告规则冲突时都以 AGENT.md 为准。
-9. 写入 wiki/outputs/ 下的报告必须严格使用 AGENT.md 的报告命名规范；server 不替你决定报告路径，是否合规由 AGENT.md 约束。
+6. 如果上下文已经给出上传后的 stored_path、source_format 或 document_preview，必须按 AGENT.md 的 INGEST 流程从 raw/ 原始文档读取和处理；server 不做结构化问答、表格、JSON 或分段预处理。
+7. AGENT.md 全文是 Wiki 治理规则的最高优先级来源；除 server 安全与权限边界外，任何 ingest/query/lint/repair/reflect/merge/wikilink/目录/报告规则冲突时都以 AGENT.md 为准。
+8. raw/ 只读；正式知识只能写入 AGENT.md 规定的 wiki/sources、knowledge、policies、procedures、comparisons、concepts、entities、synthesis、intents 等目录；报告写入根目录 outputs/，并包含 graph-excluded: true。
+9. 查询、检查、修复和合并优先使用 AGENT.md 规定的 qmd 命令、scripts/lint.py 和正式知识目录。低风险机械修复可直接做；高风险价格、政策、安全边界、slug 重命名、页面合并或删除必须先向管理员确认。
 10. 每一轮只返回一个 JSON 对象，不要输出 Markdown，不要输出代码块。
 
 返回格式二选一：
@@ -330,6 +271,67 @@ func directShellResultPrompt(result map[string]any) string {
 		trimShellOutput(directStringValue(result, "stdout")),
 		trimShellOutput(directStringValue(result, "stderr")),
 	)
+}
+
+func (s *DirectAdminService) maybeRefreshDirectQMD(ctx context.Context, execution *Execution, traceID string, mode string, result map[string]any) {
+	if execution == nil || result == nil || !directModeShouldRefreshQMD(mode) {
+		return
+	}
+	env := s.env("admin_direct", traceID+"-qmd", execution.ID, "")
+	refresh := map[string]any{}
+	if collectionResult, err := s.executeTool(ctx, execution, env, "exec.qmd", map[string]any{
+		"subcommand": "collection_add",
+		"path":       "wiki/",
+		"name":       "wiki",
+	}, "qmd collection add"); err != nil {
+		refresh["collection_add_error"] = err.Error()
+	} else {
+		refresh["collection_add"] = collectionResult.Data
+	}
+	updateResult, err := s.executeTool(ctx, execution, env, "exec.qmd", map[string]any{"subcommand": "update"}, "qmd update")
+	if err != nil {
+		refresh["update_error"] = err.Error()
+		result["qmd_updated"] = false
+		appendDirectWarning(result, "qmd 索引刷新仍失败："+err.Error())
+		result["qmd_refresh"] = refresh
+		return
+	}
+	refresh["update"] = updateResult.Data
+	result["qmd_updated"] = true
+	result["qmd_refresh"] = refresh
+	reply := strings.TrimSpace(directStringValue(result, "reply"))
+	if reply != "" {
+		note := "补充：服务端已完成 qmd 索引刷新。"
+		lower := strings.ToLower(reply)
+		if strings.Contains(lower, "qmd") && (strings.Contains(reply, "失败") || strings.Contains(lower, "failed") || strings.Contains(lower, "node_module_version")) {
+			note = "补充：服务端已自动修复并刷新 qmd 索引，上方 qmd 失败提示已过期。"
+		}
+		result["reply"] = reply + "\n\n" + note
+	}
+}
+
+func directModeShouldRefreshQMD(mode string) bool {
+	switch strings.TrimSpace(strings.ToLower(mode)) {
+	case "ingest", "lint", "repair", "reflect", "merge", "add-question", "upload":
+		return true
+	default:
+		return false
+	}
+}
+
+func appendDirectWarning(result map[string]any, warning string) {
+	warning = strings.TrimSpace(warning)
+	if warning == "" {
+		return
+	}
+	switch typed := result["warnings"].(type) {
+	case []string:
+		result["warnings"] = append(typed, warning)
+	case []any:
+		result["warnings"] = append(typed, warning)
+	default:
+		result["warnings"] = []string{warning}
+	}
 }
 
 func trimShellOutput(text string) string {
@@ -511,20 +513,7 @@ func directContextSummary(context map[string]any) string {
 	appendLine("stored_path", directStringValue(context, "stored_path"))
 	appendLine("source_format", directStringValue(context, "source_format"))
 	appendLine("file_name", directStringValue(context, "file_name"))
-	appendLine("ingest_plan", directStringValue(context, "ingest_plan"))
-	appendLine("segment_title", directStringValue(context, "segment_title"))
-	appendLine("segment_slug", directStringValue(context, "segment_slug"))
-	appendLine("segment_category", directStringValue(context, "segment_category"))
-	appendLine("segment_preview", directStringValue(context, "segment_preview"))
-	if raw, ok := context["segment_index"]; ok {
-		lines = append(lines, fmt.Sprintf("segment_index: %v", raw))
-	}
-	if raw, ok := context["segment_total"]; ok {
-		lines = append(lines, fmt.Sprintf("segment_total: %v", raw))
-	}
-	if raw, ok := context["faq_entry_count"]; ok {
-		lines = append(lines, fmt.Sprintf("faq_entry_count: %v", raw))
-	}
+	appendLine("document_preview", directStringValue(context, "document_preview"))
 	return strings.Join(lines, "\n")
 }
 

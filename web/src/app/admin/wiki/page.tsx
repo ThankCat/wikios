@@ -6,7 +6,7 @@ import { Download, File, Folder, RefreshCw } from "lucide-react";
 import { MarkdownContent } from "@/components/chat/markdown-content";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import { cn, formatJSON } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import type { WikiFileResponse, WikiTreeItem } from "@/types/api";
 
 export default function AdminWikiPage() {
@@ -110,7 +110,7 @@ export default function AdminWikiPage() {
           </div>
         </aside>
         <section className="min-h-0 overflow-hidden rounded-xl border bg-white">
-          {file ? <FilePreview file={file} /> : <div className="p-6 text-sm text-muted-foreground">请选择一个 Markdown、JSON、图片或其他文件。</div>}
+          {file ? <FilePreview file={file} /> : <div className="p-6 text-sm text-muted-foreground">请选择一个 Markdown 文件或下载其他文件。</div>}
         </section>
       </section>
     </main>
@@ -138,18 +138,8 @@ function FilePreview({ file }: { file: WikiFileResponse }) {
             {file.content ?? ""}
           </MarkdownContent>
         ) : null}
-        {file.preview === "json" ? <pre className="rounded-xl bg-slate-950 p-4 text-xs leading-6 text-slate-100">{formatJSON(parseJSON(file.content ?? ""))}</pre> : null}
-        {file.preview === "image" ? <img src={file.data_url} alt={file.name} className="max-h-[72vh] max-w-full rounded-lg border object-contain" /> : null}
         {file.preview === "download" ? <div className="text-sm text-muted-foreground">该格式暂不支持在线查看，请下载后打开。</div> : null}
       </div>
     </div>
   );
-}
-
-function parseJSON(value: string) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
 }

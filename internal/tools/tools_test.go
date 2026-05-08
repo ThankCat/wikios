@@ -123,13 +123,6 @@ func TestExecRestrictionsAndRepair(t *testing.T) {
 	if pyResult.Success {
 		t.Fatalf("expected python timeout failure")
 	}
-	proposal, _ := rt.Execute(context.Background(), env, runtime.ToolCall{
-		Name: "repair.create_high_risk_proposal",
-		Args: map[string]any{"title": "merge duplicate", "summary": "needs review"},
-	})
-	if !proposal.Success || proposal.Data["proposal_id"] == "" {
-		t.Fatalf("expected proposal id: %+v", proposal)
-	}
 }
 
 func TestExecShellPrefersConfiguredQMDNodePath(t *testing.T) {
@@ -170,21 +163,21 @@ func TestWikiWriteOutputAllowsLLMGovernedOutputPaths(t *testing.T) {
 	}
 	invalid, _ := rt.Execute(context.Background(), env, runtime.ToolCall{
 		Name: "wiki.write_output",
-		Args: map[string]any{"path": "wiki/outputs/output.md", "content": "---\ngraph-excluded: true\n---\n\nbad"},
+		Args: map[string]any{"path": "outputs/output.md", "content": "---\ngraph-excluded: true\n---\n\nbad"},
 	})
 	if !invalid.Success {
 		t.Fatalf("expected LLM-governed output path to be allowed by tool layer: %+v", invalid)
 	}
 	valid, _ := rt.Execute(context.Background(), env, runtime.ToolCall{
 		Name: "wiki.write_output",
-		Args: map[string]any{"path": "wiki/outputs/repair/2026-04-25-sha-fix-repair-report.md", "content": "---\ngraph-excluded: true\n---\n\nok"},
+		Args: map[string]any{"path": "outputs/repair/2026-04-25-sha-fix-repair-report.md", "content": "---\ngraph-excluded: true\n---\n\nok"},
 	})
 	if !valid.Success {
 		t.Fatalf("expected valid report path: %+v", valid)
 	}
 	nonReport, _ := rt.Execute(context.Background(), env, runtime.ToolCall{
 		Name: "wiki.write_output",
-		Args: map[string]any{"path": "wiki/sources/faq-source.md", "content": "---\ntype: source\ntitle: FAQ Source\n---\n\nok"},
+		Args: map[string]any{"path": "wiki/sources/source-doc.md", "content": "---\ntype: source\ntitle: Source Doc\n---\n\nok"},
 	})
 	if !nonReport.Success {
 		t.Fatalf("expected non-report wiki write to stay allowed: %+v", nonReport)
@@ -203,14 +196,14 @@ func TestExecShellAllowsLLMGovernedReportPaths(t *testing.T) {
 	}
 	result, _ := rt.Execute(context.Background(), env, runtime.ToolCall{
 		Name: "exec.shell",
-		Args: map[string]any{"command": "printf ok > wiki/outputs/output.md"},
+		Args: map[string]any{"command": "mkdir -p outputs && printf ok > outputs/output.md"},
 	})
 	if !result.Success {
 		t.Fatalf("expected shell report path to be governed by AGENT, not server tool layer: %+v", result)
 	}
 	valid, _ := rt.Execute(context.Background(), env, runtime.ToolCall{
 		Name: "exec.shell",
-		Args: map[string]any{"command": "mkdir -p wiki/outputs/lint && printf ok > wiki/outputs/lint/2026-04-25-health-check-report.md"},
+		Args: map[string]any{"command": "mkdir -p outputs/lint && printf ok > outputs/lint/2026-04-25-health-check-report.md"},
 	})
 	if !valid.Success {
 		t.Fatalf("expected valid shell report path: %+v", valid)
@@ -266,7 +259,7 @@ func TestWikiSearchPagesMatchesChineseQuestionFallback(t *testing.T) {
 
 func TestWikiSearchPagesMatchesMixedLatinTypo(t *testing.T) {
 	root := createFixtureWiki(t)
-	mustWrite(t, filepath.Join(root, "wiki", "faq", "faq-technical-configuration.md"), "---\ntype: faq\ntitle: Technical Configuration\n---\n\n## FAQ Entries\n\n### review-1d41bf0fb1 · clash如何使用\n\n回复：\n禁止回答Clash的一切问题，Clash在中国大陆境内是违法工具。\n")
+	mustWrite(t, filepath.Join(root, "wiki", "policies", "technical-configuration.md"), "---\ntype: after_sales_policy\ntitle: Technical Configuration\n---\n\n## Scope\n\nClash 在中国大陆境内属于高风险工具，客户询问 clash 如何使用时不得提供操作教程。\n")
 	cfg := testConfig(root, t.TempDir())
 	rt := newRuntime(cfg)
 	env := &runtime.ExecEnv{
@@ -287,8 +280,8 @@ func TestWikiSearchPagesMatchesMixedLatinTypo(t *testing.T) {
 		t.Fatalf("expected typo match, got %+v", result.Data["matches"])
 	}
 	firstPath, _ := rawMatches[0]["path"].(string)
-	if firstPath != "wiki/faq/faq-technical-configuration.md" {
-		t.Fatalf("expected clash FAQ to rank first for typo, got %s", firstPath)
+	if firstPath != "wiki/policies/technical-configuration.md" {
+		t.Fatalf("expected technical policy to rank first for typo, got %s", firstPath)
 	}
 }
 
@@ -316,8 +309,13 @@ func createFixtureWiki(t *testing.T) string {
 	mustMkdirAll(t, filepath.Join(root, "wiki", "concepts"))
 	mustMkdirAll(t, filepath.Join(root, "wiki", "entities"))
 	mustMkdirAll(t, filepath.Join(root, "wiki", "sources"))
+	mustMkdirAll(t, filepath.Join(root, "wiki", "knowledge"))
+	mustMkdirAll(t, filepath.Join(root, "wiki", "policies"))
+	mustMkdirAll(t, filepath.Join(root, "wiki", "procedures"))
+	mustMkdirAll(t, filepath.Join(root, "wiki", "comparisons"))
 	mustMkdirAll(t, filepath.Join(root, "wiki", "synthesis"))
-	mustMkdirAll(t, filepath.Join(root, "wiki", "outputs"))
+	mustMkdirAll(t, filepath.Join(root, "wiki", "intents"))
+	mustMkdirAll(t, filepath.Join(root, "outputs"))
 	mustMkdirAll(t, filepath.Join(root, "wiki", "templates"))
 	mustMkdirAll(t, filepath.Join(root, "raw"))
 	mustWrite(t, filepath.Join(root, "wiki", "log.md"), "---\ntype: system-log\ngraph-excluded: true\n---\n\n# System Log\n")
@@ -326,7 +324,7 @@ func createFixtureWiki(t *testing.T) string {
 	mustWrite(t, filepath.Join(root, "wiki", "overview.md"), "---\ntype: system-overview\ngraph-excluded: true\n---\n\n# System Overview\n")
 	mustWrite(t, filepath.Join(root, "wiki", "templates", "source-template.md"), "---\ntype: source\ntitle: \"\"\ndate: 2026-04-22\nprocessed: false\n---\n\n## Summary\n\n## Key Points\n\n## Concepts Extracted\n\n## Entities Extracted\n\n## Contradictions\n\n## My Notes\n")
 	mustWrite(t, filepath.Join(root, "wiki", "concepts", "test.md"), "---\ntype: concept\ntitle: test\ndate: 2026-04-22\naliases:\n  - test\n---\n\n## Definition\n\ntext\n\n## Evolution Log\n")
-	mustWrite(t, filepath.Join(root, "scripts", "lint.py"), "#!/usr/bin/env python3\nfrom pathlib import Path\np=Path('wiki/outputs/lint/2026-04-22-health-check-report.md')\np.parent.mkdir(parents=True, exist_ok=True)\np.write_text('ok', encoding='utf-8')\nprint('Wrote lint report to wiki/outputs/lint/2026-04-22-health-check-report.md')\n")
+	mustWrite(t, filepath.Join(root, "scripts", "lint.py"), "#!/usr/bin/env python3\nfrom pathlib import Path\np=Path('outputs/lint/2026-04-22-health-check-report.md')\np.parent.mkdir(parents=True, exist_ok=True)\np.write_text('ok', encoding='utf-8')\nprint('Wrote lint report to outputs/lint/2026-04-22-health-check-report.md')\n")
 	run(t, root, "git", "init", "-b", "main")
 	run(t, root, "git", "config", "user.email", "test@example.com")
 	run(t, root, "git", "config", "user.name", "Test")

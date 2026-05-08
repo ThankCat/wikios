@@ -574,7 +574,7 @@ export function AdminChat({ username }: { username: string }) {
         setReviewQuestion(response.item.question);
         setReviewAnswer(response.item.draft_answer);
         setReviewTargetPath(
-          response.item.suggested_faq_path ||
+          response.item.suggested_target_path ||
             response.target_paths[0]?.path ||
             "",
         );
@@ -599,7 +599,7 @@ export function AdminChat({ username }: { username: string }) {
       return;
     }
     if (reviewAnswer.trim() === "" || reviewTargetPath.trim() === "") {
-      setReviewMessage("请填写回答并选择目标 FAQ。");
+      setReviewMessage("请填写回答并选择目标知识页。");
       return;
     }
     setReviewBusy(true);
@@ -616,8 +616,8 @@ export function AdminChat({ username }: { username: string }) {
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "通过失败";
       setReviewMessage(
-        message.includes("qmd update") && !message.includes("FAQ 已回滚")
-          ? `通过失败：FAQ 已回滚，qmd update 失败，请修复 qmd 后重试。${message}`
+        message.includes("qmd update") && !message.includes("知识页已回滚")
+          ? `通过失败：知识页已回滚，qmd update 失败，请修复 qmd 后重试。${message}`
           : message,
       );
     } finally {
@@ -1329,60 +1329,10 @@ export function AdminChat({ username }: { username: string }) {
         source_format: data.source_format,
       });
       patchMessage(conversationId, assistantId, {
-        content: "正在拆分文件...",
+        content: "文档已保存，正在按 AGENT 规则处理...",
         status: "streaming",
       });
-      setConversationBusyLabel(conversationId, "正在拆分文件...");
-      return;
-    }
-    if (event.type === "ingest_plan") {
-      const data = asRecord(event.data);
-      const total = numberValue(data, "segments_total");
-      mergeDetails(conversationId, assistantId, {
-        ingest_plan: data,
-        segments_total: total,
-      });
-      patchMessage(conversationId, assistantId, {
-        content:
-          total > 1
-            ? `已完成文件拆分，共 ${total} 段，准备开始逐段分析。`
-            : "文件已准备完成，开始分析。",
-        status: "streaming",
-      });
-      setConversationBusyLabel(
-        conversationId,
-        total > 1
-          ? `已拆分为 ${total} 段，准备开始逐段分析...`
-          : "开始分析内容...",
-      );
-      return;
-    }
-    if (event.type === "segment_start") {
-      const data = asRecord(event.data);
-      appendEventDetail(
-        conversationId,
-        assistantId,
-        "segment_timeline",
-        sanitizePayload(data),
-        60,
-      );
-      mergeDetails(conversationId, assistantId, {
-        current_segment: data,
-      });
-      const index = numberValue(data, "index");
-      const total = numberValue(data, "total");
-      const title = String(data.title ?? "");
-      patchMessage(conversationId, assistantId, {
-        content:
-          total > 0
-            ? `正在分析第 ${index}/${total} 段：${title}`
-            : `正在分析分段：${title}`,
-        status: "streaming",
-      });
-      setConversationBusyLabel(
-        conversationId,
-        total > 0 ? `正在分析第 ${index}/${total} 段...` : "正在分析分段...",
-      );
+      setConversationBusyLabel(conversationId, "正在处理文档...");
       return;
     }
     if (event.type === "prompt") {
@@ -1412,61 +1362,29 @@ export function AdminChat({ username }: { username: string }) {
       });
       return;
     }
+    if (event.type === "llm_reasoning_delta") {
+      const data = asRecord(event.data);
+      appendDetailText(conversationId, assistantId, "reasoning", String(data.delta ?? ""), 12000);
+      appendEventDetail(
+        conversationId,
+        assistantId,
+        "reasoning_events",
+        {
+          name: data.name,
+          delta: data.delta,
+          created_at: data.created_at,
+        },
+        80,
+      );
+      return;
+    }
     if (event.type === "llm_done") {
-      mergeDetails(conversationId, assistantId, { llm_done: event.data });
-      return;
-    }
-    if (event.type === "segment_result") {
       const data = asRecord(event.data);
-      appendEventDetail(
-        conversationId,
-        assistantId,
-        "segment_results",
-        sanitizePayload(data),
-        80,
-      );
-      const index = numberValue(data, "index");
-      const total = numberValue(data, "total");
-      const title = String(data.title ?? "");
-      patchMessage(conversationId, assistantId, {
-        content:
-          total > 0
-            ? `已完成第 ${index}/${total} 段落库：${title}`
-            : `已完成分段落库：${title}`,
-        status: "streaming",
+      const reasoning = String(data.reasoning ?? "");
+      mergeDetails(conversationId, assistantId, {
+        llm_done: event.data,
+        ...(reasoning.trim() !== "" ? { reasoning } : {}),
       });
-      setConversationBusyLabel(
-        conversationId,
-        total > 0
-          ? `已完成第 ${index}/${total} 段，继续处理后续分段...`
-          : "继续处理后续分段...",
-      );
-      return;
-    }
-    if (event.type === "segment_error") {
-      const data = asRecord(event.data);
-      appendEventDetail(
-        conversationId,
-        assistantId,
-        "failed_segments",
-        sanitizePayload(data),
-        80,
-      );
-      const index = numberValue(data, "index");
-      const total = numberValue(data, "total");
-      patchMessage(conversationId, assistantId, {
-        content:
-          total > 0
-            ? `第 ${index}/${total} 段处理失败，继续执行后续分段。`
-            : "有分段处理失败，继续执行后续分段。",
-        status: "streaming",
-      });
-      setConversationBusyLabel(
-        conversationId,
-        total > 0
-          ? `第 ${index}/${total} 段失败，继续处理后续分段...`
-          : "有分段失败，继续处理后续分段...",
-      );
       return;
     }
     if (event.type === "result") {
@@ -1777,11 +1695,6 @@ export function AdminChat({ username }: { username: string }) {
                   >
                     {toolsOpen ? <ChevronDown className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
                   </button>
-                  <span className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium text-orange-600">
-                    <span className="h-3 w-3 rounded-full border border-orange-300" />
-                    完全访问权限
-                    <ChevronDown className="h-3 w-3" />
-                  </span>
                 </div>
                 <div className="flex items-center gap-2">
                   <div
@@ -1939,13 +1852,13 @@ export function AdminChat({ username }: { username: string }) {
                     </div>
                     <div className="grid gap-2">
                       <label className="text-xs font-semibold text-slate-600">
-                        目标 FAQ
+                        目标知识页
                       </label>
                       <select
                         value={reviewTargetPath}
                         onChange={(event) => setReviewTargetPath(event.target.value)}
                         className="h-10 rounded-md border border-input bg-white px-3 text-sm"
-                        title="通过后会追加到这个 FAQ 文件"
+                        title="通过后会沉淀到这个知识页或意图页"
                       >
                         {reviewTargets.map((target) => (
                           <option key={target.path} value={target.path}>

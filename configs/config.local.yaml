@@ -53,7 +53,6 @@ web:
 
 upload:
   max_text_file_kb: 500
-  max_table_rows: 120
 
 public_intents:
   enabled: true
@@ -69,10 +68,6 @@ public_query:
 support:
   phone: "400-1080-106"
   wecom: "企业微信"
-
-knowledge_profile:
-  name: siyetian
-  path: configs/knowledge_profiles/siyetian.yaml
 
 context:
   max_tokens: ${WIKIOS_CONTEXT_MAX_TOKENS}

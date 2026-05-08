@@ -9,18 +9,10 @@ import (
 	"wikios/internal/runtime"
 )
 
-type repairApplyLowRiskTool struct{ baseTool }
-type repairCreateHighRiskProposalTool struct{ baseTool }
 type gitStatusTool struct{ baseTool }
 type gitCommitTool struct{ baseTool }
 type gitPushTool struct{ baseTool }
 
-func NewRepairApplyLowRiskTool(deps Dependencies) runtime.Tool {
-	return &repairApplyLowRiskTool{baseTool{name: "repair.apply_low_risk", risk: runtime.RiskMedium, deps: deps}}
-}
-func NewRepairCreateHighRiskProposalTool(deps Dependencies) runtime.Tool {
-	return &repairCreateHighRiskProposalTool{baseTool{name: "repair.create_high_risk_proposal", risk: runtime.RiskHigh, deps: deps}}
-}
 func NewGitStatusTool(deps Dependencies) runtime.Tool {
 	return &gitStatusTool{baseTool{name: "git.status", risk: runtime.RiskMedium, deps: deps}}
 }
@@ -29,39 +21,6 @@ func NewGitCommitTool(deps Dependencies) runtime.Tool {
 }
 func NewGitPushTool(deps Dependencies) runtime.Tool {
 	return &gitPushTool{baseTool{name: "git.push", risk: runtime.RiskHigh, deps: deps}}
-}
-
-func (t *repairApplyLowRiskTool) Validate(args map[string]any) error {
-	if _, err := requireString(args, "path"); err != nil {
-		return err
-	}
-	raw := args["ops"]
-	if raw == nil {
-		return fmt.Errorf("ops is required")
-	}
-	return nil
-}
-func (t *repairApplyLowRiskTool) Execute(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
-	patchTool := NewWikiPatchPageTool(t.deps)
-	return patchTool.Execute(ctx, env, args)
-}
-
-func (t *repairCreateHighRiskProposalTool) Validate(args map[string]any) error {
-	_, err := requireString(args, "title")
-	return err
-}
-func (t *repairCreateHighRiskProposalTool) Execute(_ context.Context, _ *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
-	title, _ := requireString(args, "title")
-	summary := optionalString(args, "summary")
-	targets, _ := optionalStringSlice(args, "target_files")
-	return success(t.risk, map[string]any{
-		"proposal_id":  newProposalID(),
-		"title":        title,
-		"risk_level":   string(runtime.RiskHigh),
-		"summary":      summary,
-		"target_files": targets,
-		"planned_ops":  args["planned_patch_ops"],
-	}), nil
 }
 
 func (t *gitStatusTool) Validate(args map[string]any) error { return nil }

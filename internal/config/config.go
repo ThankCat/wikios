@@ -15,22 +15,21 @@ const (
 )
 
 type Config struct {
-	Server           ServerConfig           `yaml:"server"`
-	MountedWiki      MountedWikiConfig      `yaml:"mounted_wiki"`
-	LLM              LLMConfig              `yaml:"llm"`
-	Auth             AuthConfig             `yaml:"auth"`
-	Retrieval        RetrievalConfig        `yaml:"retrieval"`
-	Workspace        WorkspaceConfig        `yaml:"workspace"`
-	Sandbox          SandboxConfig          `yaml:"sandbox"`
-	Storage          StorageConfig          `yaml:"storage"`
-	Sync             SyncConfig             `yaml:"sync"`
-	Web              WebConfig              `yaml:"web"`
-	Upload           UploadConfig           `yaml:"upload"`
-	PublicIntents    PublicIntentsConfig    `yaml:"public_intents"`
-	PublicQuery      PublicQueryConfig      `yaml:"public_query"`
-	Support          SupportConfig          `yaml:"support"`
-	KnowledgeProfile KnowledgeProfileConfig `yaml:"knowledge_profile"`
-	Context          ContextConfig          `yaml:"context"`
+	Server        ServerConfig        `yaml:"server"`
+	MountedWiki   MountedWikiConfig   `yaml:"mounted_wiki"`
+	LLM           LLMConfig           `yaml:"llm"`
+	Auth          AuthConfig          `yaml:"auth"`
+	Retrieval     RetrievalConfig     `yaml:"retrieval"`
+	Workspace     WorkspaceConfig     `yaml:"workspace"`
+	Sandbox       SandboxConfig       `yaml:"sandbox"`
+	Storage       StorageConfig       `yaml:"storage"`
+	Sync          SyncConfig          `yaml:"sync"`
+	Web           WebConfig           `yaml:"web"`
+	Upload        UploadConfig        `yaml:"upload"`
+	PublicIntents PublicIntentsConfig `yaml:"public_intents"`
+	PublicQuery   PublicQueryConfig   `yaml:"public_query"`
+	Support       SupportConfig       `yaml:"support"`
+	Context       ContextConfig       `yaml:"context"`
 }
 
 type ServerConfig struct {
@@ -98,7 +97,6 @@ type WebConfig struct {
 
 type UploadConfig struct {
 	MaxTextFileKB int `yaml:"max_text_file_kb"`
-	MaxTableRows  int `yaml:"max_table_rows"`
 }
 
 type PublicIntentsConfig struct {
@@ -108,8 +106,8 @@ type PublicIntentsConfig struct {
 
 type PublicQueryConfig struct {
 	Confidence       PublicQueryConfidenceConfig `yaml:"confidence"`
-	CandidateTopK    int                        `yaml:"candidate_top_k"`
-	MaxEvidenceChars int                        `yaml:"max_evidence_chars"`
+	CandidateTopK    int                         `yaml:"candidate_top_k"`
+	MaxEvidenceChars int                         `yaml:"max_evidence_chars"`
 }
 
 type PublicQueryConfidenceConfig struct {
@@ -120,11 +118,6 @@ type PublicQueryConfidenceConfig struct {
 type SupportConfig struct {
 	Phone string `yaml:"phone"`
 	WeCom string `yaml:"wecom"`
-}
-
-type KnowledgeProfileConfig struct {
-	Name string `yaml:"name"`
-	Path string `yaml:"path"`
 }
 
 type ContextConfig struct {
@@ -225,9 +218,6 @@ func (c *Config) normalizeAndValidate() error {
 	if c.Upload.MaxTextFileKB <= 0 {
 		c.Upload.MaxTextFileKB = 500
 	}
-	if c.Upload.MaxTableRows <= 0 {
-		c.Upload.MaxTableRows = 120
-	}
 	if c.PublicIntents.Enabled == nil {
 		enabled := true
 		c.PublicIntents.Enabled = &enabled
@@ -261,15 +251,6 @@ func (c *Config) normalizeAndValidate() error {
 	}
 	if strings.TrimSpace(c.Support.WeCom) == "" {
 		c.Support.WeCom = firstEnv("WIKIOS_SUPPORT_WECOM", "企业微信")
-	}
-	if strings.TrimSpace(c.KnowledgeProfile.Path) == "" {
-		c.KnowledgeProfile.Path = firstEnv("WIKIOS_KNOWLEDGE_PROFILE_PATH", "")
-	}
-	if strings.TrimSpace(c.KnowledgeProfile.Name) == "" {
-		c.KnowledgeProfile.Name = firstEnv("WIKIOS_KNOWLEDGE_PROFILE", "")
-	}
-	if strings.TrimSpace(c.KnowledgeProfile.Path) != "" {
-		c.KnowledgeProfile.Path = filepath.Clean(c.KnowledgeProfile.Path)
 	}
 	if c.Context.MaxTokens <= 0 {
 		c.Context.MaxTokens = envInt("WIKIOS_CONTEXT_MAX_TOKENS", 1000000)

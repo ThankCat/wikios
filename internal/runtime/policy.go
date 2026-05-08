@@ -62,7 +62,6 @@ func adminAllowed(name string) bool {
 		"workspace.create_job_dir", "workspace.write_temp_file", "workspace.read_temp_file",
 		"workspace.commit_temp_to_wiki", "workspace.discard",
 		"exec.python", "lint.run",
-		"repair.apply_low_risk", "repair.create_high_risk_proposal",
 		"git.status", "git.commit", "git.push":
 		return true
 	default:

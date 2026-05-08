@@ -129,35 +129,35 @@ func TestDirectAdminServiceSalvagesMalformedFinalJSON(t *testing.T) {
 	}
 }
 
-func TestDirectAdminWikiModeGuideUsesMountedAgentSections(t *testing.T) {
+func TestDirectAdminWikiModeGuideUsesMountedAgentFullText(t *testing.T) {
 	root := t.TempDir()
 	agent := `# AGENT
 
-## 系统概述
+## 定位
 
 system rules
 
-## INGEST 操作规范
+## INGEST
 
 ingest rules
 
-## QUERY 操作规范
+## QUERY
 
 query rules
 
-## REPAIR 操作规范
+## LINT / REPAIR / REFLECT / MERGE
 
 repair rules
 
-## SYNC 操作规范
+## SYNC
 
 sync rules
 
-## Wikilink 使用规范
+## Wikilink
 
 wikilink rules
 
-## 报告命名规范
+## Outputs
 
 report rules
 `
@@ -169,57 +169,19 @@ report rules
 	})
 
 	ingestGuide := svc.directAdminWikiModeGuide("ingest")
-	if !strings.Contains(ingestGuide, "ingest rules") || !strings.Contains(ingestGuide, "wikilink rules") {
-		t.Fatalf("expected ingest guide to include mounted wiki ingest sections, got %q", ingestGuide)
-	}
-	if strings.Contains(ingestGuide, "query rules") || strings.Contains(ingestGuide, "repair rules") {
-		t.Fatalf("expected ingest guide to exclude unrelated sections, got %q", ingestGuide)
+	for _, want := range []string{"mounted wiki AGENT.md 全文", "当前 mode_hint=ingest", "system rules", "ingest rules", "query rules", "repair rules", "sync rules", "wikilink rules", "report rules"} {
+		if !strings.Contains(ingestGuide, want) {
+			t.Fatalf("expected full AGENT guide to include %q, got %q", want, ingestGuide)
+		}
 	}
 
 	repairGuide := svc.directAdminWikiModeGuide("repair")
-	if !strings.Contains(repairGuide, "repair rules") || !strings.Contains(repairGuide, "report rules") {
-		t.Fatalf("expected repair guide to include mounted wiki repair sections, got %q", repairGuide)
+	if !strings.Contains(repairGuide, "当前 mode_hint=repair") || !strings.Contains(repairGuide, "ingest rules") || !strings.Contains(repairGuide, "sync rules") {
+		t.Fatalf("expected repair guide to keep full AGENT text, got %q", repairGuide)
 	}
 
 	syncGuide := svc.directAdminWikiModeGuide("sync")
-	if !strings.Contains(syncGuide, "sync rules") || !strings.Contains(syncGuide, "report rules") {
-		t.Fatalf("expected sync guide to include mounted wiki sync sections, got %q", syncGuide)
-	}
-	if strings.Contains(syncGuide, "repair rules") || strings.Contains(syncGuide, "ingest rules") {
-		t.Fatalf("expected sync guide to exclude unrelated sections, got %q", syncGuide)
-	}
-}
-
-func TestPromptInjectionStatesAgentPrecedence(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "AGENT.md"), []byte(`# AGENT
-
-## 系统概述
-
-system rules
-
-## LINT 操作规范
-
-lint rules
-`), 0o644); err != nil {
-		t.Fatalf("write agent: %v", err)
-	}
-	promptDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(promptDir, "test.md"), []byte("base prompt"), 0o644); err != nil {
-		t.Fatalf("write prompt: %v", err)
-	}
-	svc := NewDirectAdminService(Deps{
-		Config: &config.Config{
-			MountedWiki: config.MountedWikiConfig{Root: root, QMDIndex: "test"},
-			LLM:         config.LLMConfig{ModelAdmin: "test"},
-		},
-		PromptDir: promptDir,
-	})
-	merged, err := svc.loadPromptWithWikiAgent("test.md")
-	if err != nil {
-		t.Fatalf("load prompt: %v", err)
-	}
-	if !strings.Contains(merged, "Wiki 治理规则最高优先级") || !strings.Contains(merged, "system rules") || strings.Contains(merged, "lint rules") {
-		t.Fatalf("expected scoped AGENT section wording without full AGENT injection, got %q", merged)
+	if !strings.Contains(syncGuide, "当前 mode_hint=sync") || !strings.Contains(syncGuide, "repair rules") || !strings.Contains(syncGuide, "ingest rules") {
+		t.Fatalf("expected sync guide to keep full AGENT text, got %q", syncGuide)
 	}
 }

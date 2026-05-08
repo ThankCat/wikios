@@ -12,12 +12,12 @@ func TestBuildPath(t *testing.T) {
 		slug string
 		want string
 	}{
-		{KindIngest, "faq-source", "wiki/outputs/ingest/2026-04-25-faq-source-ingest-report.md"},
-		{KindLint, "", "wiki/outputs/lint/2026-04-25-health-check-report.md"},
-		{KindReflect, "proxy-ip", "wiki/outputs/reflect/2026-04-25-proxy-ip-reflect-report.md"},
-		{KindMerge, "static-ip", "wiki/outputs/merge/2026-04-25-static-ip-merge-report.md"},
-		{KindRepair, "sha-fix", "wiki/outputs/repair/2026-04-25-sha-fix-repair-report.md"},
-		{KindSync, "", "wiki/outputs/sync/2026-04-25-sync-report.md"},
+		{KindIngest, "source-doc", "outputs/ingest/2026-04-25-source-doc-ingest-report.md"},
+		{KindLint, "", "outputs/lint/2026-04-25-health-check-report.md"},
+		{KindReflect, "proxy-ip", "outputs/reflect/2026-04-25-proxy-ip-reflect-report.md"},
+		{KindMerge, "static-ip", "outputs/merge/2026-04-25-static-ip-merge-report.md"},
+		{KindRepair, "sha-fix", "outputs/repair/2026-04-25-sha-fix-repair-report.md"},
+		{KindSync, "", "outputs/sync/2026-04-25-sync-report.md"},
 	}
 	for _, tc := range cases {
 		got, err := BuildPath(tc.kind, tc.slug, day)
@@ -35,11 +35,12 @@ func TestBuildPath(t *testing.T) {
 
 func TestValidatePathRejectsInvalidReportPaths(t *testing.T) {
 	for _, path := range []string{
-		"wiki/outputs/output.md",
-		"wiki/outputs/lint-2026-04-25.md",
-		"wiki/outputs/lint/2026-04-25-lint-report.md",
-		"wiki/outputs/repair/foo.md",
-		"wiki/outputs/ingest/2026-04-25-faq.md",
+		"wiki/output.md",
+		"outputs/output.md",
+		"outputs/lint-2026-04-25.md",
+		"outputs/lint/2026-04-25-lint-report.md",
+		"outputs/repair/foo.md",
+		"outputs/ingest/2026-04-25-source-doc.md",
 	} {
 		if err := ValidatePath(path); err == nil {
 			t.Fatalf("expected %q to be rejected", path)
@@ -48,10 +49,10 @@ func TestValidatePathRejectsInvalidReportPaths(t *testing.T) {
 }
 
 func TestIsOutputPath(t *testing.T) {
-	if !IsOutputPath("./wiki/outputs/ingest/2026-04-25-faq-ingest-report.md") {
+	if !IsOutputPath("./outputs/ingest/2026-04-25-source-doc-ingest-report.md") {
 		t.Fatalf("expected output path")
 	}
-	if IsOutputPath("wiki/sources/faq-source.md") {
+	if IsOutputPath("wiki/sources/source-doc.md") {
 		t.Fatalf("expected non-output wiki path")
 	}
 }

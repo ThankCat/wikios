@@ -23,6 +23,7 @@ type UserMessage = {
   content: string;
   created_at?: string;
   status?: MessageStatus;
+  details?: unknown;
 };
 
 type UserConversation = {
@@ -33,7 +34,9 @@ type UserConversation = {
 };
 
 const storageKey = "wikios.user.chat";
+const storageVersionKey = "wikios.user.chat.version";
 const sidebarStorageKey = "wikios.user.sidebar.open";
+const storageVersion = "2";
 const HISTORY_LIMIT = 8;
 
 export function UserChat() {
@@ -49,7 +52,8 @@ export function UserChat() {
     const raw = localStorage.getItem(storageKey);
     if (raw) {
       try {
-        const parsed = normalizeUserConversations(JSON.parse(raw));
+        const resetStoredStream = localStorage.getItem(storageVersionKey) !== storageVersion;
+        const parsed = normalizeUserConversations(JSON.parse(raw), resetStoredStream);
         if (parsed.length > 0) {
           setConversations(parsed);
           setActiveId(parsed[0].id);
@@ -75,6 +79,7 @@ export function UserChat() {
     }
     const timer = window.setTimeout(() => {
       localStorage.setItem(storageKey, JSON.stringify(conversations));
+      localStorage.setItem(storageVersionKey, storageVersion);
     }, 180);
     return () => window.clearTimeout(timer);
   }, [conversations]);
@@ -125,6 +130,7 @@ export function UserChat() {
         content: "",
         created_at: new Date().toISOString(),
         status: "streaming",
+        details: pendingPublicDetails(),
       });
       try {
         await api.publicAnswerStream(
@@ -165,6 +171,7 @@ export function UserChat() {
       content: "",
       created_at: new Date().toISOString(),
       status: "pending",
+      details: pendingPublicDetails(),
     });
     try {
       const response = await api.publicAnswer(
@@ -236,12 +243,36 @@ export function UserChat() {
       });
       return;
     }
+    if (event.type === "llm_reasoning_delta") {
+      const data = asRecord(event.data);
+      appendDetailText(conversationId, messageId, "reasoning", String(data.delta ?? ""), 12000);
+      appendEventDetail(
+        conversationId,
+        messageId,
+        "reasoning_events",
+        {
+          name: data.name,
+          delta: data.delta,
+          created_at: data.created_at,
+        },
+        80,
+      );
+      return;
+    }
+    if (event.type === "step_start" || event.type === "step_finish") {
+      appendEventDetail(conversationId, messageId, "steps", summarizeStepEvent(event.data), 40);
+      return;
+    }
     if (event.type === "result") {
       const data = (event.data ?? {}) as Record<string, unknown>;
       patchMessage(conversationId, messageId, {
         content: String(data.answer ?? ""),
         created_at: String(data.answered_at ?? ""),
         status: "done",
+        details: (prev: unknown) => ({
+          ...asRecord(prev),
+          ...asRecord(data.details),
+        }),
       });
       return;
     }
@@ -266,6 +297,7 @@ export function UserChat() {
       content: response.answer,
       created_at: response.answered_at,
       status: "done",
+      details: response.details,
     });
   }
 
@@ -288,7 +320,12 @@ export function UserChat() {
   function patchMessage(
     conversationId: string,
     messageId: string,
-    updates: { content?: string | ((prev: string) => string); created_at?: string; status?: MessageStatus },
+    updates: {
+      content?: string | ((prev: string) => string);
+      created_at?: string;
+      status?: MessageStatus;
+      details?: unknown;
+    },
   ) {
     setConversations((current) =>
       current.map((conversation) => {
@@ -308,11 +345,35 @@ export function UserChat() {
               content: nextContent,
               created_at: updates.created_at?.trim() ? updates.created_at : message.created_at,
               status: updates.status ?? message.status,
+              details: "details" in updates ? resolveDetailUpdate(updates.details, message.details) : message.details,
             };
           }),
         };
       }),
     );
+  }
+
+  function appendDetailText(conversationId: string, messageId: string, key: string, text: string, maxLength: number) {
+    if (text === "") {
+      return;
+    }
+    patchMessage(conversationId, messageId, {
+      details: (prev: unknown) => {
+        const object = asRecord(prev);
+        const current = typeof object[key] === "string" ? String(object[key]) : "";
+        return { ...object, [key]: truncateText(`${current}${text}`, maxLength) };
+      },
+    });
+  }
+
+  function appendEventDetail(conversationId: string, messageId: string, key: string, value: unknown, limit: number) {
+    patchMessage(conversationId, messageId, {
+      details: (prev: unknown) => {
+        const object = asRecord(prev);
+        const current = Array.isArray(object[key]) ? object[key] : [];
+        return { ...object, [key]: [...current, value].slice(-limit) };
+      },
+    });
   }
 
   function createNewConversation() {
@@ -390,6 +451,7 @@ export function UserChat() {
                     createdAt={message.created_at}
                     pending={message.status === "pending" || message.status === "streaming"}
                     statusText={messageStatusText(message)}
+                    details={message.details}
                   />
                 ))}
               </div>
@@ -403,24 +465,50 @@ export function UserChat() {
           </div>
           <div className="border-t px-6 py-5">
             <div className="mx-auto max-w-3xl">
-              <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(activeConversation?.stream)}
-                    onChange={(event) => {
-                      setConversations((current) =>
-                        current.map((item) =>
-                          item.id === activeConversation?.id ? { ...item, stream: event.target.checked } : item,
-                        ),
-                      );
-                    }}
-                  />
-                  流式返回
-                </label>
-                <span>{error || busyLabel || "按 Enter 发送，Shift + Enter 换行"}</span>
-              </div>
               <div className="rounded-[28px] border bg-white p-3 shadow-soft">
+                <div className="mb-2 flex items-center justify-between gap-3 px-1 text-xs text-muted-foreground">
+                  <div className="flex rounded-full border bg-slate-50 p-0.5" title="选择本次 public 回复方式">
+                    <button
+                      type="button"
+                      className={cn(
+                        "rounded-full px-3 py-1 text-xs transition",
+                        activeConversation?.stream
+                          ? "bg-white text-slate-950 shadow-sm"
+                          : "text-muted-foreground hover:text-slate-950",
+                      )}
+                      onClick={() => {
+                        setConversations((current) =>
+                          current.map((item) =>
+                            item.id === activeConversation?.id ? { ...item, stream: true } : item,
+                          ),
+                        );
+                      }}
+                      title="开启流式返回，边生成边展示回答"
+                    >
+                      流式
+                    </button>
+                    <button
+                      type="button"
+                      className={cn(
+                        "rounded-full px-3 py-1 text-xs transition",
+                        !activeConversation?.stream
+                          ? "bg-white text-slate-950 shadow-sm"
+                          : "text-muted-foreground hover:text-slate-950",
+                      )}
+                      onClick={() => {
+                        setConversations((current) =>
+                          current.map((item) =>
+                            item.id === activeConversation?.id ? { ...item, stream: false } : item,
+                          ),
+                        );
+                      }}
+                      title="关闭流式返回，等待完整结果后一次展示"
+                    >
+                      非流式
+                    </button>
+                  </div>
+                  <span className="text-right">{error || busyLabel || "按 Enter 发送，Shift + Enter 换行"}</span>
+                </div>
                 <Textarea
                   value={composer}
                   onChange={(event) => setComposer(event.target.value)}
@@ -463,11 +551,19 @@ function createConversation(title: string): UserConversation {
     id: createId(),
     title,
     messages: [],
-    stream: true,
+    stream: false,
   };
 }
 
-function normalizeUserConversations(value: unknown): UserConversation[] {
+function pendingPublicDetails() {
+  return {
+    reasoning:
+      "1. 正在检查问题是否属于可回答范围。\n2. 正在检索正式知识库证据。\n3. 将根据证据可信度生成用户可见回答。",
+    steps: [],
+  };
+}
+
+function normalizeUserConversations(value: unknown, resetStoredStream = false): UserConversation[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -491,6 +587,7 @@ function normalizeUserConversations(value: unknown): UserConversation[] {
             content: typeof raw.content === "string" ? raw.content : "",
             created_at: typeof raw.created_at === "string" && raw.created_at.trim() !== "" ? raw.created_at : migrationTime,
             status: raw.status,
+            details: raw.details,
           });
           return messageAcc;
         }, [])
@@ -499,7 +596,7 @@ function normalizeUserConversations(value: unknown): UserConversation[] {
       id,
       title: typeof item.title === "string" && item.title.trim() !== "" ? item.title : "新会话",
       messages,
-      stream: typeof item.stream === "boolean" ? item.stream : true,
+      stream: resetStoredStream ? false : typeof item.stream === "boolean" ? item.stream : false,
     });
     return acc;
   }, []);
@@ -543,4 +640,42 @@ function messageStatusText(message: UserMessage) {
     default:
       return "";
   }
+}
+
+function resolveDetailUpdate(update: unknown, previous: unknown) {
+  if (typeof update === "function") {
+    return (update as (prev: unknown) => unknown)(previous);
+  }
+  return update;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return value as Record<string, unknown>;
+}
+
+function truncateText(value: string, maxLength: number) {
+  if (maxLength <= 0) {
+    return value;
+  }
+  const runes = Array.from(value);
+  if (runes.length <= maxLength) {
+    return value;
+  }
+  return runes.slice(runes.length - maxLength).join("");
+}
+
+function summarizeStepEvent(value: unknown) {
+  const data = asRecord(value);
+  return {
+    name: data.name,
+    tool: data.tool,
+    status: data.status,
+    output: data.output,
+    duration_ms: data.duration_ms,
+    started_at: data.started_at,
+    ended_at: data.ended_at,
+  };
 }

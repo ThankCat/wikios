@@ -102,7 +102,8 @@ func (t *execQMDTool) Execute(ctx context.Context, env *runtime.ExecEnv, args ma
 		}
 		cmdArgs = append(cmdArgs, "multi-get", pattern, "-l", limit)
 	}
-	stdout, stderr, exitCode, err := runCommand(runCtx, env.WikiRoot, "qmd", cmdArgs, qmdEnv())
+	qmdPath := qmdExecutable()
+	stdout, stderr, exitCode, err := runCommand(runCtx, env.WikiRoot, qmdPath, cmdArgs, qmdEnv())
 	if err != nil {
 		return failure(t.risk, "EXEC_FAILED", err), nil
 	}
@@ -111,6 +112,24 @@ func (t *execQMDTool) Execute(ctx context.Context, env *runtime.ExecEnv, args ma
 		"stdout":     stdout,
 		"stderr":     stderr,
 		"exit_code":  exitCode,
+	}
+	if exitCode != 0 && isQMDNativeModuleMismatch(stdout+"\n"+stderr) {
+		repairStdout, repairStderr, repairExitCode, repairErr := repairQMDInstall(runCtx)
+		data["qmd_repair_stdout"] = repairStdout
+		data["qmd_repair_stderr"] = repairStderr
+		data["qmd_repair_exit_code"] = repairExitCode
+		if repairErr != nil {
+			data["qmd_repair_error"] = repairErr.Error()
+		}
+		if repairErr == nil && repairExitCode == 0 {
+			stdout, stderr, exitCode, err = runCommand(runCtx, env.WikiRoot, qmdPath, cmdArgs, qmdEnv())
+			data["stdout"] = stdout
+			data["stderr"] = stderr
+			data["exit_code"] = exitCode
+			if err != nil {
+				return failure(t.risk, "EXEC_FAILED", err), nil
+			}
+		}
 	}
 	if exitCode != 0 {
 		return runtime.ToolResult{
@@ -130,11 +149,26 @@ func qmdEnv() []string {
 	return commandEnvWithPreferredPath(qmdPreferredPath())
 }
 
+func qmdExecutable() string {
+	if wrapperDir := ensureQMDWrapperDir(); wrapperDir != "" {
+		wrapperPath := filepath.Join(wrapperDir, "qmd")
+		if stat, err := os.Stat(wrapperPath); err == nil && !stat.IsDir() {
+			return wrapperPath
+		}
+	}
+	if path := findExecutableInPath("qmd", qmdPreferredPath()); path != "" {
+		return path
+	}
+	return "qmd"
+}
+
 func qmdPreferredPath() string {
 	path := os.Getenv("PATH")
+	wrapperDir := ensureQMDWrapperDir()
 	preferred := []string{
 		os.Getenv("WIKIOS_QMD_NODE_BIN"),
 		os.Getenv("QMD_NODE_BIN"),
+		wrapperDir,
 		"/opt/homebrew/opt/node@24/bin",
 	}
 	segments := make([]string, 0, len(preferred)+1)
@@ -161,7 +195,128 @@ func commandEnvWithPreferredPath(path string) []string {
 		"HOME=" + os.Getenv("HOME"),
 		"WIKIOS_QMD_NODE_BIN=" + os.Getenv("WIKIOS_QMD_NODE_BIN"),
 		"QMD_NODE_BIN=" + os.Getenv("QMD_NODE_BIN"),
+		"WIKIOS_QMD_WRAPPER_DIR=" + qmdWrapperDir(),
 	}
+}
+
+func findExecutableInPath(name string, pathValue string) string {
+	for _, dir := range strings.Split(pathValue, ":") {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		candidate := filepath.Join(dir, name)
+		if stat, err := os.Stat(candidate); err == nil && !stat.IsDir() && stat.Mode()&0o111 != 0 {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func qmdWrapperDir() string {
+	if dir := strings.TrimSpace(os.Getenv("WIKIOS_QMD_WRAPPER_DIR")); dir != "" {
+		return dir
+	}
+	return filepath.Join(os.TempDir(), "wikios-qmd-bin")
+}
+
+func ensureQMDWrapperDir() string {
+	dir := qmdWrapperDir()
+	if strings.TrimSpace(dir) == "" {
+		return ""
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ""
+	}
+	path := filepath.Join(dir, "qmd")
+	if err := os.WriteFile(path, []byte(qmdWrapperScript()), 0o755); err != nil {
+		return ""
+	}
+	return dir
+}
+
+func qmdWrapperScript() string {
+	return `#!/bin/sh
+set +e
+self_dir=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd)
+original_path="$PATH"
+clean_path=""
+old_ifs=$IFS
+IFS=:
+for path_item in $original_path; do
+  if [ "$path_item" = "$self_dir" ]; then
+    continue
+  fi
+  if [ -z "$clean_path" ]; then
+    clean_path=$path_item
+  else
+    clean_path=$clean_path:$path_item
+  fi
+done
+IFS=$old_ifs
+original_path="$clean_path"
+real_qmd=${WIKIOS_REAL_QMD:-}
+if [ -z "$real_qmd" ]; then
+  real_qmd=$(PATH="$original_path" command -v qmd 2>/dev/null)
+fi
+if [ -z "$real_qmd" ] || [ "$real_qmd" = "$self_dir/qmd" ]; then
+  echo "qmd executable not found outside WikiOS wrapper" >&2
+  exit 127
+fi
+out=$(mktemp 2>/dev/null || printf '/tmp/wikios-qmd-out-%s' "$$")
+err=$(mktemp 2>/dev/null || printf '/tmp/wikios-qmd-err-%s' "$$")
+"$real_qmd" "$@" >"$out" 2>"$err"
+status=$?
+cat "$out"
+cat "$err" >&2
+if [ "$status" -ne 0 ] && grep -E "NODE_MODULE_VERSION|different Node\.js version|ERR_DLOPEN_FAILED|Module did not self-register" "$out" "$err" >/dev/null 2>&1; then
+  npm_bin=${WIKIOS_QMD_NPM:-}
+  if [ -z "$npm_bin" ]; then
+    npm_bin=$(PATH="$original_path" command -v npm 2>/dev/null)
+  fi
+  if [ -n "$npm_bin" ]; then
+    "$npm_bin" rebuild -g @tobilu/qmd >/tmp/wikios-qmd-repair.out 2>/tmp/wikios-qmd-repair.err || \
+      "$npm_bin" install -g @tobilu/qmd >/tmp/wikios-qmd-repair.out 2>/tmp/wikios-qmd-repair.err
+    repair_status=$?
+    cat /tmp/wikios-qmd-repair.out
+    cat /tmp/wikios-qmd-repair.err >&2
+    if [ "$repair_status" -eq 0 ]; then
+      "$real_qmd" "$@"
+      status=$?
+    fi
+  fi
+fi
+rm -f "$out" "$err"
+exit "$status"
+`
+}
+
+func isQMDNativeModuleMismatch(output string) bool {
+	output = strings.ToLower(output)
+	return strings.Contains(output, "node_module_version") ||
+		strings.Contains(output, "different node.js version") ||
+		strings.Contains(output, "err_dlopen_failed") ||
+		strings.Contains(output, "module did not self-register")
+}
+
+func repairQMDInstall(ctx context.Context) (string, string, int, error) {
+	npmPath := os.Getenv("WIKIOS_QMD_NPM")
+	if strings.TrimSpace(npmPath) == "" {
+		npmPath = findExecutableInPath("npm", qmdPreferredPath())
+		if npmPath == "" {
+			var err error
+			npmPath, err = exec.LookPath("npm")
+			if err != nil {
+				return "", "", -1, err
+			}
+		}
+	}
+	stdout, stderr, exitCode, err := runCommand(ctx, "", npmPath, []string{"rebuild", "-g", "@tobilu/qmd"}, commandEnvWithPreferredPath(qmdPreferredPath()))
+	if err == nil && exitCode == 0 {
+		return stdout, stderr, exitCode, nil
+	}
+	installStdout, installStderr, installExitCode, installErr := runCommand(ctx, "", npmPath, []string{"install", "-g", "@tobilu/qmd"}, commandEnvWithPreferredPath(qmdPreferredPath()))
+	return stdout + installStdout, stderr + installStderr, installExitCode, installErr
 }
 
 func (t *execPythonTool) Validate(args map[string]any) error {
@@ -290,6 +445,11 @@ func (t *lintRunTool) Execute(ctx context.Context, env *runtime.ExecEnv, args ma
 	for _, line := range strings.Split(stdout, "\n") {
 		if strings.HasPrefix(line, "Wrote lint report to ") {
 			reportPath = strings.TrimSpace(strings.TrimPrefix(line, "Wrote lint report to "))
+			break
+		}
+		if idx := strings.Index(line, "outputs/"); idx >= 0 {
+			reportPath = strings.Fields(line[idx:])[0]
+			reportPath = strings.Trim(reportPath, "`'\".，。")
 			break
 		}
 	}

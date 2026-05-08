@@ -53,8 +53,11 @@ func (r *PathResolver) EnsureWritableWikiPath(rel string) (string, string, error
 	if strings.HasPrefix(clean, "raw/") || clean == "raw" {
 		return "", "", fmt.Errorf("raw is read-only")
 	}
+	if strings.HasPrefix(clean, "outputs/") {
+		return abs, clean, nil
+	}
 	if !strings.HasPrefix(clean, "wiki/") {
-		return "", "", fmt.Errorf("writes are only allowed under wiki/")
+		return "", "", fmt.Errorf("writes are only allowed under wiki/ or outputs/")
 	}
 	return abs, clean, nil
 }

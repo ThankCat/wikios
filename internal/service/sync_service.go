@@ -100,13 +100,23 @@ func fallbackSyncCommitMessage(req SyncCommitMessageRequest) string {
 	kinds := map[string]int{}
 	for _, file := range req.Files {
 		switch {
-		case strings.HasPrefix(file.Path, "wiki/faq/"):
-			kinds["FAQ"]++
+		case strings.HasPrefix(file.Path, "wiki/knowledge/"):
+			kinds["知识"]++
+		case strings.HasPrefix(file.Path, "wiki/policies/"):
+			kinds["政策"]++
+		case strings.HasPrefix(file.Path, "wiki/procedures/"):
+			kinds["流程"]++
+		case strings.HasPrefix(file.Path, "wiki/comparisons/"):
+			kinds["对比"]++
+		case strings.HasPrefix(file.Path, "wiki/synthesis/"):
+			kinds["综合页"]++
+		case strings.HasPrefix(file.Path, "wiki/intents/"):
+			kinds["意图"]++
 		case strings.HasPrefix(file.Path, "wiki/concepts/"):
 			kinds["概念"]++
 		case strings.HasPrefix(file.Path, "wiki/entities/"):
 			kinds["实体"]++
-		case strings.HasPrefix(file.Path, "wiki/outputs/"):
+		case strings.HasPrefix(file.Path, "outputs/"):
 			kinds["报告"]++
 		case strings.HasPrefix(file.Path, "raw/"):
 			kinds["原始资料"]++
@@ -114,7 +124,7 @@ func fallbackSyncCommitMessage(req SyncCommitMessageRequest) string {
 			kinds["Wiki"]++
 		}
 	}
-	priority := []string{"FAQ", "概念", "实体", "原始资料", "报告", "Wiki"}
+	priority := []string{"知识", "政策", "流程", "对比", "综合页", "概念", "实体", "意图", "原始资料", "报告", "Wiki"}
 	parts := []string{}
 	for _, key := range priority {
 		if kinds[key] > 0 {

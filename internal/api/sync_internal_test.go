@@ -33,7 +33,7 @@ func TestParseStatusLineKeepsObsidianUnchecked(t *testing.T) {
 	if file.DefaultOn {
 		t.Fatal("obsidian files should not be selected by default")
 	}
-	if file.Preview != "json" {
-		t.Fatalf("expected json preview, got %s", file.Preview)
+	if file.Preview != "download" {
+		t.Fatalf("expected download preview, got %s", file.Preview)
 	}
 }

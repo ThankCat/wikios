@@ -40,6 +40,7 @@ export type PublicAnswerMeta = {
   question_message_id?: string;
   answer_message_id?: string;
   question_created_at?: string;
+  stream?: boolean;
 };
 
 const adminSessionStorageKey = "wikios.admin.session";
@@ -79,7 +80,7 @@ export const api = {
     return request<PublicAnswerResponse>(apiURL("/api/v1/public/answer"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, history, ...meta }),
+      body: JSON.stringify({ question, history, ...meta, stream: false }),
       signal,
     });
   },
@@ -90,11 +91,11 @@ export const api = {
     onEvent: (event: PublicStreamEvent) => void,
     signal?: AbortSignal,
   ) {
-    const response = await fetch(apiURL("/api/v1/public/answer/stream"), {
+    const response = await fetch(apiURL("/api/v1/public/answer"), {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, history, ...meta }),
+      body: JSON.stringify({ question, history, ...meta, stream: true }),
       signal,
     });
     if (!response.ok) {

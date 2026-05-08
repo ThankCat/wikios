@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -95,6 +97,24 @@ func (s *baseService) executeTool(ctx context.Context, execution *Execution, env
 }
 
 func (s *baseService) executeLLM(ctx context.Context, execution *Execution, model string, messages []llm.Message, stepName string) (string, error) {
+	text, _, err := s.executeLLMTrace(ctx, execution, model, messages, stepName)
+	return text, err
+}
+
+type LLMTrace struct {
+	Reasoning string `json:"reasoning,omitempty"`
+}
+
+func (s *baseService) executeLLMTrace(ctx context.Context, execution *Execution, model string, messages []llm.Message, stepName string) (string, LLMTrace, error) {
+	return s.executeLLMTraceWithHooks(ctx, execution, model, messages, stepName, nil)
+}
+
+type llmDeltaHooks struct {
+	Content   func(string)
+	Reasoning func(string)
+}
+
+func (s *baseService) executeLLMTraceWithHooks(ctx context.Context, execution *Execution, model string, messages []llm.Message, stepName string, hooks *llmDeltaHooks) (string, LLMTrace, error) {
 	start := time.Now()
 	promptChars, promptTokens := estimatePromptSize(messages)
 	timeout := s.llmRequestTimeout(execution)
@@ -118,6 +138,9 @@ func (s *baseService) executeLLM(ctx context.Context, execution *Execution, mode
 				"delta":      delta.ReasoningContent,
 				"created_at": time.Now().Format(time.RFC3339Nano),
 			})
+			if hooks != nil && hooks.Reasoning != nil {
+				hooks.Reasoning(delta.ReasoningContent)
+			}
 		}
 		if delta.Content != "" {
 			emitStreamEvent(ctx, "llm_delta", map[string]any{
@@ -125,6 +148,9 @@ func (s *baseService) executeLLM(ctx context.Context, execution *Execution, mode
 				"delta":      delta.Content,
 				"created_at": time.Now().Format(time.RFC3339Nano),
 			})
+			if hooks != nil && hooks.Content != nil {
+				hooks.Content(delta.Content)
+			}
 		}
 	}
 	var text string
@@ -138,41 +164,38 @@ func (s *baseService) executeLLM(ctx context.Context, execution *Execution, mode
 	}
 	end := time.Now()
 	reasoningText := strings.TrimSpace(reasoning.String())
-	if execution == nil {
-		if err != nil {
-			return "", err
+	trace := LLMTrace{Reasoning: reasoningText}
+	if execution != nil {
+		step := Step{
+			Name:       stepName,
+			Tool:       "llm.chat",
+			DurationMs: end.Sub(start).Milliseconds(),
+			Status:     "SUCCESS",
+			StartedAt:  start,
+			EndedAt:    end,
+			Input: map[string]any{
+				"model":                   model,
+				"message_count":           len(messages),
+				"prompt_chars":            promptChars,
+				"prompt_estimated_tokens": promptTokens,
+				"timeout_sec":             timeoutSec,
+				"system_preview":          summarizeMessage(messages, "system"),
+				"user_preview":            summarizeMessage(messages, "user"),
+			},
+			Output: map[string]any{
+				"response_preview": summarizeContent(text),
+			},
 		}
-		return text, nil
+		if reasoningText != "" {
+			step.Output["reasoning_preview"] = summarizeContent(reasoningText)
+			step.Output["reasoning_chars"] = len([]rune(reasoningText))
+		}
+		if err != nil {
+			step.Status = "FAILED"
+			step.Output = map[string]any{"error": err.Error()}
+		}
+		execution.Steps = append(execution.Steps, step)
 	}
-	step := Step{
-		Name:       stepName,
-		Tool:       "llm.chat",
-		DurationMs: end.Sub(start).Milliseconds(),
-		Status:     "SUCCESS",
-		StartedAt:  start,
-		EndedAt:    end,
-		Input: map[string]any{
-			"model":                   model,
-			"message_count":           len(messages),
-			"prompt_chars":            promptChars,
-			"prompt_estimated_tokens": promptTokens,
-			"timeout_sec":             timeoutSec,
-			"system_preview":          summarizeMessage(messages, "system"),
-			"user_preview":            summarizeMessage(messages, "user"),
-		},
-		Output: map[string]any{
-			"response_preview": summarizeContent(text),
-		},
-	}
-	if reasoningText != "" {
-		step.Output["reasoning_preview"] = summarizeContent(reasoningText)
-		step.Output["reasoning_chars"] = len([]rune(reasoningText))
-	}
-	if err != nil {
-		step.Status = "FAILED"
-		step.Output = map[string]any{"error": err.Error()}
-	}
-	execution.Steps = append(execution.Steps, step)
 	emitStreamEvent(ctx, "llm_done", map[string]any{
 		"name":            stepName,
 		"text":            text,
@@ -189,9 +212,9 @@ func (s *baseService) executeLLM(ctx context.Context, execution *Execution, mode
 		}(),
 	})
 	if err != nil {
-		return "", err
+		return "", trace, err
 	}
-	return text, nil
+	return text, trace, nil
 }
 
 func (s *baseService) llmRequestTimeout(execution *Execution) time.Duration {
@@ -216,23 +239,6 @@ func (s *baseService) loadPrompt(name string) (string, error) {
 	return llm.LoadPrompt(filepath.Join(s.deps.PromptDir, name))
 }
 
-func (s *baseService) loadPromptWithWikiAgent(name string) (string, error) {
-	prompt, err := s.loadPrompt(name)
-	if err != nil {
-		return "", err
-	}
-	guide := s.loadWikiAgentSections("通用 Wiki 治理规则",
-		"## 系统概述",
-		"## Server / Wiki 职责边界",
-		"## Wikilink 使用规范",
-		"## Wiki 语言规范",
-	)
-	if strings.TrimSpace(guide) == "" {
-		return prompt, nil
-	}
-	return prompt + "\n\n" + guide, nil
-}
-
 func (s *baseService) loadPromptWithWikiQueryGuide(name string) (string, error) {
 	prompt, err := s.loadPrompt(name)
 	if err != nil {
@@ -246,42 +252,11 @@ func (s *baseService) loadPromptWithWikiQueryGuide(name string) (string, error) 
 		}
 		return "", fmt.Errorf("read mounted wiki AGENT.md: %w", err)
 	}
-	queryGuide := extractPublicMarkdownSection(string(agentRaw), "## QUERY 操作规范")
+	queryGuide := extractPublicMarkdownSection(string(agentRaw), "## QUERY")
 	if strings.TrimSpace(queryGuide) == "" {
 		return prompt, nil
 	}
 	return prompt + "\n\n以下是当前挂载 Wiki 的最高优先级 QUERY 规范（来自 mounted wiki 的 AGENT.md），仅用于证据查询和答案合成。若 public answer prompt 与该 QUERY 规范存在差异，一律以 AGENT.md 的 QUERY 规范为准；public answer prompt 只补充客户可见表达和安全边界：\n\n" + strings.TrimSpace(queryGuide), nil
-}
-
-func (s *baseService) loadPromptWithWikiSections(name string, title string, headings ...string) (string, error) {
-	prompt, err := s.loadPrompt(name)
-	if err != nil {
-		return "", err
-	}
-	guide := s.loadWikiAgentSections(title, headings...)
-	if strings.TrimSpace(guide) == "" {
-		return prompt, nil
-	}
-	return prompt + "\n\n" + guide, nil
-}
-
-func (s *baseService) loadWikiAgentSections(title string, headings ...string) string {
-	agentPath := filepath.Join(s.deps.Config.MountedWiki.Root, "AGENT.md")
-	agentRaw, err := os.ReadFile(agentPath)
-	if err != nil {
-		return ""
-	}
-	sections := make([]string, 0, len(headings))
-	for _, heading := range headings {
-		section := extractPublicMarkdownSection(string(agentRaw), heading)
-		if strings.TrimSpace(section) != "" {
-			sections = append(sections, strings.TrimSpace(section))
-		}
-	}
-	if len(sections) == 0 {
-		return ""
-	}
-	return "【" + strings.TrimSpace(title) + "（来自 mounted wiki 的 AGENT.md，Wiki 治理规则最高优先级）】\n" + strings.Join(sections, "\n\n")
 }
 
 func estimatePromptSize(messages []llm.Message) (int, int) {
@@ -346,12 +321,20 @@ func (s *baseService) normalizeMountedInputPath(input string) (string, error) {
 }
 
 func sourceConfidence(path string) string {
+	path = filepath.ToSlash(path)
 	switch {
-	case strings.Contains(path, "/faq/"):
+	case strings.Contains(path, "/knowledge/"),
+		strings.Contains(path, "/policies/"),
+		strings.Contains(path, "/procedures/"),
+		strings.Contains(path, "/comparisons/"),
+		strings.Contains(path, "/synthesis/"):
 		return "high"
 	case strings.Contains(path, "/sources/"):
 		return "medium"
-	case strings.Contains(path, "/concepts/"), strings.Contains(path, "/entities/"):
+	case strings.Contains(path, "/concepts/"),
+		strings.Contains(path, "/entities/"):
+		return "medium"
+	case strings.Contains(path, "/intents/"):
 		return "low"
 	default:
 		return "low"
@@ -381,6 +364,86 @@ func reportResult(executionID string, taskType string, summary string, outputFil
 
 func nowDate() string {
 	return time.Now().Format("2006-01-02")
+}
+
+func stableShortHash(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+func dedupeStrings(items []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		out = append(out, item)
+	}
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func trimStringSlice(items []string, limit int) []string {
+	items = dedupeStrings(items)
+	if limit > 0 && len(items) > limit {
+		return append([]string{}, items[:limit]...)
+	}
+	return items
+}
+
+func summarizeContent(content string) string {
+	content = strings.TrimSpace(content)
+	runes := []rune(content)
+	if len(runes) > 400 {
+		content = string(runes[:400]) + "..."
+	}
+	return content
+}
+
+func humanizeSlug(slug string) string {
+	parts := strings.Split(strings.TrimSpace(slug), "-")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		if len(part) <= 2 {
+			out = append(out, strings.ToUpper(part))
+			continue
+		}
+		runes := []rune(part)
+		out = append(out, strings.ToUpper(string(runes[:1]))+string(runes[1:]))
+	}
+	return strings.Join(out, " ")
+}
+
+func slugFromText(text string) string {
+	text = strings.ToLower(text)
+	text = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '-'
+	}, text)
+	text = strings.Trim(text, "-")
+	for strings.Contains(text, "--") {
+		text = strings.ReplaceAll(text, "--", "-")
+	}
+	if text == "" {
+		return "output"
+	}
+	return text
 }
 
 func buildOutputDocument(title string, body string, sourceCount int) string {

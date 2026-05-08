@@ -21,5 +21,5 @@ func NeedsGraphExcluded(relPath string) bool {
 	if IsSystemPage(relPath) {
 		return true
 	}
-	return len(relPath) >= len("wiki/outputs/") && relPath[:len("wiki/outputs/")] == "wiki/outputs/"
+	return len(relPath) >= len("outputs/") && relPath[:len("outputs/")] == "outputs/"
 }
