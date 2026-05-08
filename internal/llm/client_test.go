@@ -109,3 +109,23 @@ func TestStreamChatEventsReturnsClearRequestTimeout(t *testing.T) {
 		t.Fatalf("expected clear timeout error, got %v", err)
 	}
 }
+
+func TestChatReturnsHTTPStatusForNonJSONError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream overloaded", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.LLMConfig{
+		APIKey:     "test-key",
+		BaseURL:    server.URL,
+		TimeoutSec: 5,
+	})
+	_, err := client.Chat(context.Background(), "test-model", []Message{{Role: "user", Content: "hi"}})
+	if err == nil {
+		t.Fatalf("expected http status error")
+	}
+	if !strings.Contains(err.Error(), "llm api status 502") || !strings.Contains(err.Error(), "upstream overloaded") {
+		t.Fatalf("expected status and response body, got %v", err)
+	}
+}

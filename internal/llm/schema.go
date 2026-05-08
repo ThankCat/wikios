@@ -16,21 +16,59 @@ func LoadPrompt(path string) (string, error) {
 }
 
 func DecodeJSONObject[T any](text string, out *T) error {
-	candidate, err := ExtractJSONObject(text)
-	if err != nil {
-		return err
+	candidates := extractJSONObjectCandidates(text)
+	if len(candidates) == 0 {
+		return fmt.Errorf("no json object found in llm response")
 	}
-	if err := json.Unmarshal([]byte(candidate), out); err != nil {
-		return fmt.Errorf("decode json object: %w", err)
+	var lastErr error
+	for _, candidate := range candidates {
+		if err := json.Unmarshal([]byte(candidate), out); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
 	}
-	return nil
+	if lastErr != nil {
+		return fmt.Errorf("decode json object: %w", lastErr)
+	}
+	return fmt.Errorf("decode json object: no valid candidate")
 }
 
 func ExtractJSONObject(text string) (string, error) {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return "", fmt.Errorf("empty llm response")
+	candidates := extractJSONObjectCandidates(text)
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("no json object found in llm response")
 	}
+	return candidates[0], nil
+}
+
+func extractJSONObjectCandidates(text string) []string {
+	trimmed := stripMarkdownFence(strings.TrimSpace(text))
+	if trimmed == "" {
+		return nil
+	}
+
+	candidates := make([]string, 0, 1)
+	for start := strings.Index(trimmed, "{"); start >= 0 && start < len(trimmed); {
+		if end, ok := balancedJSONObjectEnd(trimmed[start:]); ok {
+			candidate := trimmed[start : start+end]
+			if json.Valid([]byte(candidate)) {
+				candidates = append(candidates, candidate)
+			}
+			start = start + end
+		} else {
+			start++
+		}
+		next := strings.Index(trimmed[start:], "{")
+		if next < 0 {
+			break
+		}
+		start += next
+	}
+	return candidates
+}
+
+func stripMarkdownFence(trimmed string) string {
 	if strings.HasPrefix(trimmed, "```") {
 		lines := strings.Split(trimmed, "\n")
 		if len(lines) >= 3 {
@@ -41,10 +79,44 @@ func ExtractJSONObject(text string) (string, error) {
 			trimmed = strings.TrimSpace(strings.Join(lines, "\n"))
 		}
 	}
-	start := strings.Index(trimmed, "{")
-	end := strings.LastIndex(trimmed, "}")
-	if start == -1 || end == -1 || end < start {
-		return "", fmt.Errorf("no json object found in llm response")
+	return trimmed
+}
+
+func balancedJSONObjectEnd(text string) (int, bool) {
+	depth := 0
+	inString := false
+	escaped := false
+	for idx, r := range text {
+		if idx == 0 && r != '{' {
+			return 0, false
+		}
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch r {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch r {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return idx + len(string(r)), true
+			}
+			if depth < 0 {
+				return 0, false
+			}
+		}
 	}
-	return trimmed[start : end+1], nil
+	return 0, false
 }

@@ -153,15 +153,19 @@ func (c *OpenAICompatibleClient) doChat(ctx context.Context, model string, messa
 	if err != nil {
 		return "", c.wrapTimeoutError(ctx, timeout, err)
 	}
+	if resp.StatusCode >= 400 {
+		var parsed chatResponse
+		if err := json.Unmarshal(body, &parsed); err == nil && parsed.Error != nil {
+			return "", fmt.Errorf("llm api error: %s", parsed.Error.Message)
+		}
+		if bodyText := strings.TrimSpace(string(body)); bodyText != "" {
+			return "", fmt.Errorf("llm api status %d: %s", resp.StatusCode, truncateErrorBody(bodyText, 300))
+		}
+		return "", fmt.Errorf("llm api status %d", resp.StatusCode)
+	}
 	var parsed chatResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return "", fmt.Errorf("decode llm response: %w", err)
-	}
-	if resp.StatusCode >= 400 {
-		if parsed.Error != nil {
-			return "", fmt.Errorf("llm api error: %s", parsed.Error.Message)
-		}
-		return "", fmt.Errorf("llm api status %d", resp.StatusCode)
 	}
 	if len(parsed.Choices) == 0 {
 		return "", fmt.Errorf("llm returned no choices")
@@ -195,6 +199,18 @@ func formatTimeout(timeout time.Duration) string {
 		return fmt.Sprintf("%ds", int(timeout/time.Second))
 	}
 	return timeout.String()
+}
+
+func truncateErrorBody(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 {
+		limit = 300
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + "..."
 }
 
 func (c *OpenAICompatibleClient) readStreamResponse(resp *http.Response, onDelta func(StreamDelta)) (string, error) {
