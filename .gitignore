@@ -11,3 +11,4 @@ web/.next/
 web/dist/
 web/*.tsbuildinfo
 .idea/
+.vscode/

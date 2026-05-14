@@ -8,11 +8,6 @@ mounted_wiki:
   qmd_index: ${WIKIOS_QMD_INDEX}
 
 llm:
-  provider: deepseek
-  model_public: deepseek-v4-flash
-  model_admin: deepseek-v4-flash
-  api_key: ${DEEPSEEK_API_KEY}
-  base_url: https://api.deepseek.com/v1
   timeout_sec: 90
   admin_timeout_sec: ${WIKIOS_LLM_ADMIN_TIMEOUT_SEC}
 
@@ -61,6 +56,10 @@ public_intents:
 public_query:
   candidate_top_k: ${WIKIOS_PUBLIC_CANDIDATE_TOP_K}
   max_evidence_chars: ${WIKIOS_PUBLIC_MAX_EVIDENCE_CHARS}
+  answer_log:
+    enabled: ${WIKIOS_PUBLIC_ANSWER_LOG_ENABLED}
+    redact: ${WIKIOS_PUBLIC_ANSWER_LOG_REDACT}
+    retention_days: ${WIKIOS_PUBLIC_ANSWER_LOG_RETENTION_DAYS}
   confidence:
     direct_min: 0.70
     review_min: 0.25

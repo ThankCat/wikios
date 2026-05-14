@@ -42,8 +42,7 @@ export function MessageDetails({ details, leadingContent }: Props) {
   const executionSteps = Array.isArray(execution.steps) ? execution.steps : [];
   const steps = Array.isArray(object.steps) ? object.steps : executionSteps;
   const result = object.result ?? object;
-  const explicitReasoning = typeof object.reasoning === "string" ? object.reasoning : "";
-  const reasoning = explicitReasoning || buildTraceSummary(object, steps);
+  const reasoning = typeof object.reasoning === "string" ? object.reasoning.trim() : "";
 
   const availableTabs = useMemo(
     () =>
@@ -106,7 +105,7 @@ export function MessageDetails({ details, leadingContent }: Props) {
 function ReasoningPanel({ reasoning }: { reasoning: string }) {
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-3">
-      <div className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Reasoning Stream</div>
+      <div className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Model Reasoning Stream</div>
       <CodeBlock value={reasoning} />
     </section>
   );
@@ -241,41 +240,6 @@ function PanelBlock({ title, value }: { title: string; value: unknown }) {
       <CodeBlock value={value} />
     </div>
   );
-}
-
-function buildTraceSummary(details: Record<string, unknown>, steps: unknown[]) {
-  const lines: string[] = [];
-  const result = asObject(details.result);
-  const commands = Array.isArray(result.commands)
-    ? result.commands
-    : Array.isArray(details.commands)
-      ? details.commands
-      : [];
-  commands.slice(-12).forEach((command, index) => {
-    const item = asObject(command);
-    const reason = String(item.reason ?? "").trim();
-    const text = String(item.command ?? "").trim();
-    if (reason || text) {
-      lines.push(`${index + 1}. ${reason || "执行命令"}${text ? `：${truncateInline(text, 120)}` : ""}`);
-    }
-  });
-  if (lines.length === 0 && steps.length > 0) {
-    steps.slice(-12).forEach((step, index) => {
-      const item = asObject(step);
-      const name = String(item.name ?? `Step ${index + 1}`).trim();
-      const tool = String(item.tool ?? "tool").trim();
-      const status = String(item.status ?? "RUNNING").trim();
-      lines.push(`${index + 1}. ${name}：${tool} / ${status}`);
-    });
-  }
-  return lines.join("\n");
-}
-
-function truncateInline(value: string, limit: number) {
-  if (value.length <= limit) {
-    return value;
-  }
-  return `${value.slice(0, limit)}...`;
 }
 
 function CodeBlock({ value }: { value: unknown }) {

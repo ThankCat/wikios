@@ -116,8 +116,10 @@ http://127.0.0.1:9025/admin/login
 
 ```env
 WIKIOS_DEFAULT_ADMIN_USERNAME=admin
-WIKIOS_DEFAULT_ADMIN_PASSWORD=admin123
+WIKIOS_DEFAULT_ADMIN_PASSWORD=请设置一个安全密码
 ```
+
+生产 `release` 模式禁止继续使用默认密码 `admin123`；未设置安全密码时服务会启动失败，避免默认管理员账号静默上线。
 
 管理后台用于：
 
@@ -158,18 +160,22 @@ WIKIOS_DEFAULT_ADMIN_PASSWORD=admin123
 | --- | --- |
 | `mounted_wiki.root` | 外挂 Wiki 根目录，Docker 中默认为 `/data/wiki-repo`。 |
 | `mounted_wiki.qmd_index` | qmd index 名称，可通过 `WIKIOS_QMD_INDEX` 配置。 |
-| `llm.api_key` | LLM API Key。 |
-| `llm.timeout_sec` | Public LLM 请求超时。 |
-| `llm.admin_timeout_sec` | Admin/摄入类 LLM 请求超时。 |
+| `llm.timeout_sec` | Public LLM 请求超时默认值。 |
+| `llm.admin_timeout_sec` | Admin/摄入类 LLM 请求超时默认值。 |
 | `storage.sqlite_path` | 服务 SQLite 数据库路径。 |
 | `web.dist_dir` | 内置 Web 静态产物目录。 |
 | `public_intents.path` | 前置话术 YAML 路径。 |
+| `public_query.answer_log.enabled` | 是否写入 public 问答 JSONL 日志，默认开启。 |
+| `public_query.answer_log.redact` | 是否对 public 问答日志做密钥、Token、手机号、邮箱脱敏，默认开启。 |
+| `public_query.answer_log.retention_days` | public 问答日志保留天数，默认 14 天。 |
 | `WIKIOS_SUPPORT_PHONE` | Public Query 注入给 LLM 的公开客服电话，默认 `400-1080-106`。 |
 | `WIKIOS_SUPPORT_WECOM` | Public Query 注入给 LLM 的公开企业微信联系方式，默认 `企业微信`。 |
 | `WIKIOS_WIKI_GIT_URL` | 可选；配置后容器启动时自动 clone/pull 外挂 Wiki。 |
 | `WIKIOS_WIKI_GIT_BRANCH` | 自动 clone/pull 的分支，默认 `main`。 |
 | `WIKIOS_WIKI_GIT_PULL_ON_START` | 已有 git 仓库时是否启动自动 pull，默认 `true`。 |
 | `WIKIOS_WIKI_GIT_RESET_ON_START` | 是否启动时 hard reset 到远端分支，默认 `false`；开启会丢弃未提交本地改动。 |
+
+模型的 `provider`、`base_url`、`model_name` 和 `api_key` 不再从 YAML 或环境变量读取。请启动服务后在管理后台的“模型”模块新增并启用 OpenAI-compatible 模型；SQLite 中没有启用模型时，public/admin 对话会返回明确的模型配置提示。
 
 ## 生产注意事项
 

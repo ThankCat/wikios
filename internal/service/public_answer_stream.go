@@ -43,18 +43,6 @@ func (s *publicAnswerStream) emitAnswerDelta(delta string) {
 	})
 }
 
-func (s *publicAnswerStream) emitReasoning(message string) {
-	message = strings.TrimSpace(message)
-	if s == nil || message == "" {
-		return
-	}
-	s.emit("llm_reasoning_delta", map[string]any{
-		"name":       "public answer trace",
-		"delta":      message + "\n",
-		"created_at": time.Now().Format(time.RFC3339Nano),
-	})
-}
-
 func (s *publicAnswerStream) emitStep(name string, output map[string]any) {
 	name = strings.TrimSpace(name)
 	if s == nil || name == "" {

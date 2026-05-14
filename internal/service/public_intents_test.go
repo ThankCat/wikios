@@ -118,12 +118,37 @@ fallbacks:
 rules: []
 `,
 		},
+		{
+			name: "model unavailable fallback leaks model internals",
+			source: `version: 1
+fallbacks:
+  generic: fallback
+  model_unavailable:
+    - 当前模型欠费，请管理员端检查余额
+rules: []
+`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, _, err := ParsePublicIntentConfig(tc.source); err == nil {
 				t.Fatalf("expected internal wording validation error")
 			}
 		})
+	}
+}
+
+func TestPublicIntentModelUnavailableFallbackPoolUsesConfiguredPhrases(t *testing.T) {
+	manager := newTestPublicIntentManager(t, `version: 1
+fallbacks:
+  generic: fallback
+  model_unavailable:
+    - 稍后再问一次，我会继续帮您确认。
+    - 当前回复短暂不可用，您可以稍后重试。
+rules: []
+`)
+	got := manager.ModelUnavailableFallback("stable-seed")
+	if got != "稍后再问一次，我会继续帮您确认。" && got != "当前回复短暂不可用，您可以稍后重试。" {
+		t.Fatalf("expected configured fallback phrase, got %q", got)
 	}
 }
 

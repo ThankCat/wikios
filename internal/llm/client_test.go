@@ -7,22 +7,19 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"wikios/internal/config"
 )
 
 func TestNewClientUsesRequestTimeoutOnly(t *testing.T) {
-	client := NewClient(config.LLMConfig{
-		APIKey:          "test-key",
-		BaseURL:         "http://example.invalid",
-		TimeoutSec:      5,
-		AdminTimeoutSec: 30,
+	client := NewClient(ClientConfig{
+		APIKey:     "test-key",
+		BaseURL:    "http://example.invalid",
+		TimeoutSec: 5,
 	}).(*OpenAICompatibleClient)
 	if client.client.Timeout != 0 {
 		t.Fatalf("expected http.Client.Timeout to be unset, got %s", client.client.Timeout)
 	}
-	if client.timeout != 5*time.Second || client.adminTimeout != 30*time.Second {
-		t.Fatalf("unexpected request timeouts: default=%s admin=%s", client.timeout, client.adminTimeout)
+	if client.timeout != 5*time.Second {
+		t.Fatalf("unexpected request timeout: %s", client.timeout)
 	}
 }
 
@@ -35,7 +32,7 @@ func TestStreamChatIgnoresReasoningContent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(config.LLMConfig{
+	client := NewClient(ClientConfig{
 		APIKey:     "test-key",
 		BaseURL:    server.URL,
 		TimeoutSec: 5,
@@ -67,7 +64,7 @@ func TestStreamChatEventsSeparatesReasoningContent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(config.LLMConfig{
+	client := NewClient(ClientConfig{
 		APIKey:     "test-key",
 		BaseURL:    server.URL,
 		TimeoutSec: 5,
@@ -96,7 +93,7 @@ func TestStreamChatEventsReturnsClearRequestTimeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(config.LLMConfig{
+	client := NewClient(ClientConfig{
 		APIKey:     "test-key",
 		BaseURL:    server.URL,
 		TimeoutSec: 10,
@@ -110,13 +107,72 @@ func TestStreamChatEventsReturnsClearRequestTimeout(t *testing.T) {
 	}
 }
 
+func TestStreamChatEventsRetriesTransientBusyBeforeDeltas(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"Service is too busy. Please try again."}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		APIKey:     "test-key",
+		BaseURL:    server.URL,
+		TimeoutSec: 5,
+	})
+	deltas := []StreamDelta{}
+	text, err := client.(EventStreamClient).StreamChatEvents(context.Background(), "test-model", []Message{{Role: "user", Content: "hi"}}, func(delta StreamDelta) {
+		deltas = append(deltas, delta)
+	})
+	if err != nil {
+		t.Fatalf("StreamChatEvents: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected 3 attempts, got %d", attempts)
+	}
+	if text != "ok" || len(deltas) != 1 || deltas[0].Content != "ok" {
+		t.Fatalf("unexpected retry result text=%q deltas=%#v", text, deltas)
+	}
+}
+
+func TestStreamChatEventsDoesNotRetryAfterDelta(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"error\":{\"message\":\"Service is too busy.\"}}\n\n"))
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		APIKey:     "test-key",
+		BaseURL:    server.URL,
+		TimeoutSec: 5,
+	})
+	_, err := client.(EventStreamClient).StreamChatEvents(context.Background(), "test-model", []Message{{Role: "user", Content: "hi"}}, func(StreamDelta) {})
+	if err == nil {
+		t.Fatalf("expected stream error")
+	}
+	if attempts != 1 {
+		t.Fatalf("must not retry after emitting a delta, got %d attempts", attempts)
+	}
+}
+
 func TestChatReturnsHTTPStatusForNonJSONError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "upstream overloaded", http.StatusBadGateway)
 	}))
 	defer server.Close()
 
-	client := NewClient(config.LLMConfig{
+	client := NewClient(ClientConfig{
 		APIKey:     "test-key",
 		BaseURL:    server.URL,
 		TimeoutSec: 5,

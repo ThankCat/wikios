@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 
 	"wikios/internal/app/middleware"
 	"wikios/internal/config"
+	"wikios/internal/llm"
 	"wikios/internal/service"
 	"wikios/internal/store"
 )
@@ -84,6 +86,38 @@ type publicAnswerRequest struct {
 	QuestionCreatedAt string         `json:"question_created_at"`
 	Context           map[string]any `json:"context"`
 	History           []chatMessage  `json:"history"`
+}
+
+type adminLLMModelRequest struct {
+	DisplayName     string `json:"display_name"`
+	Provider        string `json:"provider"`
+	BaseURL         string `json:"base_url"`
+	ModelName       string `json:"model_name"`
+	APIKey          string `json:"api_key"`
+	TimeoutSec      int    `json:"timeout_sec"`
+	AdminTimeoutSec int    `json:"admin_timeout_sec"`
+}
+
+type adminLLMModelResponse struct {
+	ID              string `json:"id"`
+	DisplayName     string `json:"display_name"`
+	Provider        string `json:"provider"`
+	BaseURL         string `json:"base_url"`
+	ModelName       string `json:"model_name"`
+	HasAPIKey       bool   `json:"has_api_key"`
+	APIKeyMask      string `json:"api_key_mask"`
+	IsActive        bool   `json:"is_active"`
+	TimeoutSec      int    `json:"timeout_sec"`
+	AdminTimeoutSec int    `json:"admin_timeout_sec"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
+}
+
+type adminLLMModelTestResponse struct {
+	OK        bool   `json:"ok"`
+	Message   string `json:"message"`
+	LatencyMS int64  `json:"latency_ms"`
+	TestedAt  string `json:"tested_at"`
 }
 
 type chatMessage struct {
@@ -169,6 +203,9 @@ func (h *Handlers) PublicAnswer(c *gin.Context) {
 		History:           toServiceHistory(req.History),
 	})
 	if err != nil {
+		if requestContextCanceled(c.Request.Context(), err) {
+			return
+		}
 		internalError(c, err)
 		return
 	}
@@ -183,6 +220,18 @@ func (h *Handlers) PublicAnswerStream(c *gin.Context) {
 	}
 	req.Stream = true
 	h.handlePublicAnswerStream(c, req)
+}
+
+func (h *Handlers) PublicContextEstimate(c *gin.Context) {
+	var req publicAnswerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"mode":          "public",
+		"context_usage": h.estimatePublicContext(req),
+	})
 }
 
 func (h *Handlers) handlePublicAnswerStream(c *gin.Context, req publicAnswerRequest) {
@@ -208,12 +257,19 @@ func (h *Handlers) handlePublicAnswerStream(c *gin.Context, req publicAnswerRequ
 		History:           toServiceHistory(req.History),
 	}, &sseEmitter{c: c, mu: mu})
 	if err != nil {
+		if requestContextCanceled(c.Request.Context(), err) {
+			return
+		}
 		writeSSEWithLock(c, "error", gin.H{"message": err.Error()}, mu)
 		writeSSEWithLock(c, "done", gin.H{"ok": false}, mu)
 		return
 	}
 	writeSSEWithLock(c, "result", gin.H{"answer": resp.Answer, "answered_at": resp.AnsweredAt, "user_intent": resp.UserIntent, "details": resp.Details}, mu)
 	writeSSEWithLock(c, "done", gin.H{"ok": true}, mu)
+}
+
+func requestContextCanceled(ctx context.Context, err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled)
 }
 
 func (h *Handlers) AdminLogin(c *gin.Context) {
@@ -630,13 +686,131 @@ func (h *Handlers) AdminContextEstimate(c *gin.Context) {
 	})
 }
 
-func (h *Handlers) AdminLLMBalance(c *gin.Context) {
-	resp, err := service.FetchDeepSeekBalance(c.Request.Context(), h.Config.LLM)
+func (h *Handlers) AdminListLLMModels(c *gin.Context) {
+	models, err := h.Store.ListLLMModels(c.Request.Context())
 	if err != nil {
 		internalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, resp)
+	items := make([]adminLLMModelResponse, 0, len(models))
+	for _, model := range models {
+		items = append(items, adminLLMModelResponseFromStore(model))
+	}
+	c.JSON(http.StatusOK, gin.H{"models": items})
+}
+
+func (h *Handlers) AdminGetLLMModel(c *gin.Context) {
+	model, err := h.Store.GetLLMModel(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			notFound(c, "model not found")
+			return
+		}
+		internalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"model": adminLLMModelResponseFromStore(*model)})
+}
+
+func (h *Handlers) AdminCreateLLMModel(c *gin.Context) {
+	var req adminLLMModelRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	model, err := h.llmModelFromRequest(req, nil, true)
+	if err != nil {
+		badRequest(c, err)
+		return
+	}
+	model.ID = uuid.NewString()
+	if err := h.Store.CreateLLMModel(c.Request.Context(), model); err != nil {
+		internalError(c, err)
+		return
+	}
+	created, err := h.Store.GetLLMModel(c.Request.Context(), model.ID)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"model": adminLLMModelResponseFromStore(*created)})
+}
+
+func (h *Handlers) AdminUpdateLLMModel(c *gin.Context) {
+	existing, err := h.Store.GetLLMModel(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			notFound(c, "model not found")
+			return
+		}
+		internalError(c, err)
+		return
+	}
+	var req adminLLMModelRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	model, err := h.llmModelFromRequest(req, existing, false)
+	if err != nil {
+		badRequest(c, err)
+		return
+	}
+	if err := h.Store.UpdateLLMModel(c.Request.Context(), model); err != nil {
+		internalError(c, err)
+		return
+	}
+	updated, err := h.Store.GetLLMModel(c.Request.Context(), model.ID)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"model": adminLLMModelResponseFromStore(*updated)})
+}
+
+func (h *Handlers) AdminDeleteLLMModel(c *gin.Context) {
+	if err := h.Store.DeleteLLMModel(c.Request.Context(), c.Param("id")); err != nil {
+		internalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (h *Handlers) AdminActivateLLMModel(c *gin.Context) {
+	if err := h.Store.ActivateLLMModel(c.Request.Context(), c.Param("id")); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			notFound(c, "model not found")
+			return
+		}
+		internalError(c, err)
+		return
+	}
+	model, err := h.Store.GetLLMModel(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"model": adminLLMModelResponseFromStore(*model)})
+}
+
+func (h *Handlers) AdminTestLLMModel(c *gin.Context) {
+	model, err := h.Store.GetLLMModel(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			notFound(c, "model not found")
+			return
+		}
+		internalError(c, err)
+		return
+	}
+	startedAt := time.Now()
+	ok, message := h.testLLMModelConnection(c.Request.Context(), model)
+	c.JSON(http.StatusOK, adminLLMModelTestResponse{
+		OK:        ok,
+		Message:   message,
+		LatencyMS: time.Since(startedAt).Milliseconds(),
+		TestedAt:  time.Now().Format(time.RFC3339Nano),
+	})
 }
 
 func (h *Handlers) AdminWikiTree(c *gin.Context) {
@@ -902,6 +1076,36 @@ func (h *Handlers) estimateAdminContext(req service.DirectAdminRequest) service.
 		return service.ContextUsage{MaxTokens: 1000000, ReserveTokens: 8192, Estimated: true, Counter: "unavailable"}
 	}
 	return h.ContextCounter.CountMessages(h.DirectAdmin.InitialMessages(req))
+}
+
+func (h *Handlers) estimatePublicContext(req publicAnswerRequest) service.ContextUsage {
+	if h.ContextCounter == nil {
+		return service.ContextUsage{MaxTokens: 1000000, ReserveTokens: 8192, Estimated: true, Counter: "unavailable"}
+	}
+	messages := []llm.Message{{Role: "system", Content: "WikiOS public answer context"}}
+	for _, item := range toServiceHistory(req.History) {
+		role := strings.TrimSpace(strings.ToLower(item.Role))
+		if role != "assistant" {
+			role = "user"
+		}
+		content := strings.TrimSpace(item.Content)
+		if content == "" {
+			continue
+		}
+		if strings.TrimSpace(item.CreatedAt) != "" {
+			content = "[" + strings.TrimSpace(item.CreatedAt) + "] " + content
+		}
+		messages = append(messages, llm.Message{Role: role, Content: content})
+	}
+	if question := strings.TrimSpace(req.Question); question != "" {
+		messages = append(messages, llm.Message{Role: "user", Content: question})
+	}
+	if len(req.Context) > 0 {
+		if raw, err := json.Marshal(req.Context); err == nil {
+			messages = append(messages, llm.Message{Role: "user", Content: "public_context: " + string(raw)})
+		}
+	}
+	return h.ContextCounter.CountMessages(messages)
 }
 
 type syncStatusResponse struct {
@@ -1285,6 +1489,170 @@ func adminDisplayReply(mode string, result map[string]any) string {
 
 func traceID(c *gin.Context) string {
 	return c.GetString("trace_id")
+}
+
+func (h *Handlers) llmModelFromRequest(req adminLLMModelRequest, existing *store.LLMModel, create bool) (*store.LLMModel, error) {
+	displayName := strings.TrimSpace(req.DisplayName)
+	provider := firstNonEmpty(strings.TrimSpace(req.Provider), "openai-compatible")
+	baseURL := strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
+	modelName := strings.TrimSpace(req.ModelName)
+	apiKey := strings.TrimSpace(req.APIKey)
+	timeoutSec := req.TimeoutSec
+	adminTimeoutSec := req.AdminTimeoutSec
+	model := &store.LLMModel{}
+	if existing != nil {
+		*model = *existing
+		if displayName == "" {
+			displayName = existing.DisplayName
+		}
+		if strings.TrimSpace(req.Provider) == "" {
+			provider = existing.Provider
+		}
+		if baseURL == "" {
+			baseURL = existing.BaseURL
+		}
+		if modelName == "" {
+			modelName = existing.ModelName
+		}
+		if apiKey == "" {
+			apiKey = existing.APIKey
+		}
+		if timeoutSec <= 0 {
+			timeoutSec = existing.TimeoutSec
+		}
+		if adminTimeoutSec <= 0 {
+			adminTimeoutSec = existing.AdminTimeoutSec
+		}
+	}
+	if modelName == "" {
+		return nil, fmt.Errorf("model_name is required")
+	}
+	if displayName == "" {
+		displayName = modelName
+	}
+	if baseURL == "" {
+		return nil, fmt.Errorf("base_url is required")
+	}
+	if err := validateLLMBaseURL(baseURL); err != nil {
+		return nil, err
+	}
+	if apiKey == "" && create {
+		return nil, fmt.Errorf("api_key is required")
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = firstPositiveInt(h.Config.LLM.TimeoutSec, 90)
+	}
+	if adminTimeoutSec <= 0 {
+		adminTimeoutSec = firstPositiveInt(h.Config.LLM.AdminTimeoutSec, 300)
+	}
+	model.DisplayName = displayName
+	model.Provider = provider
+	model.BaseURL = baseURL
+	model.ModelName = modelName
+	model.APIKey = apiKey
+	model.TimeoutSec = timeoutSec
+	model.AdminTimeoutSec = adminTimeoutSec
+	return model, nil
+}
+
+func validateLLMBaseURL(baseURL string) error {
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("base_url must be a full http(s) endpoint")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("base_url must use http or https")
+	}
+	return nil
+}
+
+func (h *Handlers) testLLMModelConnection(ctx context.Context, model *store.LLMModel) (bool, string) {
+	if model == nil {
+		return false, "模型不存在"
+	}
+	if strings.TrimSpace(model.BaseURL) == "" || strings.TrimSpace(model.ModelName) == "" || strings.TrimSpace(model.APIKey) == "" {
+		return false, "模型配置不完整，请先补齐端点、模型名和 API Key"
+	}
+	configTimeoutSec := 0
+	if h.Config != nil {
+		configTimeoutSec = h.Config.LLM.TimeoutSec
+	}
+	timeoutSec := firstPositiveInt(model.TimeoutSec, configTimeoutSec, 30)
+	client := llm.NewClient(llm.ClientConfig{
+		APIKey:     model.APIKey,
+		BaseURL:    model.BaseURL,
+		TimeoutSec: timeoutSec,
+	})
+	text, err := client.Chat(llm.WithRequestTimeout(ctx, time.Duration(timeoutSec)*time.Second), model.ModelName, []llm.Message{
+		{Role: "system", Content: "You are a connection test for an OpenAI-compatible chat completion endpoint. Reply with a short OK."},
+		{Role: "user", Content: "Reply with OK."},
+	})
+	if err != nil {
+		return false, "连接失败：" + sanitizeLLMModelTestError(err, model.APIKey)
+	}
+	if strings.TrimSpace(text) == "" {
+		return false, "连接失败：接口可访问，但模型返回为空"
+	}
+	return true, "连接成功"
+}
+
+func sanitizeLLMModelTestError(err error, apiKey string) string {
+	message := strings.TrimSpace(err.Error())
+	if message == "" {
+		message = "未知错误"
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey != "" {
+		message = strings.ReplaceAll(message, apiKey, maskAPIKey(apiKey))
+	}
+	return message
+}
+
+func adminLLMModelResponseFromStore(model store.LLMModel) adminLLMModelResponse {
+	return adminLLMModelResponse{
+		ID:              model.ID,
+		DisplayName:     model.DisplayName,
+		Provider:        model.Provider,
+		BaseURL:         model.BaseURL,
+		ModelName:       model.ModelName,
+		HasAPIKey:       strings.TrimSpace(model.APIKey) != "",
+		APIKeyMask:      maskAPIKey(model.APIKey),
+		IsActive:        model.IsActive,
+		TimeoutSec:      model.TimeoutSec,
+		AdminTimeoutSec: model.AdminTimeoutSec,
+		CreatedAt:       model.CreatedAt.Format(time.RFC3339Nano),
+		UpdatedAt:       model.UpdatedAt.Format(time.RFC3339Nano),
+	}
+}
+
+func maskAPIKey(apiKey string) string {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return ""
+	}
+	runes := []rune(apiKey)
+	if len(runes) <= 8 {
+		return strings.Repeat("*", len(runes))
+	}
+	return string(runes[:4]) + "..." + string(runes[len(runes)-4:])
+}
+
+func firstPositiveInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func notFound(c *gin.Context, message string) {
+	c.JSON(http.StatusNotFound, gin.H{
+		"error": gin.H{
+			"code":    "NOT_FOUND",
+			"message": message,
+		},
+	})
 }
 
 func badRequest(c *gin.Context, err error) {

@@ -5,10 +5,13 @@ import type {
   AdminStreamEvent,
   AdminUser,
   ContextEstimateResponse,
+  LLMModelResponse,
+  LLMModelTestResponse,
+  LLMModelsResponse,
   PublicChatHistoryItem,
   PublicAnswerResponse,
+  PublicContextEstimateResponse,
   PublicIntentsResponse,
-  LLMBalanceResponse,
   ReviewActionResponse,
   ReviewCountResponse,
   ReviewNextResponse,
@@ -43,7 +46,6 @@ export type PublicAnswerMeta = {
   stream?: boolean;
 };
 
-const adminSessionStorageKey = "wikios.admin.session";
 let memoryAdminSessionToken = "";
 let memoryAdminSessionExpiresAt = "";
 
@@ -81,6 +83,14 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question, history, ...meta, stream: false }),
+      signal,
+    });
+  },
+  estimatePublicContext(question: string, history?: PublicChatHistoryItem[], signal?: AbortSignal) {
+    return request<PublicContextEstimateResponse>(apiURL("/api/v1/public/context/estimate"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, history }),
       signal,
     });
   },
@@ -139,8 +149,68 @@ export const api = {
       signal,
     });
   },
-  llmBalance(signal?: AbortSignal) {
-    return request<LLMBalanceResponse>(apiURL("/api/v1/admin/llm/balance"), { signal });
+  listLLMModels(signal?: AbortSignal) {
+    return request<LLMModelsResponse>(apiURL("/api/v1/admin/models"), { signal });
+  },
+  getLLMModel(id: string, signal?: AbortSignal) {
+    return request<LLMModelResponse>(apiURL(`/api/v1/admin/models/${encodeURIComponent(id)}`), { signal });
+  },
+  createLLMModel(
+    payload: {
+      display_name: string;
+      provider: string;
+      base_url: string;
+      model_name: string;
+      api_key: string;
+      timeout_sec: number;
+      admin_timeout_sec: number;
+    },
+    signal?: AbortSignal,
+  ) {
+    return request<LLMModelResponse>(apiURL("/api/v1/admin/models"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal,
+    });
+  },
+  updateLLMModel(
+    id: string,
+    payload: {
+      display_name: string;
+      provider: string;
+      base_url: string;
+      model_name: string;
+      api_key: string;
+      timeout_sec: number;
+      admin_timeout_sec: number;
+    },
+    signal?: AbortSignal,
+  ) {
+    return request<LLMModelResponse>(apiURL(`/api/v1/admin/models/${encodeURIComponent(id)}`), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal,
+    });
+  },
+  deleteLLMModel(id: string, signal?: AbortSignal) {
+    return request<{ ok: boolean }>(apiURL(`/api/v1/admin/models/${encodeURIComponent(id)}`), {
+      method: "DELETE",
+      signal,
+    });
+  },
+  activateLLMModel(id: string, signal?: AbortSignal) {
+    return request<LLMModelResponse>(apiURL(`/api/v1/admin/models/${encodeURIComponent(id)}/activate`), {
+      method: "POST",
+      signal,
+    });
+  },
+  testLLMModel(id: string, signal?: AbortSignal) {
+    return request<LLMModelTestResponse>(apiURL(`/api/v1/admin/models/${encodeURIComponent(id)}/test`), {
+      method: "POST",
+      signal,
+    });
   },
   reviewCount(signal?: AbortSignal) {
     return request<ReviewCountResponse>(apiURL("/api/v1/admin/reviews/count"), { signal });
@@ -317,94 +387,22 @@ function isAdminAPIRequest(input: RequestInfo) {
 }
 
 function storeAdminSessionToken(token?: string, expiresAt?: string) {
-  const cleanToken = token?.trim();
-  if (!cleanToken) {
-    clearAdminSessionToken();
-    return;
-  }
-  memoryAdminSessionToken = cleanToken;
-  memoryAdminSessionExpiresAt = expiresAt ?? "";
-  if (typeof window === "undefined") {
-    return;
-  }
-  const payload = JSON.stringify({
-    token: cleanToken,
-    expires_at: expiresAt,
-  });
-  try {
-    window.localStorage.setItem(adminSessionStorageKey, payload);
-  } catch {
-    // Some embedded contexts restrict storage. Keep the in-memory token for the current page.
-  }
-  try {
-    window.sessionStorage.setItem(adminSessionStorageKey, payload);
-  } catch {
-    // Some embedded contexts restrict storage. Keep the in-memory token for the current page.
-  }
+	const cleanToken = token?.trim();
+	if (!cleanToken) {
+		clearAdminSessionToken();
+		return;
+	}
+	memoryAdminSessionToken = cleanToken;
+	memoryAdminSessionExpiresAt = expiresAt ?? "";
 }
 
 function clearAdminSessionToken() {
-  memoryAdminSessionToken = "";
-  memoryAdminSessionExpiresAt = "";
-  if (typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.removeItem(adminSessionStorageKey);
-  } catch {
-    // Storage may be unavailable in embedded contexts.
-  }
-  try {
-    window.sessionStorage.removeItem(adminSessionStorageKey);
-  } catch {
-    // Storage may be unavailable in embedded contexts.
-  }
+	memoryAdminSessionToken = "";
+	memoryAdminSessionExpiresAt = "";
 }
 
 function currentAdminSessionToken() {
-  if (typeof window === "undefined") {
-    return currentMemoryAdminSessionToken();
-  }
-  const raw = storedAdminSessionRaw();
-  if (!raw) {
-    return currentMemoryAdminSessionToken();
-  }
-  try {
-    const session = JSON.parse(raw) as { token?: unknown; expires_at?: unknown };
-    const token = typeof session.token === "string" ? session.token.trim() : "";
-    if (!token) {
-      clearAdminSessionToken();
-      return "";
-    }
-    const expiresAt = typeof session.expires_at === "string" ? Date.parse(session.expires_at) : 0;
-    if (expiresAt > 0 && expiresAt <= Date.now() + 5_000) {
-      clearAdminSessionToken();
-      return "";
-    }
-    return token;
-  } catch {
-    clearAdminSessionToken();
-    return "";
-  }
-}
-
-function storedAdminSessionRaw() {
-  if (typeof window === "undefined") {
-    return "";
-  }
-  try {
-    const localValue = window.localStorage.getItem(adminSessionStorageKey);
-    if (localValue) {
-      return localValue;
-    }
-  } catch {
-    // Fall through to session storage.
-  }
-  try {
-    return window.sessionStorage.getItem(adminSessionStorageKey) ?? "";
-  } catch {
-    return "";
-  }
+	return currentMemoryAdminSessionToken();
 }
 
 function currentMemoryAdminSessionToken() {

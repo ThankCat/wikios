@@ -30,6 +30,7 @@ func NewRouter(cfg *config.Config, handlers *api.Handlers, dataStore *store.Stor
 	})
 
 	public := r.Group("/api/v1/public")
+	public.POST("/context/estimate", handlers.PublicContextEstimate)
 	public.POST("/answer", handlers.PublicAnswer)
 	public.POST("/answer/stream", handlers.PublicAnswerStream)
 
@@ -43,7 +44,13 @@ func NewRouter(cfg *config.Config, handlers *api.Handlers, dataStore *store.Stor
 	admin.POST("/chat", handlers.AdminChat)
 	admin.POST("/chat/stream", handlers.AdminChatStream)
 	admin.POST("/context/estimate", handlers.AdminContextEstimate)
-	admin.GET("/llm/balance", handlers.AdminLLMBalance)
+	admin.GET("/models", handlers.AdminListLLMModels)
+	admin.POST("/models", handlers.AdminCreateLLMModel)
+	admin.GET("/models/:id", handlers.AdminGetLLMModel)
+	admin.PUT("/models/:id", handlers.AdminUpdateLLMModel)
+	admin.DELETE("/models/:id", handlers.AdminDeleteLLMModel)
+	admin.POST("/models/:id/activate", handlers.AdminActivateLLMModel)
+	admin.POST("/models/:id/test", handlers.AdminTestLLMModel)
 	admin.GET("/wiki/tree", handlers.AdminWikiTree)
 	admin.GET("/wiki/file", handlers.AdminWikiFile)
 	admin.GET("/wiki/download", handlers.AdminWikiDownload)

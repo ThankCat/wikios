@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { PanelLeft, PanelLeftClose, SendHorizontal, Trash2 } from "lucide-react";
+import { PanelLeft, PanelLeftClose, SendHorizontal, Square, Trash2 } from "lucide-react";
 
 import { ConversationSidebar, type ConversationItem } from "@/components/chat/conversation-sidebar";
 import { MessageCard } from "@/components/chat/message-card";
@@ -13,7 +13,7 @@ import { api, isAbortError } from "@/lib/api";
 import { createId } from "@/lib/id";
 import { useScrollFollow } from "@/lib/use-scroll-follow";
 import { cn } from "@/lib/utils";
-import type { PublicAnswerResponse, PublicStreamEvent } from "@/types/api";
+import type { ContextUsage, PublicAnswerResponse, PublicStreamEvent } from "@/types/api";
 
 type MessageStatus = "pending" | "streaming" | "done" | "error" | "cancelled";
 
@@ -37,7 +37,6 @@ const storageKey = "wikios.user.chat";
 const storageVersionKey = "wikios.user.chat.version";
 const sidebarStorageKey = "wikios.user.sidebar.open";
 const storageVersion = "2";
-const HISTORY_LIMIT = 8;
 
 export function UserChat() {
   const [conversations, setConversations] = useState<UserConversation[]>([]);
@@ -47,6 +46,8 @@ export function UserChat() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const requestControllersRef = useRef<Record<string, AbortController>>({});
   const [requestLabels, setRequestLabels] = useState<Record<string, string>>({});
+  const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
+  const [contextLoading, setContextLoading] = useState(false);
 
   useEffect(() => {
     const raw = localStorage.getItem(storageKey);
@@ -95,6 +96,19 @@ export function UserChat() {
   const busyLabel = activeConversation ? (requestLabels[activeConversation.id] ?? "") : "";
   const busy = busyLabel !== "";
   const chatScroll = useScrollFollow<HTMLDivElement>([activeId, activeConversation?.messages]);
+  const contextEstimateKey = useMemo(
+    () =>
+      activeConversation
+        ? [
+            activeConversation.id,
+            activeConversation.messages
+              .map((message) => `${message.role}:${message.status ?? ""}:${message.content.length}`)
+              .join("|"),
+            composer,
+          ].join("::")
+        : "",
+    [activeConversation, composer],
+  );
 
   useEffect(() => {
     chatScroll.scrollToBottom("auto");
@@ -108,9 +122,52 @@ export function UserChat() {
     [],
   );
 
+  useEffect(() => {
+    if (!activeConversation) {
+      setContextUsage(null);
+      return;
+    }
+    const question = composer.trim();
+    const history = conversationHistory(activeConversation.messages);
+    if (question === "" && history.length === 0) {
+      setContextUsage(null);
+      setContextLoading(false);
+      return;
+    }
+    if (busy) {
+      setContextLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setContextLoading(true);
+      void api
+        .estimatePublicContext(question, history, controller.signal)
+        .then((response) => setContextUsage(response.context_usage))
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            setContextUsage(null);
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) {
+            setContextLoading(false);
+          }
+        });
+    }, 300);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [activeConversation, busy, composer, contextEstimateKey]);
+
   async function sendMessage() {
     const question = composer.trim();
     if (!question || !activeConversation || busy) {
+      return;
+    }
+    if (contextUsage?.blocked) {
+      setError("当前对话已接近上下文上限，请新建会话继续。");
       return;
     }
     setError("");
@@ -119,6 +176,7 @@ export function UserChat() {
     const conversationId = activeConversation.id;
     const userMessage: UserMessage = { id: createId(), role: "user", content: question, created_at: questionCreatedAt };
     appendMessage(conversationId, userMessage);
+    jumpToLatest();
     const history = conversationHistory(activeConversation.messages);
     const controller = new AbortController();
     startConversationRequest(conversationId, controller, "正在生成回答...");
@@ -132,6 +190,7 @@ export function UserChat() {
         status: "streaming",
         details: pendingPublicDetails(),
       });
+      jumpToLatest();
       try {
         await api.publicAnswerStream(
           question,
@@ -153,9 +212,10 @@ export function UserChat() {
             status: "cancelled",
           });
         } else {
-          setError(reason instanceof Error ? reason.message : "请求失败");
+          const message = reason instanceof Error ? reason.message : "请求失败";
+          setError(message);
           patchMessage(conversationId, assistantId, {
-            content: "暂时无法处理这条请求，请稍后再试。",
+            content: message,
             status: "error",
           });
         }
@@ -173,6 +233,7 @@ export function UserChat() {
       status: "pending",
       details: pendingPublicDetails(),
     });
+    jumpToLatest();
     try {
       const response = await api.publicAnswer(
         question,
@@ -194,9 +255,10 @@ export function UserChat() {
           status: "cancelled",
         });
       } else {
-        setError(reason instanceof Error ? reason.message : "请求失败");
+        const message = reason instanceof Error ? reason.message : "请求失败";
+        setError(message);
         patchMessage(conversationId, assistantId, {
-          content: "暂时无法处理这条请求，请稍后再试。",
+          content: message,
           status: "error",
         });
       }
@@ -212,6 +274,14 @@ export function UserChat() {
     const controller = requestControllersRef.current[activeConversation.id];
     controller?.abort();
     finishConversationRequest(activeConversation.id, controller);
+  }
+
+  function jumpToLatest() {
+    chatScroll.scrollToBottom("auto");
+    window.requestAnimationFrame(() => {
+      chatScroll.scrollToBottom("auto");
+      window.requestAnimationFrame(() => chatScroll.scrollToBottom("auto"));
+    });
   }
 
   function startConversationRequest(conversationId: string, controller: AbortController, label: string) {
@@ -244,19 +314,6 @@ export function UserChat() {
       return;
     }
     if (event.type === "llm_reasoning_delta") {
-      const data = asRecord(event.data);
-      appendDetailText(conversationId, messageId, "reasoning", String(data.delta ?? ""), 12000);
-      appendEventDetail(
-        conversationId,
-        messageId,
-        "reasoning_events",
-        {
-          name: data.name,
-          delta: data.delta,
-          created_at: data.created_at,
-        },
-        80,
-      );
       return;
     }
     if (event.type === "step_start" || event.type === "step_finish") {
@@ -269,18 +326,16 @@ export function UserChat() {
         content: String(data.answer ?? ""),
         created_at: String(data.answered_at ?? ""),
         status: "done",
-        details: (prev: unknown) => ({
-          ...asRecord(prev),
-          ...asRecord(data.details),
-        }),
+        details: (prev: unknown) => mergePublicVisibleDetails(prev, data.details),
       });
       return;
     }
     if (event.type === "error") {
       const data = (event.data ?? {}) as Record<string, unknown>;
-      setError(String(data.message ?? "请求失败"));
+      const message = String(data.message ?? "请求失败");
+      setError(message);
       patchMessage(conversationId, messageId, {
-        content: "暂时无法处理这条请求，请稍后再试。",
+        content: message,
         status: "error",
       });
       return;
@@ -297,7 +352,7 @@ export function UserChat() {
       content: response.answer,
       created_at: response.answered_at,
       status: "done",
-      details: response.details,
+      details: publicVisibleDetails(response.details),
     });
   }
 
@@ -351,19 +406,6 @@ export function UserChat() {
         };
       }),
     );
-  }
-
-  function appendDetailText(conversationId: string, messageId: string, key: string, text: string, maxLength: number) {
-    if (text === "") {
-      return;
-    }
-    patchMessage(conversationId, messageId, {
-      details: (prev: unknown) => {
-        const object = asRecord(prev);
-        const current = typeof object[key] === "string" ? String(object[key]) : "";
-        return { ...object, [key]: truncateText(`${current}${text}`, maxLength) };
-      },
-    });
   }
 
   function appendEventDetail(conversationId: string, messageId: string, key: string, value: unknown, limit: number) {
@@ -467,47 +509,8 @@ export function UserChat() {
             <div className="mx-auto max-w-3xl">
               <div className="rounded-[28px] border bg-white p-3 shadow-soft">
                 <div className="mb-2 flex items-center justify-between gap-3 px-1 text-xs text-muted-foreground">
-                  <div className="flex rounded-full border bg-slate-50 p-0.5" title="选择本次 public 回复方式">
-                    <button
-                      type="button"
-                      className={cn(
-                        "rounded-full px-3 py-1 text-xs transition",
-                        activeConversation?.stream
-                          ? "bg-white text-slate-950 shadow-sm"
-                          : "text-muted-foreground hover:text-slate-950",
-                      )}
-                      onClick={() => {
-                        setConversations((current) =>
-                          current.map((item) =>
-                            item.id === activeConversation?.id ? { ...item, stream: true } : item,
-                          ),
-                        );
-                      }}
-                      title="开启流式返回，边生成边展示回答"
-                    >
-                      流式
-                    </button>
-                    <button
-                      type="button"
-                      className={cn(
-                        "rounded-full px-3 py-1 text-xs transition",
-                        !activeConversation?.stream
-                          ? "bg-white text-slate-950 shadow-sm"
-                          : "text-muted-foreground hover:text-slate-950",
-                      )}
-                      onClick={() => {
-                        setConversations((current) =>
-                          current.map((item) =>
-                            item.id === activeConversation?.id ? { ...item, stream: false } : item,
-                          ),
-                        );
-                      }}
-                      title="关闭流式返回，等待完整结果后一次展示"
-                    >
-                      非流式
-                    </button>
-                  </div>
-                  <span className="text-right">{error || busyLabel || "按 Enter 发送，Shift + Enter 换行"}</span>
+                  <span className="truncate">{error || busyLabel || "按 Enter 发送，Shift + Enter 换行"}</span>
+                  <CompactContextUsage usage={contextUsage} loading={contextLoading} onNewConversation={createNewConversation} />
                 </div>
                 <Textarea
                   value={composer}
@@ -524,17 +527,70 @@ export function UserChat() {
                   className="min-h-[88px] resize-none border-0 bg-transparent p-2 shadow-none focus-visible:ring-0"
                   placeholder="请输入客户问题"
                 />
-                <div className="mt-3 flex items-center justify-between">
-                  <span className="text-xs text-muted-foreground">{busy ? "回答生成中，可随时停止。" : "会话支持多轮上下文。"}</span>
+                <div className="mt-3 flex items-center justify-between gap-3">
+                  <span className="min-w-0 text-xs text-muted-foreground">{busy ? "回答生成中，可随时停止。" : "会话会携带完整历史上下文。"}</span>
                   <div className="flex items-center gap-2">
-                    {busy ? (
-                      <Button type="button" variant="outline" onClick={stopActiveRequest}>
-                        停止
-                      </Button>
-                    ) : null}
-                    <Button onClick={() => void sendMessage()} disabled={busy}>
-                      <SendHorizontal className="mr-2 h-4 w-4" />
-                      {busy ? "发送中" : "发送"}
+                    <div className="flex rounded-full border bg-slate-50 p-0.5" title="选择本次 public 回复方式">
+                      <button
+                        type="button"
+                        className={cn(
+                          "rounded-full px-3 py-1 text-xs transition",
+                          activeConversation?.stream
+                            ? "bg-white text-slate-950 shadow-sm"
+                            : "text-muted-foreground hover:text-slate-950",
+                        )}
+                        onClick={() => {
+                          setConversations((current) =>
+                            current.map((item) =>
+                              item.id === activeConversation?.id ? { ...item, stream: true } : item,
+                            ),
+                          );
+                        }}
+                        title="开启流式返回，边生成边展示回答"
+                      >
+                        流式
+                      </button>
+                      <button
+                        type="button"
+                        className={cn(
+                          "rounded-full px-3 py-1 text-xs transition",
+                          !activeConversation?.stream
+                            ? "bg-white text-slate-950 shadow-sm"
+                            : "text-muted-foreground hover:text-slate-950",
+                        )}
+                        onClick={() => {
+                          setConversations((current) =>
+                            current.map((item) =>
+                              item.id === activeConversation?.id ? { ...item, stream: false } : item,
+                            ),
+                          );
+                        }}
+                        title="关闭流式返回，等待完整结果后一次展示"
+                      >
+                        非流式
+                      </button>
+                    </div>
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        if (busy) {
+                          stopActiveRequest();
+                          return;
+                        }
+                        void sendMessage();
+                      }}
+                      disabled={!busy && Boolean(contextUsage?.blocked)}
+                      title={
+                        busy
+                          ? "停止生成"
+                          : contextUsage?.blocked
+                            ? "当前对话已达到上下文上限，请新建会话"
+                            : "发送客户问题"
+                      }
+                      aria-label={busy ? "停止生成" : "发送客户问题"}
+                      className="h-11 w-11 shrink-0 rounded-full px-0"
+                    >
+                      {busy ? <Square className="h-4 w-4 fill-current" /> : <SendHorizontal className="h-4 w-4" />}
                     </Button>
                   </div>
                 </div>
@@ -543,6 +599,59 @@ export function UserChat() {
           </div>
       </section>
     </div>
+  );
+}
+
+function CompactContextUsage({
+  usage,
+  loading,
+  onNewConversation,
+}: {
+  usage: ContextUsage | null;
+  loading: boolean;
+  onNewConversation: () => void;
+}) {
+  if (!usage) {
+    return (
+      <span className="shrink-0 text-[11px] text-muted-foreground">
+        {loading ? "上下文计算中..." : "上下文暂不可用"}
+      </span>
+    );
+  }
+  const percent =
+    usage.max_tokens > 0
+      ? Math.min(100, Math.round((usage.used_tokens / usage.max_tokens) * 100))
+      : 0;
+  const title = [
+    `背景信息窗口：${percent}% 已用`,
+    `已用 ${usage.used_tokens.toLocaleString()} 标记，共 ${usage.max_tokens.toLocaleString()}`,
+    usage.estimated ? "当前为估算值" : "Tokenizer 精确计数",
+    usage.error ? `计数提示：${usage.error}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return (
+    <span className="flex min-w-[210px] max-w-[320px] shrink-0 items-center gap-2" title={title}>
+      <span className={cn("text-[11px]", usage.blocked ? "text-destructive" : "text-muted-foreground")}>
+        上下文 {usage.used_tokens.toLocaleString()} / {usage.max_tokens.toLocaleString()}
+      </span>
+      <span className="h-1.5 min-w-20 flex-1 overflow-hidden rounded-full bg-slate-100">
+        <span
+          className={cn("block h-full rounded-full", usage.blocked ? "bg-destructive" : "bg-slate-900")}
+          style={{ width: `${percent}%` }}
+        />
+      </span>
+      {usage.blocked ? (
+        <button
+          type="button"
+          className="shrink-0 text-[11px] font-semibold text-destructive hover:underline"
+          onClick={onNewConversation}
+          title="创建一个新对话继续"
+        >
+          新对话
+        </button>
+      ) : null}
+    </span>
   );
 }
 
@@ -556,11 +665,32 @@ function createConversation(title: string): UserConversation {
 }
 
 function pendingPublicDetails() {
-  return {
-    reasoning:
-      "1. 正在检查问题是否属于可回答范围。\n2. 正在检索正式知识库证据。\n3. 将根据证据可信度生成用户可见回答。",
-    steps: [],
+  return undefined;
+}
+
+function mergePublicVisibleDetails(left: unknown, right: unknown) {
+  const merged = {
+    ...publicVisibleDetailRecord(left),
+    ...publicVisibleDetailRecord(right),
   };
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function publicVisibleDetails(details: unknown) {
+  const visible = publicVisibleDetailRecord(details);
+  return Object.keys(visible).length > 0 ? visible : undefined;
+}
+
+function publicVisibleDetailRecord(details: unknown) {
+  const raw = asRecord(details);
+  const visible: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (["reasoning", "reasoning_chars", "process_summary", "steps", "execution", "reasoning_events"].includes(key)) {
+      continue;
+    }
+    visible[key] = value;
+  }
+  return visible;
 }
 
 function normalizeUserConversations(value: unknown, resetStoredStream = false): UserConversation[] {
@@ -605,7 +735,6 @@ function normalizeUserConversations(value: unknown, resetStoredStream = false): 
 function conversationHistory(messages: UserMessage[]) {
   return messages
     .filter((message) => message.content.trim() !== "")
-    .slice(-HISTORY_LIMIT)
     .map((message) => ({
       id: message.id,
       role: message.role,
@@ -654,17 +783,6 @@ function asRecord(value: unknown): Record<string, unknown> {
     return {};
   }
   return value as Record<string, unknown>;
-}
-
-function truncateText(value: string, maxLength: number) {
-  if (maxLength <= 0) {
-    return value;
-  }
-  const runes = Array.from(value);
-  if (runes.length <= maxLength) {
-    return value;
-  }
-  return runes.slice(runes.length - maxLength).join("");
 }
 
 function summarizeStepEvent(value: unknown) {

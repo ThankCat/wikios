@@ -7,15 +7,6 @@ mounted_wiki:
   name: default-wiki
   qmd_index: knowledge-base
 
-llm:
-  provider: deepseek
-  model_public: deepseek-v4-flash
-  model_admin: deepseek-v4-flash
-  api_key: ${DEEPSEEK_API_KEY}
-  base_url: https://api.deepseek.com/v1
-  timeout_sec: 90
-  admin_timeout_sec: 300
-
 auth:
   default_admin_username: admin
   default_admin_password: admin123
@@ -61,6 +52,10 @@ public_intents:
 public_query:
   candidate_top_k: 6
   max_evidence_chars: 2400
+  answer_log:
+    enabled: true
+    redact: true
+    retention_days: 14
   confidence:
     direct_min: 0.70
     review_min: 0.25

@@ -122,7 +122,7 @@ http://127.0.0.1:9025
 | `name` | `string` | 否 | 步骤名称。 | `"llm public answer"` |
 | `tool` | `string` | 是 | 工具名。 | `"llm.chat"`、`"exec.qmd"` |
 | `status` | `string` | 否 | 步骤状态。 | `"SUCCESS"`、`"FAILED"` |
-| `input` | `object` | 是 | 步骤输入摘要。 | `{ "model": "deepseek-v4-flash" }` |
+| `input` | `object` | 是 | 步骤输入摘要。 | `{ "model": "gpt-compatible-chat" }` |
 | `output` | `object` | 是 | 步骤输出摘要。 | `{ "response_preview": "..." }` |
 | `duration_ms` | `number` | 是 | 步骤耗时，毫秒。 | `1200` |
 | `started_at` | `ISO-8601 datetime string` | 是 | 步骤开始时间。 | `"2026-04-25T08:00:00Z"` |
@@ -296,25 +296,25 @@ Content-Type：`application/json`
 | 字段 | 类型 | 必填 | 可为空 | 默认值 | 含义 | 约束/示例 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `username` | `string` | 是 | 否 | 无 | 管理员用户名。 | `"admin"` |
-| `password` | `string` | 是 | 否 | 无 | 管理员密码。 | `"admin123"` |
+| `password` | `string` | 是 | 否 | 无 | 管理员密码。生产环境不能使用默认密码。 | `"your-secure-password"` |
 
 #### Response
 
 | 字段 | 类型 | 可为空 | 含义 | 示例 |
 | --- | --- | --- | --- | --- |
-| `token` | `string` | 否 | 管理员会话 token。跨站 iframe 或 Cookie 受限场景可由调用端保存，并通过 `Authorization: Bearer <token>` 传回。 | `"sess_..."` |
+| `token` | `string` | 否 | 管理员会话 token。管理后台默认依赖 HTTP-only Cookie；外部集成在 Cookie 不可用时可通过 `Authorization: Bearer <token>` 传回。 | `"sess_..."` |
 | `expires_at` | `ISO-8601 datetime string` | 否 | 会话过期时间。 | `"2026-05-07T06:05:00Z"` |
 | `user.id` | `string` | 否 | 管理员用户 ID。 | `"1"` |
 | `user.username` | `string` | 否 | 管理员用户名。 | `"admin"` |
 
-成功后服务端写入 HTTP-only Cookie，默认名称为 `wikios_admin_session`。如果管理后台被放入跨站 iframe，浏览器可能拦截第三方 Cookie；此时调用端应优先使用响应里的 `token`，后续 Admin API 请求添加 `Authorization: Bearer <token>`。
+成功后服务端写入 HTTP-only Cookie，默认名称为 `wikios_admin_session`。WikiOS 管理后台不把 token 写入 `localStorage` 或 `sessionStorage`；如果外部系统需要对接 Admin API，可以在自己的安全存储策略下使用响应里的 `token`。
 
 #### curl
 
 ```bash
 curl -c cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"admin123"}'
+  -d '{"username":"admin","password":"your-secure-password"}'
 ```
 
 ### POST `/api/v1/admin/auth/logout`
@@ -446,7 +446,7 @@ Request Body：同 `POST /api/v1/admin/chat`。
 | `meta` | `data.started_at` | `ISO-8601 datetime string` | 否 | 开始时间。 | `"2026-04-25T08:00:00Z"` |
 | `meta` | `data.context_usage` | `ContextUsage` | 否 | 上下文用量。 | `{}` |
 | `prompt` | `data.name` | `string` | 否 | LLM 步骤名。 | `"llm direct admin"` |
-| `prompt` | `data.model` | `string` | 否 | 模型名。 | `"deepseek-v4-flash"` |
+| `prompt` | `data.model` | `string` | 否 | 模型名。 | `"gpt-compatible-chat"` |
 | `prompt` | `data.messages` | `array<object>` | 否 | 发送给 LLM 的消息。 | `[]` |
 | `prompt` | `data.prompt_chars` | `number` | 否 | prompt 字符数。 | `137122` |
 | `prompt` | `data.prompt_estimated_tokens` | `number` | 否 | prompt 估算 token。 | `34280` |
@@ -818,30 +818,42 @@ curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/sync/push \
   -d '{"remote":"origin","branch":"main"}'
 ```
 
-## 11. LLM Balance API
+## 11. LLM Model API
 
-### GET `/api/v1/admin/llm/balance`
+用途：管理 OpenAI-compatible 模型，并切换 WikiOS 全站当前启用模型。所有接口都需要管理员 Cookie 或 Bearer token。API Key 保存到 SQLite，但响应中只返回 `has_api_key` 和 `api_key_mask`，不会回显完整密钥。
 
-用途：查询当前 DeepSeek API Key 余额，用于管理员后台余额刷新按钮。
+### Endpoints
 
-鉴权：管理员 Cookie 或 Bearer token。
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/api/v1/admin/models` | 获取模型列表。 |
+| `POST` | `/api/v1/admin/models` | 新增模型。 |
+| `GET` | `/api/v1/admin/models/:id` | 获取单个模型。 |
+| `PUT` | `/api/v1/admin/models/:id` | 更新模型，`api_key` 留空时保留原密钥。 |
+| `DELETE` | `/api/v1/admin/models/:id` | 删除模型；删除当前模型后全站进入未启用模型状态。 |
+| `POST` | `/api/v1/admin/models/:id/activate` | 切换当前启用模型。 |
 
-Response：
+### Model
 
 | 字段 | 类型 | 可为空 | 含义 | 示例 |
 | --- | --- | --- | --- | --- |
-| `is_available` | `boolean` | 否 | DeepSeek 余额接口返回的可用状态。 | `true` |
-| `balance_infos` | `array<object>` | 否 | 分币种余额信息。 | `[]` |
-| `balance_infos[].currency` | `string` | 否 | 币种。 | `"CNY"` |
-| `balance_infos[].total_balance` | `string` | 否 | 总余额。 | `"110.00"` |
-| `balance_infos[].granted_balance` | `string` | 否 | 赠送余额。 | `"10.00"` |
-| `balance_infos[].topped_up_balance` | `string` | 否 | 充值余额。 | `"100.00"` |
-| `checked_at` | `ISO-8601 datetime string` | 否 | 服务端查询完成时间。 | `"2026-04-30T06:05:00Z"` |
+| `id` | `string` | 否 | 模型 ID。 | `"2b0b..."` |
+| `display_name` | `string` | 否 | 显示名称。 | `"生产客服模型"` |
+| `provider` | `string` | 否 | 服务商标识。 | `"openai-compatible"` |
+| `base_url` | `string` | 否 | OpenAI-compatible 端点。 | `"https://api.example.com/v1"` |
+| `model_name` | `string` | 否 | 请求体中的模型名。 | `"gpt-compatible-chat"` |
+| `has_api_key` | `boolean` | 否 | 是否已配置密钥。 | `true` |
+| `api_key_mask` | `string` | 是 | 遮罩后的密钥。 | `"sk-1...abcd"` |
+| `is_active` | `boolean` | 否 | 是否为全站当前模型。 | `true` |
+| `timeout_sec` | `number` | 否 | 普通请求超时秒数。 | `90` |
+| `admin_timeout_sec` | `number` | 否 | 管理任务超时秒数。 | `300` |
 
 #### curl
 
 ```bash
-curl -b cookie.txt http://127.0.0.1:9025/api/v1/admin/llm/balance
+curl -b cookie.txt -X POST http://127.0.0.1:9025/api/v1/admin/models \
+  -H 'Content-Type: application/json' \
+  -d '{"display_name":"生产客服模型","provider":"openai-compatible","base_url":"https://api.example.com/v1","model_name":"gpt-compatible-chat","api_key":"sk-xxx","timeout_sec":90,"admin_timeout_sec":300}'
 ```
 
 ## 12. Review API

@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -39,9 +40,10 @@ type PublicIntentConfig struct {
 }
 
 type PublicIntentFallbacks struct {
-	Generic         string `yaml:"generic" json:"generic"`
-	Operation       string `yaml:"operation" json:"operation"`
-	DeviceOperation string `yaml:"device_operation" json:"device_operation"`
+	Generic          string   `yaml:"generic" json:"generic"`
+	Operation        string   `yaml:"operation" json:"operation"`
+	DeviceOperation  string   `yaml:"device_operation" json:"device_operation"`
+	ModelUnavailable []string `yaml:"model_unavailable" json:"model_unavailable"`
 }
 
 type PublicIntentRule struct {
@@ -130,6 +132,16 @@ func (m *PublicIntentManager) Fallback(question string) string {
 		return strings.TrimSpace(fallbacks.Generic)
 	}
 	return genericPublicFallback(question)
+}
+
+func (m *PublicIntentManager) ModelUnavailableFallback(seed string) string {
+	fallbacks := defaultPublicIntentConfig().Fallbacks.ModelUnavailable
+	if m != nil && m.enabled {
+		if configured := m.snapshot().config.Fallbacks.ModelUnavailable; len(configured) > 0 {
+			fallbacks = configured
+		}
+	}
+	return pickPublicFallback(fallbacks, seed)
 }
 
 func (m *PublicIntentManager) Reload() error {
@@ -258,6 +270,15 @@ func validatePublicIntentConfig(parsed PublicIntentConfig) (PublicIntentConfig, 
 	if banned := firstBannedPublicIntentResponseTerm(parsed.Fallbacks.DeviceOperation); banned != "" {
 		return PublicIntentConfig{}, nil, fmt.Errorf("fallbacks.device_operation contains internal wording %q", banned)
 	}
+	parsed.Fallbacks.ModelUnavailable = cleanPublicFallbackPool(parsed.Fallbacks.ModelUnavailable, defaultPublicIntentConfig().Fallbacks.ModelUnavailable)
+	for i, response := range parsed.Fallbacks.ModelUnavailable {
+		if banned := firstBannedPublicIntentResponseTerm(response); banned != "" {
+			return PublicIntentConfig{}, nil, fmt.Errorf("fallbacks.model_unavailable[%d] contains internal wording %q", i, banned)
+		}
+		if banned := firstBannedModelUnavailableFallbackTerm(response); banned != "" {
+			return PublicIntentConfig{}, nil, fmt.Errorf("fallbacks.model_unavailable[%d] contains service internals %q", i, banned)
+		}
+	}
 	names := map[string]bool{}
 	warnings := []string{}
 	maxNonSafetyPriority := -1
@@ -315,6 +336,20 @@ func validatePublicIntentConfig(parsed PublicIntentConfig) (PublicIntentConfig, 
 	return parsed, warnings, nil
 }
 
+func cleanPublicFallbackPool(values []string, defaults []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, defaults...)
+	}
+	return out
+}
+
 func cleanPublicIntentPatterns(values []string, field string) ([]string, error) {
 	out := make([]string, 0, len(values))
 	for i, value := range values {
@@ -353,6 +388,45 @@ func firstBannedPublicIntentResponseTerm(response string) string {
 	return ""
 }
 
+func firstBannedModelUnavailableFallbackTerm(response string) string {
+	lower := strings.ToLower(response)
+	for _, term := range []string{
+		"模型",
+		"llm",
+		"api key",
+		"apikey",
+		"base_url",
+		"base url",
+		"供应商",
+		"服务商",
+		"余额",
+		"欠费",
+		"管理员端",
+		"后台配置",
+	} {
+		if strings.Contains(lower, strings.ToLower(term)) {
+			return term
+		}
+	}
+	return ""
+}
+
+func pickPublicFallback(values []string, seed string) string {
+	if len(values) == 0 {
+		return publicLLMUnavailableMessage
+	}
+	if len(values) == 1 {
+		return values[0]
+	}
+	trimmedSeed := strings.TrimSpace(seed)
+	if trimmedSeed == "" {
+		trimmedSeed = time.Now().Format(time.RFC3339Nano)
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(trimmedSeed))
+	return values[int(hash.Sum32())%len(values)]
+}
+
 func publicIntentRuleMatches(rule PublicIntentRule, normalizedQuestion string) bool {
 	for _, item := range rule.Match.Exact {
 		if normalizePublicIntentText(item) == normalizedQuestion {
@@ -383,9 +457,14 @@ func defaultPublicIntentConfig() PublicIntentConfig {
 	return PublicIntentConfig{
 		Version: 1,
 		Fallbacks: PublicIntentFallbacks{
-			Generic:         "您好，这个问题我这边暂时还不能准确确认，您可以补充一下具体场景，我再为您确认。",
-			Operation:       "您好，这方面我这边暂时没有可直接确认的操作说明，您可以补充一下具体场景，我再为您确认。",
-			DeviceOperation: "您好，这项操作我这边暂时还不能准确确认，建议您先参考设备说明或联系对应支持人员处理。",
+			Generic:         "这个问题我还需要再确认一点信息。您可以把具体产品、套餐或使用场景发我，我会按当前对话继续帮您判断。",
+			Operation:       "这类操作我需要先确认您使用的产品、设备或页面入口。您把当前步骤和遇到的提示发我，我再继续帮您排查。",
+			DeviceOperation: "这项操作要结合设备状态来看。您可以补充设备型号、当前页面提示和想完成的动作，我先帮您判断下一步。",
+			ModelUnavailable: []string{
+				"当前在线回复暂时有点忙，您可以稍后再发一次，我会继续按当前对话帮您处理。",
+				"这边暂时没能生成准确回复，您可以稍后重试一次，前面的对话内容我会继续参考。",
+				"当前回复服务短暂不可用，您可以稍后再问一次，我会继续围绕这个问题帮您确认。",
+			},
 		},
 	}
 }
@@ -394,9 +473,13 @@ func defaultPublicIntentSource() string {
 	return strings.TrimSpace(`version: 1
 
 fallbacks:
-  generic: 您好，这个问题我这边暂时还不能准确确认，您可以补充一下具体场景，我再为您确认。
-  operation: 您好，这方面我这边暂时没有可直接确认的操作说明，您可以补充一下具体场景，我再为您确认。
-  device_operation: 您好，这项操作我这边暂时还不能准确确认，建议您先参考设备说明或联系对应支持人员处理。
+  generic: 这个问题我还需要再确认一点信息。您可以把具体产品、套餐或使用场景发我，我会按当前对话继续帮您判断。
+  operation: 这类操作我需要先确认您使用的产品、设备或页面入口。您把当前步骤和遇到的提示发我，我再继续帮您排查。
+  device_operation: 这项操作要结合设备状态来看。您可以补充设备型号、当前页面提示和想完成的动作，我先帮您判断下一步。
+  model_unavailable:
+    - 当前在线回复暂时有点忙，您可以稍后再发一次，我会继续按当前对话帮您处理。
+    - 这边暂时没能生成准确回复，您可以稍后重试一次，前面的对话内容我会继续参考。
+    - 当前回复服务短暂不可用，您可以稍后再问一次，我会继续围绕这个问题帮您确认。
 
 rules: []
 `) + "\n"

@@ -44,13 +44,8 @@ type MountedWikiConfig struct {
 }
 
 type LLMConfig struct {
-	Provider        string `yaml:"provider"`
-	ModelPublic     string `yaml:"model_public"`
-	ModelAdmin      string `yaml:"model_admin"`
-	APIKey          string `yaml:"api_key"`
-	BaseURL         string `yaml:"base_url"`
-	TimeoutSec      int    `yaml:"timeout_sec"`
-	AdminTimeoutSec int    `yaml:"admin_timeout_sec"`
+	TimeoutSec      int `yaml:"timeout_sec"`
+	AdminTimeoutSec int `yaml:"admin_timeout_sec"`
 }
 
 type AuthConfig struct {
@@ -108,6 +103,13 @@ type PublicQueryConfig struct {
 	Confidence       PublicQueryConfidenceConfig `yaml:"confidence"`
 	CandidateTopK    int                         `yaml:"candidate_top_k"`
 	MaxEvidenceChars int                         `yaml:"max_evidence_chars"`
+	AnswerLog        PublicAnswerLogConfig       `yaml:"answer_log"`
+}
+
+type PublicAnswerLogConfig struct {
+	Enabled       *bool `yaml:"enabled"`
+	Redact        *bool `yaml:"redact"`
+	RetentionDays int   `yaml:"retention_days"`
 }
 
 type PublicQueryConfidenceConfig struct {
@@ -196,12 +198,6 @@ func (c *Config) normalizeAndValidate() error {
 	if strings.TrimSpace(c.MountedWiki.QMDIndex) == "" {
 		c.MountedWiki.QMDIndex = firstEnv("WIKIOS_QMD_INDEX", "knowledge-base")
 	}
-	if c.LLM.BaseURL == "" {
-		return errors.New("llm.base_url is required")
-	}
-	if c.LLM.ModelPublic == "" || c.LLM.ModelAdmin == "" {
-		return errors.New("llm models are required")
-	}
 	if strings.TrimSpace(c.Sync.Remote) == "" {
 		c.Sync.Remote = "origin"
 	}
@@ -246,6 +242,17 @@ func (c *Config) normalizeAndValidate() error {
 	if c.PublicQuery.MaxEvidenceChars <= 0 {
 		c.PublicQuery.MaxEvidenceChars = 2400
 	}
+	if c.PublicQuery.AnswerLog.Enabled == nil {
+		enabled := parseEnvBool(os.Getenv("WIKIOS_PUBLIC_ANSWER_LOG_ENABLED"), true)
+		c.PublicQuery.AnswerLog.Enabled = &enabled
+	}
+	if c.PublicQuery.AnswerLog.Redact == nil {
+		redact := parseEnvBool(os.Getenv("WIKIOS_PUBLIC_ANSWER_LOG_REDACT"), true)
+		c.PublicQuery.AnswerLog.Redact = &redact
+	}
+	if c.PublicQuery.AnswerLog.RetentionDays <= 0 {
+		c.PublicQuery.AnswerLog.RetentionDays = envInt("WIKIOS_PUBLIC_ANSWER_LOG_RETENTION_DAYS", 14)
+	}
 	if strings.TrimSpace(c.Support.Phone) == "" {
 		c.Support.Phone = firstEnv("WIKIOS_SUPPORT_PHONE", "400-1080-106")
 	}
@@ -275,6 +282,9 @@ func (c *Config) normalizeAndValidate() error {
 	}
 	if strings.TrimSpace(c.Auth.DefaultAdminPassword) == "" {
 		c.Auth.DefaultAdminPassword = "admin123"
+	}
+	if strings.EqualFold(strings.TrimSpace(c.Server.Mode), "release") && strings.TrimSpace(c.Auth.DefaultAdminPassword) == "admin123" {
+		return errors.New("auth.default_admin_password must be set to a secure non-default value in release mode")
 	}
 	if strings.TrimSpace(c.Auth.SessionCookieName) == "" {
 		c.Auth.SessionCookieName = "wikios_admin_session"

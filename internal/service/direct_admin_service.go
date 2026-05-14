@@ -53,7 +53,7 @@ func (s *DirectAdminService) Run(ctx context.Context, execution *Execution, trac
 	commands := make([]map[string]any, 0, 24)
 	const maxIterations = 24
 	for iteration := 0; iteration < maxIterations; iteration++ {
-		text, err := s.executeLLM(ctx, execution, s.deps.Config.LLM.ModelAdmin, messages, fmt.Sprintf("llm direct admin %d", iteration+1))
+		text, err := s.executeLLM(ctx, execution, currentLLMModel, messages, fmt.Sprintf("llm direct admin %d", iteration+1))
 		if err != nil {
 			return nil, err
 		}
@@ -364,7 +364,7 @@ func (s *DirectAdminService) forceDirectFinal(
 	forceMessages := append(append([]llm.Message{}, messages...),
 		llm.Message{Role: "user", Content: instruction},
 	)
-	text, err := s.executeLLM(ctx, execution, s.deps.Config.LLM.ModelAdmin, forceMessages, "llm direct admin finalizer")
+	text, err := s.executeLLM(ctx, execution, currentLLMModel, forceMessages, "llm direct admin finalizer")
 	if err != nil {
 		return normalizeDirectResult(map[string]any{
 			"reply":        "管理员直连模式已停止继续执行命令，请查看详情中的命令记录。",

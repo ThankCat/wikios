@@ -35,3 +35,15 @@ func TestBuildPublicRetrievalQuestionIgnoresUnknownRoles(t *testing.T) {
 		t.Fatalf("expected user history to remain, got %q", query)
 	}
 }
+
+func TestBuildPublicRetrievalQuestionKeepsFullHistory(t *testing.T) {
+	history := make([]ChatMessage, 0, 12)
+	for index := 0; index < 12; index++ {
+		history = append(history, ChatMessage{Role: "user", Content: "历史问题" + string(rune('A'+index))})
+	}
+
+	query := buildPublicRetrievalQuestion("现在这个怎么买？", history)
+	if !strings.Contains(query, "历史问题A") || !strings.Contains(query, "历史问题L") {
+		t.Fatalf("expected public retrieval query to keep full history, got %q", query)
+	}
+}

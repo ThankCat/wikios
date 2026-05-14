@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
+  Bot,
   CheckCircle2,
   ChevronDown,
   ClipboardCheck,
@@ -15,7 +16,9 @@ import {
   PanelLeft,
   PanelLeftClose,
   Paperclip,
+  Pencil,
   Plus,
+  Power,
   RefreshCw,
   Save,
   SendHorizontal,
@@ -32,7 +35,9 @@ import {
   type ConversationItem,
 } from "@/components/chat/conversation-sidebar";
 import { MessageCard } from "@/components/chat/message-card";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ScrollJumpControls } from "@/components/ui/scroll-jump-controls";
 import { Textarea } from "@/components/ui/textarea";
@@ -45,7 +50,7 @@ import type {
   AdminChatResponse,
   AdminStreamEvent,
   ContextUsage,
-  LLMBalanceResponse,
+  LLMModel,
   PublicIntentsStatus,
   ReviewItem,
   ReviewTarget,
@@ -85,6 +90,17 @@ type AdminConversation = {
   sessionState: AdminSessionState;
 };
 
+type LLMModelFormState = {
+  id: string;
+  display_name: string;
+  provider: string;
+  base_url: string;
+  model_name: string;
+  api_key: string;
+  timeout_sec: string;
+  admin_timeout_sec: string;
+};
+
 const storageKey = "wikios.admin.chat";
 const sidebarStorageKey = "wikios.admin.sidebar.open";
 const drawerWidthStorageKey = "wikios.admin.detail.width";
@@ -99,6 +115,19 @@ function emptyAdminSessionState(): AdminSessionState {
     lastOutputFiles: [],
     lastCommands: [],
     lastArtifacts: [],
+  };
+}
+
+function emptyLLMModelForm(): LLMModelFormState {
+  return {
+    id: "",
+    display_name: "",
+    provider: "openai-compatible",
+    base_url: "",
+    model_name: "",
+    api_key: "",
+    timeout_sec: "90",
+    admin_timeout_sec: "300",
   };
 }
 
@@ -197,9 +226,13 @@ export function AdminChat({ username }: { username: string }) {
   const [reviewTargetPath, setReviewTargetPath] = useState("");
   const [reviewRejectReason, setReviewRejectReason] = useState("");
   const [reviewMessage, setReviewMessage] = useState("");
-  const [llmBalance, setLLMBalance] = useState<LLMBalanceResponse | null>(null);
-  const [llmBalanceLoading, setLLMBalanceLoading] = useState(false);
-  const [llmBalanceError, setLLMBalanceError] = useState("");
+  const [modelOpen, setModelOpen] = useState(false);
+  const [models, setModels] = useState<LLMModel[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelBusy, setModelBusy] = useState(false);
+  const [modelTestingId, setModelTestingId] = useState<string | null>(null);
+  const [modelMessage, setModelMessage] = useState("");
+  const [modelForm, setModelForm] = useState<LLMModelFormState>(() => emptyLLMModelForm());
 
   useEffect(() => {
     const raw = localStorage.getItem(storageKey);
@@ -261,6 +294,10 @@ export function AdminChat({ username }: { username: string }) {
   );
   const busyLabel = activeConversation ? (requestLabels[activeConversation.id] ?? "") : "";
   const busy = busyLabel !== "";
+  const activeModel = useMemo(
+    () => models.find((model) => model.is_active) ?? null,
+    [models],
+  );
   const selectedDetail = useMemo(
     () =>
       activeConversation?.messages.find(
@@ -299,15 +336,22 @@ export function AdminChat({ username }: { username: string }) {
       setContextUsage(null);
       return;
     }
-    if (busy || composer.trim() === "") {
-      if (composer.trim() === "") {
-        setContextUsage(null);
-      }
+    const message = composer.trim();
+    const hasHistory = activeConversation.messages.some(
+      (item) => item.content.trim() !== "",
+    );
+    if (!hasHistory && message === "") {
+      setContextUsage(null);
+      setContextLoading(false);
+      return;
+    }
+    if (busy) {
+      setContextLoading(false);
       return;
     }
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      const request = buildAdminRequest(activeConversation, composer, {});
+      const request = buildAdminRequest(activeConversation, message, {});
       setContextLoading(true);
       void api
         .estimateAdminContext(request, controller.signal)
@@ -348,10 +392,6 @@ export function AdminChat({ username }: { username: string }) {
       void refreshReviewCount();
     }, 30000);
     return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    void refreshLLMBalance();
   }, []);
 
   function startDrawerResize(clientX?: number) {
@@ -544,16 +584,114 @@ export function AdminChat({ username }: { username: string }) {
     }
   }
 
-  async function refreshLLMBalance() {
-    setLLMBalanceLoading(true);
-    setLLMBalanceError("");
+  async function openModelModal() {
+    setModelOpen(true);
+    setModelMessage("");
+    setModelTestingId(null);
+    setModelForm(emptyLLMModelForm());
+    await refreshModels();
+  }
+
+  async function refreshModels() {
+    setModelsLoading(true);
     try {
-      const response = await api.llmBalance();
-      setLLMBalance(response);
+      const response = await api.listLLMModels();
+      setModels(response.models);
     } catch (reason) {
-      setLLMBalanceError(reason instanceof Error ? reason.message : "余额查询失败");
+      setModelMessage(reason instanceof Error ? reason.message : "模型列表读取失败");
     } finally {
-      setLLMBalanceLoading(false);
+      setModelsLoading(false);
+    }
+  }
+
+  function editModel(model: LLMModel) {
+    setModelMessage("");
+    setModelForm({
+      id: model.id,
+      display_name: model.display_name,
+      provider: model.provider || "openai-compatible",
+      base_url: model.base_url,
+      model_name: model.model_name,
+      api_key: "",
+      timeout_sec: String(model.timeout_sec || 90),
+      admin_timeout_sec: String(model.admin_timeout_sec || 300),
+    });
+  }
+
+  async function saveModel() {
+    setModelBusy(true);
+    setModelMessage("");
+    const payload = {
+      display_name: modelForm.display_name.trim(),
+      provider: firstNonEmpty(modelForm.provider.trim(), "openai-compatible"),
+      base_url: modelForm.base_url.trim(),
+      model_name: modelForm.model_name.trim(),
+      api_key: modelForm.api_key.trim(),
+      timeout_sec: positiveNumber(modelForm.timeout_sec, 90),
+      admin_timeout_sec: positiveNumber(modelForm.admin_timeout_sec, 300),
+    };
+    try {
+      if (modelForm.id) {
+        await api.updateLLMModel(modelForm.id, payload);
+        setModelMessage("模型已更新");
+      } else {
+        await api.createLLMModel(payload);
+        setModelMessage("模型已新增");
+      }
+      setModelForm(emptyLLMModelForm());
+      await refreshModels();
+    } catch (reason) {
+      setModelMessage(reason instanceof Error ? reason.message : "模型保存失败");
+    } finally {
+      setModelBusy(false);
+    }
+  }
+
+  async function activateModel(id: string) {
+    setModelBusy(true);
+    setModelMessage("");
+    try {
+      await api.activateLLMModel(id);
+      setModelMessage("当前模型已切换");
+      await refreshModels();
+    } catch (reason) {
+      setModelMessage(reason instanceof Error ? reason.message : "模型切换失败");
+    } finally {
+      setModelBusy(false);
+    }
+  }
+
+  async function testModel(id: string) {
+    setModelTestingId(id);
+    setModelMessage("");
+    try {
+      const response = await api.testLLMModel(id);
+      const latency = Number.isFinite(response.latency_ms) ? `（${response.latency_ms}ms）` : "";
+      setModelMessage(response.ok ? `连接成功${latency}` : `连接失败：${response.message}`);
+    } catch (reason) {
+      setModelMessage(reason instanceof Error ? reason.message : "模型连接测试失败");
+    } finally {
+      setModelTestingId(null);
+    }
+  }
+
+  async function deleteModel(id: string) {
+    if (!window.confirm("确认删除这个模型吗？如果它是当前模型，删除后需要重新启用一个模型。")) {
+      return;
+    }
+    setModelBusy(true);
+    setModelMessage("");
+    try {
+      await api.deleteLLMModel(id);
+      setModelMessage("模型已删除");
+      if (modelForm.id === id) {
+        setModelForm(emptyLLMModelForm());
+      }
+      await refreshModels();
+    } catch (reason) {
+      setModelMessage(reason instanceof Error ? reason.message : "模型删除失败");
+    } finally {
+      setModelBusy(false);
     }
   }
 
@@ -1474,25 +1612,16 @@ export function AdminChat({ username }: { username: string }) {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <div
-                className={cn(
-                  "flex h-9 items-center gap-1 rounded-md border border-slate-200 bg-white/70 px-2 text-xs text-slate-600",
-                  llmBalanceError && "border-red-200 bg-red-50 text-red-700",
-                )}
-                title={llmBalanceError || llmBalanceDetailTitle(llmBalance)}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void openModelModal()}
+                disabled={modelsLoading}
+                title="管理并切换当前 LLM 模型"
               >
-                <span className="whitespace-nowrap">余额：{formatLLMBalance(llmBalance, llmBalanceError)}</span>
-                <button
-                  type="button"
-                  onClick={() => void refreshLLMBalance()}
-                  disabled={llmBalanceLoading}
-                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
-                  title="刷新 DeepSeek API 最新余额"
-                >
-                  <RefreshCw className={cn("h-3.5 w-3.5", llmBalanceLoading && "animate-spin")} />
-                  <span className="sr-only">刷新余额</span>
-                </button>
-              </div>
+                <Bot className="mr-2 h-4 w-4" />
+                模型
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
@@ -1788,6 +1917,332 @@ export function AdminChat({ username }: { username: string }) {
           onClear={() => setSelectedDetailId("")}
           onResizeStart={startDrawerResize}
         />
+        {modelOpen ? (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="model-title"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) {
+                setModelOpen(false);
+              }
+            }}
+          >
+            <div className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+              <header className="flex items-start justify-between gap-4 border-b px-5 py-4">
+                <div className="min-w-0">
+                  <h2 id="model-title" className="text-sm font-semibold">
+                    模型管理
+                  </h2>
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span>当前：{activeModel?.display_name || "未启用模型"}</span>
+                    {activeModel ? (
+                      <span className="font-mono text-slate-500">
+                        {activeModel.model_name}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setModelOpen(false)}
+                  title="关闭模型弹窗"
+                >
+                  <X className="mr-2 h-4 w-4" />
+                  关闭
+                </Button>
+              </header>
+              <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-5 py-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+                <section className="min-h-0">
+                  <div className="mb-3 flex items-center justify-between gap-2">
+                    <div className="text-xs font-semibold text-slate-600">
+                      已添加模型
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void refreshModels()}
+                      disabled={modelsLoading || modelBusy || modelTestingId !== null}
+                      title="重新读取模型列表"
+                    >
+                      <RefreshCw className={cn("mr-2 h-4 w-4", modelsLoading && "animate-spin")} />
+                      刷新
+                    </Button>
+                  </div>
+                  <div className="space-y-3">
+                    {modelsLoading ? (
+                      <div className="rounded-xl border border-slate-200 px-4 py-8 text-center text-sm text-muted-foreground">
+                        正在读取模型...
+                      </div>
+                    ) : models.length === 0 ? (
+                      <div className="rounded-xl border border-slate-200 px-4 py-8 text-center text-sm text-muted-foreground">
+                        还没有模型。
+                      </div>
+                    ) : (
+                      models.map((model) => (
+                        <div
+                          key={model.id}
+                          className={cn(
+                            "rounded-xl border p-4",
+                            model.is_active
+                              ? "border-emerald-200 bg-emerald-50/50"
+                              : "border-slate-200 bg-white",
+                          )}
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="truncate text-sm font-semibold text-slate-900">
+                                  {model.display_name}
+                                </div>
+                                {model.is_active ? (
+                                  <Badge variant="success">当前</Badge>
+                                ) : null}
+                              </div>
+                              <div className="mt-1 truncate font-mono text-xs text-slate-600">
+                                {model.model_name}
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => editModel(model)}
+                                disabled={modelBusy || modelTestingId !== null}
+                                title="编辑这个模型"
+                              >
+                                <Pencil className="mr-2 h-4 w-4" />
+                                编辑
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void testModel(model.id)}
+                                disabled={modelBusy || modelTestingId !== null}
+                                title="测试这个模型是否能正常连接"
+                              >
+                                <Activity
+                                  className={cn(
+                                    "mr-2 h-4 w-4",
+                                    modelTestingId === model.id && "animate-pulse text-emerald-600",
+                                  )}
+                                />
+                                {modelTestingId === model.id ? "测试中" : "测试"}
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                onClick={() => void activateModel(model.id)}
+                                disabled={modelBusy || modelTestingId !== null || model.is_active}
+                                title="切换为当前模型"
+                              >
+                                <Power className="mr-2 h-4 w-4" />
+                                启用
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void deleteModel(model.id)}
+                                disabled={modelBusy || modelTestingId !== null}
+                                title="删除这个模型"
+                              >
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                删除
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
+                            <div className="truncate">端点：{model.base_url}</div>
+                            <div className="truncate">服务商：{model.provider || "-"}</div>
+                            <div>请求超时：{model.timeout_sec}s</div>
+                            <div>管理超时：{model.admin_timeout_sec}s</div>
+                            <div className="truncate">密钥：{model.api_key_mask || "未设置"}</div>
+                            <div>更新：{formatDateTime(model.updated_at)}</div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </section>
+                <section className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+                  <div className="mb-3 flex items-center justify-between gap-2">
+                    <div>
+                      <div className="text-xs font-semibold text-slate-600">
+                        {modelForm.id ? "编辑模型" : "新增模型"}
+                      </div>
+                      {modelForm.id ? (
+                        <div className="mt-1 text-[11px] text-muted-foreground">
+                          API Key 留空会保留原密钥。
+                        </div>
+                      ) : null}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setModelForm(emptyLLMModelForm());
+                        setModelMessage("");
+                      }}
+                      disabled={modelBusy || modelTestingId !== null}
+                      title="清空表单"
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      新增
+                    </Button>
+                  </div>
+                  <div className="space-y-3">
+                    <label className="grid gap-1.5 text-xs font-semibold text-slate-600">
+                      显示名称
+                      <Input
+                        value={modelForm.display_name}
+                        onChange={(event) =>
+                          setModelForm((current) => ({
+                            ...current,
+                            display_name: event.target.value,
+                          }))
+                        }
+                        className="h-10 rounded-md"
+                        placeholder="生产客服模型"
+                      />
+                    </label>
+                    <label className="grid gap-1.5 text-xs font-semibold text-slate-600">
+                      服务商
+                      <Input
+                        value={modelForm.provider}
+                        onChange={(event) =>
+                          setModelForm((current) => ({
+                            ...current,
+                            provider: event.target.value,
+                          }))
+                        }
+                        className="h-10 rounded-md"
+                        placeholder="openai-compatible"
+                      />
+                    </label>
+                    <label className="grid gap-1.5 text-xs font-semibold text-slate-600">
+                      端点域名
+                      <Input
+                        value={modelForm.base_url}
+                        onChange={(event) =>
+                          setModelForm((current) => ({
+                            ...current,
+                            base_url: event.target.value,
+                          }))
+                        }
+                        className="h-10 rounded-md font-mono"
+                        placeholder="https://api.example.com/v1"
+                      />
+                    </label>
+                    <label className="grid gap-1.5 text-xs font-semibold text-slate-600">
+                      模型名
+                      <Input
+                        value={modelForm.model_name}
+                        onChange={(event) =>
+                          setModelForm((current) => ({
+                            ...current,
+                            model_name: event.target.value,
+                          }))
+                        }
+                        className="h-10 rounded-md font-mono"
+                        placeholder="gpt-4.1-mini"
+                      />
+                    </label>
+                    <label className="grid gap-1.5 text-xs font-semibold text-slate-600">
+                      API Key
+                      <Input
+                        type="password"
+                        value={modelForm.api_key}
+                        onChange={(event) =>
+                          setModelForm((current) => ({
+                            ...current,
+                            api_key: event.target.value,
+                          }))
+                        }
+                        className="h-10 rounded-md font-mono"
+                        placeholder={modelForm.id ? "留空保留原密钥" : "sk-..."}
+                      />
+                    </label>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="grid gap-1.5 text-xs font-semibold text-slate-600">
+                        请求超时秒数
+                        <Input
+                          type="number"
+                          min={1}
+                          value={modelForm.timeout_sec}
+                          onChange={(event) =>
+                            setModelForm((current) => ({
+                              ...current,
+                              timeout_sec: event.target.value,
+                            }))
+                          }
+                          className="h-10 rounded-md"
+                        />
+                      </label>
+                      <label className="grid gap-1.5 text-xs font-semibold text-slate-600">
+                        管理超时秒数
+                        <Input
+                          type="number"
+                          min={1}
+                          value={modelForm.admin_timeout_sec}
+                          onChange={(event) =>
+                            setModelForm((current) => ({
+                              ...current,
+                              admin_timeout_sec: event.target.value,
+                            }))
+                          }
+                          className="h-10 rounded-md"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                </section>
+              </div>
+              <footer className="flex flex-wrap items-center justify-between gap-2 border-t bg-slate-50 px-5 py-4">
+                <span
+                  className={cn(
+                    "text-xs",
+                    modelMessage.includes("已") || modelMessage.includes("成功")
+                      ? "text-emerald-700"
+                      : modelMessage
+                        ? "text-destructive"
+                        : "text-muted-foreground",
+                  )}
+                >
+                  {modelMessage || " "}
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setModelOpen(false)}
+                    disabled={modelBusy || modelTestingId !== null}
+                  >
+                    关闭
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => void saveModel()}
+                    disabled={modelBusy || modelTestingId !== null}
+                    title="保存模型配置"
+                  >
+                    <Save className="mr-2 h-4 w-4" />
+                    {modelBusy ? "保存中" : "保存"}
+                  </Button>
+                </div>
+              </footer>
+            </div>
+          </div>
+        ) : null}
         {reviewOpen ? (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4"
@@ -2415,38 +2870,9 @@ function formatDateTime(value?: string) {
   });
 }
 
-function formatLLMBalance(balance: LLMBalanceResponse | null, error: string) {
-  if (error) {
-    return "查询失败";
-  }
-  const info = preferredBalanceInfo(balance);
-  if (!info) {
-    return "--";
-  }
-  const prefix = info.currency === "CNY" ? "¥" : info.currency === "USD" ? "$" : `${info.currency} `;
-  return `${prefix}${info.total_balance}`;
-}
-
-function llmBalanceDetailTitle(balance: LLMBalanceResponse | null) {
-  const info = preferredBalanceInfo(balance);
-  if (!info) {
-    return "DeepSeek API 余额，点击刷新获取最新值";
-  }
-  return [
-    `DeepSeek API 余额：${info.currency} ${info.total_balance}`,
-    `赠金：${info.granted_balance}`,
-    `充值：${info.topped_up_balance}`,
-    balance?.checked_at ? `刷新时间：${formatDateTime(balance.checked_at)}` : "",
-  ]
-    .filter(Boolean)
-    .join("；");
-}
-
-function preferredBalanceInfo(balance: LLMBalanceResponse | null) {
-  if (!balance?.balance_infos?.length) {
-    return null;
-  }
-  return balance.balance_infos.find((item) => item.currency === "CNY") ?? balance.balance_infos[0];
+function positiveNumber(value: string, fallback: number) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function ComposerToolButton({

@@ -29,8 +29,18 @@ type Deps struct {
 	WorkspaceDir  string
 }
 
+const currentLLMModel = "database-active-model"
+
 type baseService struct {
 	deps Deps
+}
+
+type activeLLMModelNamer interface {
+	ActiveModelName(ctx context.Context) (string, error)
+}
+
+type llmRequestTimeoutResolver interface {
+	RequestTimeout(ctx context.Context, admin bool) time.Duration
 }
 
 func newBaseService(deps Deps) baseService {
@@ -119,9 +129,15 @@ func (s *baseService) executeLLMTraceWithHooks(ctx context.Context, execution *E
 	promptChars, promptTokens := estimatePromptSize(messages)
 	timeout := s.llmRequestTimeout(execution)
 	timeoutSec := int(timeout / time.Second)
+	displayModel := model
+	if namer, ok := s.deps.LLM.(activeLLMModelNamer); ok {
+		if activeModelName, err := namer.ActiveModelName(ctx); err == nil && strings.TrimSpace(activeModelName) != "" {
+			displayModel = activeModelName
+		}
+	}
 	emitStreamEvent(ctx, "prompt", map[string]any{
 		"name":                    stepName,
-		"model":                   model,
+		"model":                   displayModel,
 		"messages":                messages,
 		"created_at":              start.Format(time.RFC3339Nano),
 		"prompt_chars":            promptChars,
@@ -174,7 +190,7 @@ func (s *baseService) executeLLMTraceWithHooks(ctx context.Context, execution *E
 			StartedAt:  start,
 			EndedAt:    end,
 			Input: map[string]any{
-				"model":                   model,
+				"model":                   displayModel,
 				"message_count":           len(messages),
 				"prompt_chars":            promptChars,
 				"prompt_estimated_tokens": promptTokens,
@@ -220,6 +236,9 @@ func (s *baseService) executeLLMTraceWithHooks(ctx context.Context, execution *E
 func (s *baseService) llmRequestTimeout(execution *Execution) time.Duration {
 	if s == nil || s.deps.Config == nil {
 		return 90 * time.Second
+	}
+	if resolver, ok := s.deps.LLM.(llmRequestTimeoutResolver); ok {
+		return resolver.RequestTimeout(context.Background(), execution != nil)
 	}
 	timeoutSec := s.deps.Config.LLM.TimeoutSec
 	if execution != nil {

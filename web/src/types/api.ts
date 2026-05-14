@@ -25,6 +25,11 @@ export type PublicAnswerResponse = {
   details?: Record<string, unknown>;
 };
 
+export type PublicContextEstimateResponse = {
+  mode: "public" | string;
+  context_usage: ContextUsage;
+};
+
 export type PublicChatHistoryItem = {
   id?: string;
   role: "user" | "assistant";
@@ -129,17 +134,34 @@ export type PublicIntentsResponse = {
   status: PublicIntentsStatus;
 };
 
-export type LLMBalanceInfo = {
-  currency: "CNY" | "USD" | string;
-  total_balance: string;
-  granted_balance: string;
-  topped_up_balance: string;
+export type LLMModel = {
+  id: string;
+  display_name: string;
+  provider: string;
+  base_url: string;
+  model_name: string;
+  has_api_key: boolean;
+  api_key_mask: string;
+  is_active: boolean;
+  timeout_sec: number;
+  admin_timeout_sec: number;
+  created_at: string;
+  updated_at: string;
 };
 
-export type LLMBalanceResponse = {
-  is_available: boolean;
-  balance_infos: LLMBalanceInfo[];
-  checked_at: string;
+export type LLMModelsResponse = {
+  models: LLMModel[];
+};
+
+export type LLMModelResponse = {
+  model: LLMModel;
+};
+
+export type LLMModelTestResponse = {
+  ok: boolean;
+  message: string;
+  latency_ms: number;
+  tested_at: string;
 };
 
 export type ReviewItem = {

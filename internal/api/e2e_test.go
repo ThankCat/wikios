@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -176,6 +177,36 @@ func (m apiPublicAnswerTextLLM) StreamChat(ctx context.Context, model string, me
 	return text, nil
 }
 
+type apiCanceledLLM struct{}
+
+func (apiCanceledLLM) Chat(context.Context, string, []llm.Message) (string, error) {
+	return "", context.Canceled
+}
+
+func (apiCanceledLLM) StreamChat(context.Context, string, []llm.Message, func(string)) (string, error) {
+	return "", context.Canceled
+}
+
+type apiNoActiveLLM struct{}
+
+func (apiNoActiveLLM) Chat(context.Context, string, []llm.Message) (string, error) {
+	return "", errors.New("当前未启用 LLM 模型，请先在管理员端模型模块配置并启用模型")
+}
+
+func (apiNoActiveLLM) StreamChat(context.Context, string, []llm.Message, func(string)) (string, error) {
+	return "", errors.New("当前未启用 LLM 模型，请先在管理员端模型模块配置并启用模型")
+}
+
+type apiProviderUnavailableLLM struct{}
+
+func (apiProviderUnavailableLLM) Chat(context.Context, string, []llm.Message) (string, error) {
+	return "", errors.New("llm api error: Access denied, please make sure your account is in good standing. overdue-payment")
+}
+
+func (apiProviderUnavailableLLM) StreamChat(context.Context, string, []llm.Message, func(string)) (string, error) {
+	return "", errors.New("llm api error: Access denied, please make sure your account is in good standing. overdue-payment")
+}
+
 type apiQMDTool struct{}
 
 func (apiQMDTool) Name() string {
@@ -295,6 +326,9 @@ func TestPublicAnswerStreamFlagDefaultsToJSONAndStreamsRealDeltas(t *testing.T) 
 			t.Fatalf("expected public stream to contain %q, got %s", want, stream)
 		}
 	}
+	if strings.Contains(stream, "先做安全边界检查") || strings.Contains(stream, "已读取") || strings.Contains(stream, "先确认是否有正式知识证据。") || strings.Contains(stream, "event: llm_reasoning_delta") {
+		t.Fatalf("public stream should not include synthetic reasoning summaries, got %s", stream)
+	}
 	if deltaAt, resultAt := strings.Index(stream, "event: delta"), strings.Index(stream, "event: result"); deltaAt < 0 || resultAt < 0 || deltaAt > resultAt {
 		t.Fatalf("expected answer delta before result, got %s", stream)
 	}
@@ -302,6 +336,203 @@ func TestPublicAnswerStreamFlagDefaultsToJSONAndStreamsRealDeltas(t *testing.T) 
 		if strings.Contains(stream, forbidden) {
 			t.Fatalf("public stream must not expose raw internals %q: %s", forbidden, stream)
 		}
+	}
+}
+
+func TestPublicAnswerNoActiveModelDoesNotExposeConfigurationError(t *testing.T) {
+	fixture := newAPITestFixture(t, apiNoActiveLLM{})
+	body, _ := json.Marshal(map[string]any{
+		"question": "静态 IP 适合什么？",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected neutral public model unavailable response, got %d %s", rec.Code, rec.Body.String())
+	}
+	if !apiContainsServiceUnavailableFallback(rec.Body.String()) || apiContainsModelInternalLeak(rec.Body.String()) {
+		t.Fatalf("expected neutral public model unavailable response without internal config details, got %s", rec.Body.String())
+	}
+
+	streamBody, _ := json.Marshal(map[string]any{
+		"question": "静态 IP 适合什么？",
+		"stream":   true,
+	})
+	streamReq := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(streamBody))
+	streamReq.Header.Set("Content-Type", "application/json")
+	streamRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(streamRec, streamReq)
+	stream := streamRec.Body.String()
+	if !strings.Contains(stream, "event: result") || !apiContainsServiceUnavailableFallback(stream) || apiContainsModelInternalLeak(stream) {
+		t.Fatalf("expected neutral stream model unavailable response without internal config details, got %s", stream)
+	}
+}
+
+func TestPublicAnswerProviderUnavailableDoesNotExposeAccountError(t *testing.T) {
+	fixture := newAPITestFixture(t, apiProviderUnavailableLLM{})
+	body, _ := json.Marshal(map[string]any{
+		"question": "你现在不能回复了吗?",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected neutral public provider unavailable response, got %d %s", rec.Code, rec.Body.String())
+	}
+	responseBody := rec.Body.String()
+	if !apiContainsServiceUnavailableFallback(responseBody) || apiContainsModelInternalLeak(responseBody) {
+		t.Fatalf("expected provider error hidden from public response, got %s", responseBody)
+	}
+	entry := readLatestPublicAnswerLogEntry(t, fixture.deps.WorkspaceDir)
+	if entry["decision"] != "llm_service_unavailable_fallback" {
+		t.Fatalf("expected service unavailable decision in log, got %#v", entry["decision"])
+	}
+	if logText, _ := json.Marshal(entry); !strings.Contains(string(logText), "Access denied") {
+		t.Fatalf("expected original provider error retained in admin log, got %s", string(logText))
+	}
+}
+
+func apiContainsServiceUnavailableFallback(text string) bool {
+	for _, phrase := range []string{
+		"当前回复服务短暂不可用",
+		"这边暂时没能生成准确回复",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func apiContainsModelInternalLeak(text string) bool {
+	for _, phrase := range []string{
+		"Access denied",
+		"overdue",
+		"管理员端",
+		"账号余额",
+		"API Key",
+		"供应商",
+		"base_url",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestPublicContextEstimateIsAvailableWithoutAdminAuth(t *testing.T) {
+	fixture := newAPITestFixture(t, apiMockLLM{})
+	body, _ := json.Marshal(map[string]any{
+		"question": "这个怎么买？",
+		"history": []map[string]any{
+			{"role": "user", "content": "我想了解静态IP"},
+			{"role": "assistant", "content": "静态IP适合固定出口场景。"},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/context/estimate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("public context estimate failed: %d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Mode         string               `json:"mode"`
+		ContextUsage service.ContextUsage `json:"context_usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode context estimate: %v", err)
+	}
+	if payload.Mode != "public" || payload.ContextUsage.UsedTokens <= 0 || payload.ContextUsage.MaxTokens <= 0 {
+		t.Fatalf("unexpected public context estimate: %+v", payload)
+	}
+}
+
+func TestPublicAnswerWritesQuestionAnswerJSONAndThinkingLog(t *testing.T) {
+	fixture := newAPITestFixture(t, apiStreamingMockLLM{})
+	body, _ := json.Marshal(map[string]any{
+		"question":   "静态 IP 适合什么？",
+		"session_id": "s-log",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("public answer failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	entry := readLatestPublicAnswerLogEntry(t, fixture.deps.WorkspaceDir)
+	if entry["question"] != "静态 IP 适合什么？" {
+		t.Fatalf("expected logged question, got %#v", entry["question"])
+	}
+	if entry["answer"] != "静态 IP 适合稳定账号和白名单绑定。" {
+		t.Fatalf("expected logged answer, got %#v", entry["answer"])
+	}
+	if thinking, _ := entry["thinking"].(string); !strings.Contains(thinking, "先确认是否有正式知识证据。") {
+		t.Fatalf("expected full model thinking in log, got %#v", entry["thinking"])
+	}
+	jsonData, ok := entry["json_data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected json_data object, got %#v", entry["json_data"])
+	}
+	for _, key := range []string{"response", "details", "model_json_raw", "model_json_parsed", "final_json"} {
+		if _, ok := jsonData[key]; !ok {
+			t.Fatalf("expected json_data.%s in log, got %#v", key, jsonData)
+		}
+	}
+}
+
+func TestPublicAnswerLogCanBeDisabledAndRedactsSecrets(t *testing.T) {
+	disabledFixture := newAPITestFixture(t, apiMockLLM{})
+	disabled := false
+	disabledFixture.deps.Config.PublicQuery.AnswerLog.Enabled = &disabled
+	body, _ := json.Marshal(map[string]any{"question": "静态 IP 适合什么？"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	disabledFixture.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("disabled log public answer failed: %d %s", rec.Code, rec.Body.String())
+	}
+	matches, err := filepath.Glob(filepath.Join(disabledFixture.deps.WorkspaceDir, "public_answer_logs", "*.jsonl"))
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("expected no public answer logs when disabled, matches=%#v err=%v", matches, err)
+	}
+
+	redactFixture := newAPITestFixture(t, apiMockLLM{})
+	secretQuestion := "我的手机号13800138000，token=sk-abcdefgh123456，静态 IP 适合什么？"
+	secretBody, _ := json.Marshal(map[string]any{"question": secretQuestion})
+	secretReq := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(secretBody))
+	secretReq.Header.Set("Content-Type", "application/json")
+	secretRec := httptest.NewRecorder()
+	redactFixture.router.ServeHTTP(secretRec, secretReq)
+	if secretRec.Code != http.StatusOK {
+		t.Fatalf("redacted log public answer failed: %d %s", secretRec.Code, secretRec.Body.String())
+	}
+	entry := readLatestPublicAnswerLogEntry(t, redactFixture.deps.WorkspaceDir)
+	encoded, _ := json.Marshal(entry)
+	if strings.Contains(string(encoded), "13800138000") || strings.Contains(string(encoded), "sk-abcdefgh123456") {
+		t.Fatalf("expected public answer log to redact secrets, got %s", string(encoded))
+	}
+}
+
+func TestPublicAnswerContextCanceledDoesNotEmitLLMFailure(t *testing.T) {
+	fixture := newAPITestFixture(t, apiCanceledLLM{})
+	body, _ := json.Marshal(map[string]any{
+		"question": "静态IP 和 动态IP 价格有什么区别",
+		"stream":   true,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(rec, req)
+
+	if body := rec.Body.String(); strings.Contains(body, "event: error") || strings.Contains(body, "context canceled") || strings.Contains(body, "fallback") {
+		t.Fatalf("context cancellation should not be emitted as public answer failure, got %s", body)
 	}
 }
 
@@ -379,6 +610,51 @@ func TestPublicAnswerStrongDiscountRequestReturnsPriceAdjustmentIntent(t *testin
 	price := payload.UserIntent.PriceInfo
 	if price.ExpectedPrice != "90元/个" || price.ProductType != "static" || price.ProductBandwidth != 5 || price.IntendedPurchaseQuantity != 10 {
 		t.Fatalf("unexpected price_info: %#v", price)
+	}
+}
+
+func TestPublicAnswerDropsMismatchedPriceAdjustmentIntent(t *testing.T) {
+	fixture := newAPITestFixture(t, apiPublicAnswerTextLLM{text: `{
+  "answer_mode": "evidence",
+  "answer_markdown": "10个5M静态IP是可以申请优惠的。",
+  "review_question": "",
+  "confidence": 0.9,
+  "evidence_confidence": 0.9,
+  "review_required": false,
+  "review_reason": "",
+  "suggested_target_path": "",
+  "sources": [{"path":"wiki/knowledge/static-ip.md","confidence":"high"}],
+  "user_intent": {
+    "type": "price_adjustment",
+    "price_info": {
+      "expected_price": "90元/个",
+      "product_type": "box",
+      "product_bandwidth": 5,
+      "intended_purchase_quantity": 10,
+      "box_usage_time": 0,
+      "box_usage_quantity_min": 0,
+      "box_usage_quantity_max": 0
+    }
+  },
+  "notes": ""
+}`})
+	body, _ := json.Marshal(map[string]any{"question": "我想买10个5M静态IP，可以申请优惠吗？"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("discount public answer failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		UserIntent *service.PublicUserIntent `json:"user_intent"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.UserIntent != nil {
+		t.Fatalf("expected mismatched residential IP price intent to be dropped, got %#v", payload.UserIntent)
 	}
 }
 
@@ -508,6 +784,169 @@ func TestReviewAPIUsesSuggestedTargetPathAndApprovesKnowledgePage(t *testing.T) 
 	}
 }
 
+func TestAdminLLMModelCRUDDoesNotExposeAPIKey(t *testing.T) {
+	fixture := newAPITestFixture(t, apiMockLLM{})
+	cookie := loginCookie(t, fixture.router)
+
+	unauthReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/models", nil)
+	unauthRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(unauthRec, unauthReq)
+	if unauthRec.Code == http.StatusOK {
+		t.Fatal("expected model API to require admin auth")
+	}
+
+	createBody, _ := json.Marshal(map[string]any{
+		"display_name":      "Test Model",
+		"provider":          "test",
+		"base_url":          "http://llm.example/v1",
+		"model_name":        "test-model",
+		"api_key":           "secret-api-key",
+		"timeout_sec":       11,
+		"admin_timeout_sec": 22,
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/models", bytes.NewReader(createBody))
+	createReq.Header.Set("Content-Type", "application/json")
+	createReq.AddCookie(cookie)
+	createRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create model failed: %d %s", createRec.Code, createRec.Body.String())
+	}
+	if strings.Contains(createRec.Body.String(), "secret-api-key") {
+		t.Fatalf("create response leaked api key: %s", createRec.Body.String())
+	}
+	var createResp struct {
+		Model struct {
+			ID         string `json:"id"`
+			APIKeyMask string `json:"api_key_mask"`
+		} `json:"model"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createResp); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if createResp.Model.ID == "" || createResp.Model.APIKeyMask == "" {
+		t.Fatalf("expected model id and api key mask: %s", createRec.Body.String())
+	}
+
+	updateBody, _ := json.Marshal(map[string]any{
+		"display_name":      "Updated Model",
+		"provider":          "test",
+		"base_url":          "http://llm.example/v1",
+		"model_name":        "test-model-updated",
+		"api_key":           "",
+		"timeout_sec":       33,
+		"admin_timeout_sec": 44,
+	})
+	updateReq := httptest.NewRequest(http.MethodPut, "/api/v1/admin/models/"+createResp.Model.ID, bytes.NewReader(updateBody))
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateReq.AddCookie(cookie)
+	updateRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update model failed: %d %s", updateRec.Code, updateRec.Body.String())
+	}
+	storedModel, err := fixture.deps.Store.GetLLMModel(context.Background(), createResp.Model.ID)
+	if err != nil {
+		t.Fatalf("get stored model: %v", err)
+	}
+	if storedModel.APIKey != "secret-api-key" || storedModel.ModelName != "test-model-updated" {
+		t.Fatalf("unexpected stored model after update: %+v", storedModel)
+	}
+
+	activateReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/models/"+createResp.Model.ID+"/activate", nil)
+	activateReq.AddCookie(cookie)
+	activateRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(activateRec, activateReq)
+	if activateRec.Code != http.StatusOK {
+		t.Fatalf("activate model failed: %d %s", activateRec.Code, activateRec.Body.String())
+	}
+	activeModel, err := fixture.deps.Store.GetActiveLLMModel(context.Background())
+	if err != nil {
+		t.Fatalf("get active model: %v", err)
+	}
+	if activeModel.ID != createResp.Model.ID {
+		t.Fatalf("expected active model %s, got %s", createResp.Model.ID, activeModel.ID)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/models", nil)
+	listReq.AddCookie(cookie)
+	listRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list models failed: %d %s", listRec.Code, listRec.Body.String())
+	}
+	if strings.Contains(listRec.Body.String(), "secret-api-key") || !strings.Contains(listRec.Body.String(), `"is_active":true`) {
+		t.Fatalf("unexpected list response: %s", listRec.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/models/"+createResp.Model.ID, nil)
+	deleteReq.AddCookie(cookie)
+	deleteRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete model failed: %d %s", deleteRec.Code, deleteRec.Body.String())
+	}
+}
+
+func TestAdminLLMModelConnectionTestUsesStoredModel(t *testing.T) {
+	fixture := newAPITestFixture(t, apiMockLLM{})
+	cookie := loginCookie(t, fixture.router)
+	requests := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Header.Get("Authorization"))
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode model test request: %v", err)
+		}
+		if payload.Model != "test-chat-model" {
+			t.Fatalf("unexpected model name %q", payload.Model)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"OK"}}]}`))
+	}))
+	defer server.Close()
+
+	model := &store.LLMModel{
+		ID:              "connection-test",
+		DisplayName:     "Connection Test",
+		Provider:        "test",
+		BaseURL:         server.URL,
+		ModelName:       "test-chat-model",
+		APIKey:          "secret-api-key",
+		TimeoutSec:      5,
+		AdminTimeoutSec: 5,
+	}
+	if err := fixture.deps.Store.CreateLLMModel(context.Background(), model); err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/models/connection-test/test", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("test model failed: %d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		OK        bool   `json:"ok"`
+		Message   string `json:"message"`
+		LatencyMS int64  `json:"latency_ms"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !payload.OK || !strings.Contains(payload.Message, "连接成功") || payload.LatencyMS < 0 {
+		t.Fatalf("unexpected test response: %+v body=%s", payload, rec.Body.String())
+	}
+	if got := strings.Join(requests, ","); got != "Bearer secret-api-key" {
+		t.Fatalf("unexpected auth header: %s", got)
+	}
+	if strings.Contains(rec.Body.String(), "secret-api-key") {
+		t.Fatalf("model test response leaked api key: %s", rec.Body.String())
+	}
+}
+
 func newAPITestFixture(t *testing.T, client llm.Client) apiTestFixture {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -522,6 +961,9 @@ fallbacks:
   generic: 您好，这个问题我这边暂时还不能准确确认，您可以补充一下具体场景。
   operation: 您好，这项操作我这边暂时没有准确资料，建议您先参考设备说明或联系对应支持人员处理。
   device_operation: 您好，这项操作我这边暂时没有准确资料，建议您先参考设备说明或联系对应支持人员处理。
+  model_unavailable:
+    - 当前回复服务短暂不可用，您可以稍后再问一次。
+    - 这边暂时没能生成准确回复，您可以稍后重试一次。
 rules: []
 `)
 	enabled := true
@@ -538,7 +980,7 @@ rules: []
 		Workspace:     config.WorkspaceConfig{BaseDir: workspace, DefaultTimeoutSec: 5},
 		Sandbox:       config.SandboxConfig{QMDTimeoutSec: 1, PythonTimeoutSec: 1},
 		Sync:          config.SyncConfig{Remote: "origin", Branch: "main"},
-		LLM:           config.LLMConfig{ModelAdmin: "test", ModelPublic: "test"},
+		LLM:           config.LLMConfig{},
 		Storage:       config.StorageConfig{SQLitePath: filepath.Join(workspace, "service.db")},
 		Upload:        config.UploadConfig{MaxTextFileKB: 500},
 		PublicIntents: config.PublicIntentsConfig{Enabled: &enabled, Path: intentPath},
@@ -595,6 +1037,30 @@ func loginCookie(t *testing.T, router http.Handler) *http.Cookie {
 		t.Fatal("login did not set cookie")
 	}
 	return cookies[0]
+}
+
+func readLatestPublicAnswerLogEntry(t *testing.T, workspaceDir string) map[string]any {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(workspaceDir, "public_answer_logs", "*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob public answer logs: %v", err)
+	}
+	if len(matches) == 0 {
+		t.Fatalf("expected public answer log file under %s", workspaceDir)
+	}
+	raw, err := os.ReadFile(matches[len(matches)-1])
+	if err != nil {
+		t.Fatalf("read public answer log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[len(lines)-1]) == "" {
+		t.Fatalf("expected non-empty public answer log, got %q", string(raw))
+	}
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &entry); err != nil {
+		t.Fatalf("decode public answer log entry: %v\n%s", err, lines[len(lines)-1])
+	}
+	return entry
 }
 
 func uploadFile(t *testing.T, router http.Handler, cookie *http.Cookie, path string, filename string, content []byte) *httptest.ResponseRecorder {

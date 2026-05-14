@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -38,6 +39,20 @@ type Proposal struct {
 	Summary         string         `json:"summary"`
 	PlannedPatchOps map[string]any `json:"planned_patch_ops,omitempty"`
 	CreatedAt       time.Time      `json:"created_at"`
+}
+
+type LLMModel struct {
+	ID              string    `json:"id"`
+	DisplayName     string    `json:"display_name"`
+	Provider        string    `json:"provider"`
+	BaseURL         string    `json:"base_url"`
+	ModelName       string    `json:"model_name"`
+	APIKey          string    `json:"-"`
+	IsActive        bool      `json:"is_active"`
+	TimeoutSec      int       `json:"timeout_sec"`
+	AdminTimeoutSec int       `json:"admin_timeout_sec"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 func Open(path string) (*Store, error) {
@@ -81,7 +96,34 @@ CREATE TABLE IF NOT EXISTS repair_proposals (
   summary TEXT NOT NULL,
   planned_patch_ops_json TEXT,
   created_at TEXT NOT NULL
-);`
+);
+CREATE TABLE IF NOT EXISTS llm_models (
+  id TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  model_name TEXT NOT NULL,
+  api_key TEXT NOT NULL,
+  is_active INTEGER NOT NULL DEFAULT 0,
+  timeout_sec INTEGER NOT NULL DEFAULT 90,
+  admin_timeout_sec INTEGER NOT NULL DEFAULT 300,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+DELETE FROM llm_models WHERE id IN ('llm_default_admin', 'llm_default_public');
+UPDATE llm_models
+SET is_active = 0
+WHERE is_active = 1
+  AND id NOT IN (
+    SELECT id
+    FROM llm_models
+    WHERE is_active = 1
+    ORDER BY updated_at DESC, created_at DESC
+    LIMIT 1
+  );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_models_one_active
+ON llm_models(is_active)
+WHERE is_active = 1;`
 	_, err := s.db.Exec(schema)
 	return err
 }
@@ -223,9 +265,192 @@ FROM repair_proposals WHERE id = ?
 	return &proposal, nil
 }
 
+func (s *Store) ListLLMModels(ctx context.Context) ([]LLMModel, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, display_name, provider, base_url, model_name, api_key, is_active, timeout_sec, admin_timeout_sec, created_at, updated_at
+FROM llm_models
+ORDER BY is_active DESC, updated_at DESC, created_at DESC
+`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	models := []LLMModel{}
+	for rows.Next() {
+		model, err := scanLLMModel(rows)
+		if err != nil {
+			return nil, err
+		}
+		models = append(models, *model)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
+func (s *Store) GetLLMModel(ctx context.Context, id string) (*LLMModel, error) {
+	return scanLLMModel(s.db.QueryRowContext(ctx, `
+SELECT id, display_name, provider, base_url, model_name, api_key, is_active, timeout_sec, admin_timeout_sec, created_at, updated_at
+FROM llm_models
+WHERE id = ?
+`, id))
+}
+
+func (s *Store) GetActiveLLMModel(ctx context.Context) (*LLMModel, error) {
+	return scanLLMModel(s.db.QueryRowContext(ctx, `
+SELECT id, display_name, provider, base_url, model_name, api_key, is_active, timeout_sec, admin_timeout_sec, created_at, updated_at
+FROM llm_models
+WHERE is_active = 1
+ORDER BY updated_at DESC
+LIMIT 1
+`))
+}
+
+func (s *Store) CreateLLMModel(ctx context.Context, model *LLMModel) error {
+	normalizeLLMModel(model)
+	shouldActivate := model.IsActive
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO llm_models (id, display_name, provider, base_url, model_name, api_key, is_active, timeout_sec, admin_timeout_sec, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, model.ID, model.DisplayName, model.Provider, model.BaseURL, model.ModelName, model.APIKey, 0, model.TimeoutSec, model.AdminTimeoutSec, model.CreatedAt.Format(time.RFC3339Nano), model.UpdatedAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return err
+	}
+	if shouldActivate {
+		return s.ActivateLLMModel(ctx, model.ID)
+	}
+	return nil
+}
+
+func (s *Store) UpdateLLMModel(ctx context.Context, model *LLMModel) error {
+	normalizeLLMModel(model)
+	shouldActivate := model.IsActive
+	_, err := s.db.ExecContext(ctx, `
+UPDATE llm_models
+SET display_name = ?, provider = ?, base_url = ?, model_name = ?, api_key = ?, is_active = ?, timeout_sec = ?, admin_timeout_sec = ?, updated_at = ?
+WHERE id = ?
+`, model.DisplayName, model.Provider, model.BaseURL, model.ModelName, model.APIKey, 0, model.TimeoutSec, model.AdminTimeoutSec, model.UpdatedAt.Format(time.RFC3339Nano), model.ID)
+	if err == nil && shouldActivate {
+		return s.ActivateLLMModel(ctx, model.ID)
+	}
+	return err
+}
+
+func (s *Store) DeleteLLMModel(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM llm_models WHERE id = ?`, id)
+	return err
+}
+
+func (s *Store) ActivateLLMModel(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `UPDATE llm_models SET is_active = 0, updated_at = ? WHERE is_active = 1`, now); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE llm_models SET is_active = 1, updated_at = ? WHERE id = ?`, now, id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
+}
+
 func nullableJSON(data []byte) any {
 	if len(data) == 0 {
 		return nil
 	}
 	return string(data)
+}
+
+type sqlScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanLLMModel(scanner sqlScanner) (*LLMModel, error) {
+	var model LLMModel
+	var isActive int
+	var createdAt string
+	var updatedAt string
+	if err := scanner.Scan(
+		&model.ID,
+		&model.DisplayName,
+		&model.Provider,
+		&model.BaseURL,
+		&model.ModelName,
+		&model.APIKey,
+		&isActive,
+		&model.TimeoutSec,
+		&model.AdminTimeoutSec,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return nil, err
+	}
+	model.IsActive = isActive == 1
+	model.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	model.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+	return &model, nil
+}
+
+func normalizeLLMModel(model *LLMModel) {
+	now := time.Now()
+	model.DisplayName = strings.TrimSpace(model.DisplayName)
+	model.Provider = firstNonEmpty(strings.TrimSpace(model.Provider), "openai-compatible")
+	model.BaseURL = normalizeLLMBaseURL(model.BaseURL)
+	model.ModelName = strings.TrimSpace(model.ModelName)
+	model.APIKey = strings.TrimSpace(model.APIKey)
+	if model.DisplayName == "" {
+		model.DisplayName = defaultLLMDisplayName(model.Provider, model.ModelName)
+	}
+	if model.TimeoutSec <= 0 {
+		model.TimeoutSec = 90
+	}
+	if model.AdminTimeoutSec <= 0 {
+		model.AdminTimeoutSec = 300
+	}
+	if model.CreatedAt.IsZero() {
+		model.CreatedAt = now
+	}
+	model.UpdatedAt = now
+}
+
+func normalizeLLMBaseURL(value string) string {
+	return strings.TrimRight(strings.TrimSpace(value), "/")
+}
+
+func defaultLLMDisplayName(provider string, modelName string) string {
+	if strings.TrimSpace(modelName) == "" {
+		return firstNonEmpty(provider, "OpenAI Compatible")
+	}
+	if strings.TrimSpace(provider) == "" || provider == "openai-compatible" {
+		return modelName
+	}
+	return provider + " / " + modelName
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

@@ -18,7 +18,6 @@
 编辑 `deploy/.env.prod`：
 
 ```env
-DEEPSEEK_API_KEY=your-deepseek-api-key
 WIKIOS_DEFAULT_ADMIN_USERNAME=admin
 WIKIOS_DEFAULT_ADMIN_PASSWORD=change-me
 WIKIOS_AUTH_COOKIE_SECURE=false
@@ -30,12 +29,16 @@ WIKIOS_WIKI_GIT_PULL_ON_START=true
 WIKIOS_WIKI_GIT_RESET_ON_START=false
 WIKIOS_SUPPORT_PHONE=400-1080-106
 WIKIOS_SUPPORT_WECOM=企业微信
+WIKIOS_PUBLIC_ANSWER_LOG_ENABLED=true
+WIKIOS_PUBLIC_ANSWER_LOG_REDACT=true
+WIKIOS_PUBLIC_ANSWER_LOG_RETENTION_DAYS=14
 ```
 
 重点检查：
 
-- `DEEPSEEK_API_KEY` 必须是真实可用的 LLM API Key。
 - `WIKIOS_DEFAULT_ADMIN_PASSWORD` 必须改掉，不要使用默认值。
+- LLM 模型不再通过 `.env` 或 YAML 配置 API Key。服务启动后请登录管理后台，在“模型”模块新增并启用 OpenAI-compatible 模型；未启用模型时 public/admin 对话会明确提示先配置模型。
+- public 问答日志默认写入 `.workspace/public_answer_logs/*.jsonl`，并开启密钥、Token、手机号、邮箱脱敏与 14 天保留策略。
 - 如果后台需要嵌入跨站 iframe，浏览器通常要求管理员 Cookie 使用 `SameSite=None; Secure`。此时需要 HTTPS，并设置 `WIKIOS_AUTH_COOKIE_SAME_SITE=none`、`WIKIOS_AUTH_COOKIE_SECURE=true`；同站直接访问保持默认 `lax/false` 即可。
 - `WIKIOS_WIKI_GIT_URL` 推荐使用 `ssh://git@ssh.github.com:443/...`，适合普通 SSH 22 端口被网络限制的场景。
 - `WIKIOS_WIKI_GIT_RESET_ON_START=false` 是安全默认值；改成 `true` 会在启动时丢弃 Wiki 仓库内未提交改动。
@@ -224,9 +227,11 @@ docker compose --env-file deploy/.env.prod -f docker-compose.yml logs -f wikios
 
 ## 7. 排障说明
 
-### API Key 丢失或 LLM 不可用
+### LLM 不可用
 
-确认启动命令使用了生产 env：
+WikiOS 不再从环境变量读取默认模型。登录管理员后台后，在“模型”模块新增 OpenAI-compatible 模型并启用；未启用模型时，对话会提示先配置模型。
+
+如果后台配置后仍不可用，确认启动命令使用了生产 env：
 
 ```bash
 docker compose --env-file deploy/.env.prod -f docker-compose.yml up -d --build

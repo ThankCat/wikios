@@ -28,8 +28,8 @@ export function MessageCard({ id, role, content, createdAt, details, pending, st
     : Array.isArray(executionObject.steps)
       ? executionObject.steps
       : [];
-  const explicitReasoning = typeof detailObject.reasoning === "string" ? detailObject.reasoning.trim() : "";
-  const reasoning = explicitReasoning || buildTraceSummary(detailObject, stepItems);
+  const modelReasoning = typeof detailObject.reasoning === "string" ? detailObject.reasoning.trim() : "";
+  const processSummary = typeof detailObject.process_summary === "string" ? detailObject.process_summary.trim() : "";
   return (
     <div className={cn("flex w-full", role === "user" ? "justify-end" : "justify-start")}>
       <div className={cn("flex w-full min-w-0 flex-col", role === "user" ? "items-end" : "items-start")}>
@@ -39,9 +39,10 @@ export function MessageCard({ id, role, content, createdAt, details, pending, st
           </div>
         ) : null}
         <div className={role === "user" ? "chat-bubble-user" : "chat-bubble-assistant"}>
-          {role === "assistant" && (reasoning || stepItems.length > 0) ? (
+          {role === "assistant" && (modelReasoning || processSummary || stepItems.length > 0) ? (
             <div className="mb-3 space-y-2">
-              {reasoning ? <InlineTracePanel title="思考过程" icon="reasoning" content={reasoning} pending={pending} /> : null}
+              {modelReasoning ? <InlineTracePanel title="模型思考" icon="reasoning" content={modelReasoning} pending={pending} /> : null}
+              {processSummary ? <InlineTracePanel title="处理摘要" icon="summary" content={processSummary} pending={pending} /> : null}
               {stepItems.length > 0 ? <InlineTracePanel title="执行过程" icon="tools" steps={stepItems} pending={pending} /> : null}
             </div>
           ) : null}
@@ -98,13 +99,13 @@ function InlineTracePanel({
   pending,
 }: {
   title: string;
-  icon: "reasoning" | "tools";
+  icon: "reasoning" | "summary" | "tools";
   content?: string;
   steps?: unknown[];
   pending?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const Icon = icon === "reasoning" ? BrainCircuit : TerminalSquare;
+  const Icon = icon === "tools" ? TerminalSquare : BrainCircuit;
   const count = steps?.length ?? 0;
   const traceScroll = useScrollFollow<HTMLPreElement>([content, open]);
   return (
@@ -172,39 +173,4 @@ function asObject(value: unknown): Record<string, unknown> {
     return {};
   }
   return value as Record<string, unknown>;
-}
-
-function buildTraceSummary(details: Record<string, unknown>, steps: unknown[]) {
-  const lines: string[] = [];
-  const result = asObject(details.result);
-  const commands = Array.isArray(result.commands)
-    ? result.commands
-    : Array.isArray(details.commands)
-      ? details.commands
-      : [];
-  commands.slice(-8).forEach((command, index) => {
-    const item = asObject(command);
-    const reason = String(item.reason ?? "").trim();
-    const text = String(item.command ?? "").trim();
-    if (reason || text) {
-      lines.push(`${index + 1}. ${reason || "执行命令"}${text ? `：${truncateInline(text, 96)}` : ""}`);
-    }
-  });
-  if (lines.length === 0 && steps.length > 0) {
-    steps.slice(-8).forEach((step, index) => {
-      const item = asObject(step);
-      const name = String(item.name ?? `Step ${index + 1}`).trim();
-      const tool = String(item.tool ?? "tool").trim();
-      const status = String(item.status ?? "RUNNING").trim();
-      lines.push(`${index + 1}. ${name}：${tool} / ${status}`);
-    });
-  }
-  return lines.join("\n");
-}
-
-function truncateInline(value: string, limit: number) {
-  if (value.length <= limit) {
-    return value;
-  }
-  return `${value.slice(0, limit)}...`;
 }

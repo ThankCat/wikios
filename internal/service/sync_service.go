@@ -70,7 +70,7 @@ func (s *SyncService) GenerateCommitMessage(ctx context.Context, req SyncCommitM
 	if timeout <= 0 {
 		timeout = 300 * time.Second
 	}
-	text, err := s.deps.LLM.Chat(llm.WithRequestTimeout(ctx, timeout), s.deps.Config.LLM.ModelAdmin, []llm.Message{
+	text, err := s.deps.LLM.Chat(llm.WithRequestTimeout(ctx, timeout), currentLLMModel, []llm.Message{
 		{Role: "system", Content: prompt},
 		{Role: "user", Content: string(payload)},
 	})

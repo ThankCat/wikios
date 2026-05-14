@@ -99,3 +99,32 @@ func TestRouterServesStaticFilesAndAPINotFound(t *testing.T) {
 		t.Fatalf("expected 404 for unknown api route, got %d", rec.Code)
 	}
 }
+
+func TestRouterCORSAllowsModelManagementMethods(t *testing.T) {
+	dataStore, err := store.Open(filepath.Join(t.TempDir(), "service.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	cfg := &config.Config{
+		MountedWiki: config.MountedWikiConfig{Name: "fixture-wiki"},
+		Auth:        config.AuthConfig{SessionCookieName: "wikios_admin_session"},
+		Web:         config.WebConfig{DistDir: filepath.Join(t.TempDir(), "dist")},
+	}
+	router := app.NewRouter(cfg, &api.Handlers{}, dataStore)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/admin/models/model-id", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", http.MethodDelete)
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 preflight, got %d", rec.Code)
+	}
+	allowedMethods := rec.Result().Header.Get("Access-Control-Allow-Methods")
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		if !strings.Contains(allowedMethods, method) {
+			t.Fatalf("expected CORS methods to include %s, got %q", method, allowedMethods)
+		}
+	}
+}

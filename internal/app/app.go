@@ -9,7 +9,6 @@ import (
 
 	"wikios/internal/api"
 	"wikios/internal/config"
-	"wikios/internal/llm"
 	"wikios/internal/retrieval"
 	"wikios/internal/runtime"
 	"wikios/internal/service"
@@ -51,7 +50,7 @@ func New(cfg *config.Config) (*App, error) {
 		Resolver: resolver,
 	})
 	rt := runtime.NewRuntime(registry, runtime.NewPolicyEngine(), runtime.NewValidator(), runtime.NewAuditLogger())
-	llmClient := llm.NewClient(cfg.LLM)
+	llmClient := service.NewDynamicLLMClient(dataStore, cfg.LLM)
 	retriever := retrieval.NewQMDRetriever(rt)
 	publicIntents := service.NewPublicIntentManager(cfg.PublicIntents)
 	contextCounter := service.NewContextCounter(cfg.Context)
