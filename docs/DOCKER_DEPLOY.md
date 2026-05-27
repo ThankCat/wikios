@@ -18,17 +18,17 @@
 编辑 `deploy/.env.prod`：
 
 ```env
-WIKIOS_DEFAULT_ADMIN_USERNAME=admin
-WIKIOS_DEFAULT_ADMIN_PASSWORD=change-me
-WIKIOS_AUTH_COOKIE_SECURE=false
-WIKIOS_AUTH_COOKIE_SAME_SITE=lax
-WIKIOS_AUTH_COOKIE_DOMAIN=
-WIKIOS_WIKI_GIT_URL=ssh://git@ssh.github.com:443/ThankCat/knowledge-base.git
+WIKIOS_WIKI_GIT_URL=https://github.com/ThankCat/knowledge-base.git
+WIKIOS_WIKI_GIT_TOKEN=github_pat_xxx
+WIKIOS_WIKI_GIT_USERNAME=x-access-token
 WIKIOS_WIKI_GIT_BRANCH=main
 WIKIOS_WIKI_GIT_PULL_ON_START=true
 WIKIOS_WIKI_GIT_RESET_ON_START=false
 WIKIOS_SUPPORT_PHONE=400-1080-106
 WIKIOS_SUPPORT_WECOM=企业微信
+WIKIOS_LLM_TIMEOUT_SEC=300
+WIKIOS_LLM_ADMIN_TIMEOUT_SEC=300
+WIKIOS_PUBLIC_RESPONSE_TIMEOUT_SEC=300
 WIKIOS_PUBLIC_ANSWER_LOG_ENABLED=true
 WIKIOS_PUBLIC_ANSWER_LOG_REDACT=true
 WIKIOS_PUBLIC_ANSWER_LOG_RETENTION_DAYS=14
@@ -36,17 +36,29 @@ WIKIOS_PUBLIC_ANSWER_LOG_RETENTION_DAYS=14
 
 重点检查：
 
-- `WIKIOS_DEFAULT_ADMIN_PASSWORD` 必须改掉，不要使用默认值。
-- LLM 模型不再通过 `.env` 或 YAML 配置 API Key。服务启动后请登录管理后台，在“模型”模块新增并启用 OpenAI-compatible 模型；未启用模型时 public/admin 对话会明确提示先配置模型。
+- LLM 模型不再通过 `.env` 或 YAML 配置 API Key。服务启动后请进入管理后台，在“模型”模块新增并启用 OpenAI-compatible 模型；未启用模型时 public 问答和知识库助手会明确提示先配置模型。
 - public 问答日志默认写入 `.workspace/public_answer_logs/*.jsonl`，并开启密钥、Token、手机号、邮箱脱敏与 14 天保留策略。
-- 如果后台需要嵌入跨站 iframe，浏览器通常要求管理员 Cookie 使用 `SameSite=None; Secure`。此时需要 HTTPS，并设置 `WIKIOS_AUTH_COOKIE_SAME_SITE=none`、`WIKIOS_AUTH_COOKIE_SECURE=true`；同站直接访问保持默认 `lax/false` 即可。
-- `WIKIOS_WIKI_GIT_URL` 推荐使用 `ssh://git@ssh.github.com:443/...`，适合普通 SSH 22 端口被网络限制的场景。
+- WikiOS 当前不内置后台登录；如果对公网开放，请在反向代理或上游网关增加访问控制。
+- `WIKIOS_WIKI_GIT_URL` 推荐使用 HTTPS 地址，例如 `https://github.com/<owner>/<repo>.git`。
+- `WIKIOS_WIKI_GIT_TOKEN` 使用 GitHub fine-grained token，至少给 Wiki 仓库 `Contents: Read and write` 权限；Token 只放环境变量，不写入 remote、数据库或前端。
+- `WIKIOS_WIKI_GIT_USERNAME` 默认 `x-access-token`，通常不用改。
 - `WIKIOS_WIKI_GIT_RESET_ON_START=false` 是安全默认值；改成 `true` 会在启动时丢弃 Wiki 仓库内未提交改动。
 - `WIKIOS_SUPPORT_PHONE` 和 `WIKIOS_SUPPORT_WECOM` 是 public query 注入给 LLM 的公开客服联系方式。
 
-## 2. 配置 Wiki 仓库 SSH 权限
+## 2. 配置 Wiki 仓库 Token 权限
 
-WikiOS 容器会把宿主机 `~/.ssh` 只读挂载到 `/root/.ssh`。如果需要容器自动拉取、提交、推送 Wiki 仓库，宿主机必须准备可写权限的 GitHub deploy key。
+推荐使用 GitHub fine-grained personal access token：
+
+1. GitHub -> Settings -> Developer settings -> Personal access tokens -> Fine-grained tokens。
+2. 选择 Wiki 仓库，例如 `ThankCat/knowledge-base`。
+3. Repository permissions 至少开启 `Contents: Read and write`。
+4. 把生成的 token 填入 `deploy/.env.prod` 的 `WIKIOS_WIKI_GIT_TOKEN`。
+
+容器启动、后台同步页、知识库助手里的 `git.status/git.commit/git.push` 都会通过非交互 Git runner 使用这个 token。Token 不会写入 `git remote`，remote 会保持普通 HTTPS URL。
+
+### 高级：继续使用 SSH deploy key
+
+如果你明确要使用 SSH，可把 `WIKIOS_WIKI_GIT_URL` 改成 `ssh://git@ssh.github.com:443/<owner>/<repo>.git`，并自行在 Compose 中挂载 `~/.ssh:/root/.ssh:ro`。这种方式需要准备可写权限的 GitHub deploy key。
 
 生成专用 SSH key：
 
@@ -154,8 +166,7 @@ curl http://127.0.0.1:9025/healthz
 局域网访问：
 
 ```text
-http://<宿主机局域网 IP>:9025/chat
-http://<宿主机局域网 IP>:9025/admin/login
+http://<宿主机局域网 IP>:9025/dashboard
 ```
 
 macOS 查看局域网 IP：
@@ -166,41 +177,39 @@ ipconfig getifaddr en0
 
 ## 5. 验证 Wiki 和推送能力
 
-检查 Wiki remote：
+进入后台：
+
+```text
+http://<宿主机局域网 IP>:9025/knowledge?view=sync
+```
+
+推荐按顺序点击：
+
+1. `刷新`：查看 repo、remote、branch、凭据状态。
+2. `检测连接`：后端执行非交互 `git ls-remote`，认证、网络、权限错误会显示 stdout/stderr/exit code。
+3. `修复配置`：在不 reset、不丢弃本地改动的前提下设置 remote、branch/upstream；空 Wiki volume 会自动 clone。
+
+也可以用 API 检查：
+
+```bash
+curl -sS http://127.0.0.1:9025/api/v1/admin/sync/status
+curl -sS -X POST http://127.0.0.1:9025/api/v1/admin/sync/test
+```
+
+检查容器内 Wiki remote：
 
 ```bash
 docker compose --env-file deploy/.env.prod -f docker-compose.yml exec wikios \
   sh -lc 'git -C /data/wiki-repo remote -v'
 ```
 
-检查 SSH 认证：
-
-```bash
-docker compose --env-file deploy/.env.prod -f docker-compose.yml exec wikios \
-  sh -lc 'ssh -T -p 443 git@ssh.github.com || true'
-```
-
-检查 push 权限：
-
-```bash
-docker compose --env-file deploy/.env.prod -f docker-compose.yml exec wikios \
-  sh -lc 'git -C /data/wiki-repo push --dry-run origin main'
-```
-
 期望结果：
 
 ```text
-origin ssh://git@ssh.github.com:443/ThankCat/knowledge-base.git
-Hi ThankCat/knowledge-base! You have successfully authenticated, but GitHub does not provide shell access.
-Everything up-to-date
+origin https://github.com/ThankCat/knowledge-base.git
 ```
 
-如果 `git push` 要求输入 GitHub 用户名和密码，说明 remote 还是 HTTPS，需要改成 SSH：
-
-```bash
-docker compose --env-file deploy/.env.prod -f docker-compose.yml exec wikios \
-  sh -lc 'git -C /data/wiki-repo remote set-url origin ssh://git@ssh.github.com:443/ThankCat/knowledge-base.git'
-```
+不要在 remote URL 中写 token；如果看到 `https://token@...` 或 `https://x-access-token:...@...`，请在同步页点击“修复配置”，让 remote 回到普通 HTTPS URL。
 
 ## 6. 更新和重新部署
 
@@ -229,7 +238,7 @@ docker compose --env-file deploy/.env.prod -f docker-compose.yml logs -f wikios
 
 ### LLM 不可用
 
-WikiOS 不再从环境变量读取默认模型。登录管理员后台后，在“模型”模块新增 OpenAI-compatible 模型并启用；未启用模型时，对话会提示先配置模型。
+WikiOS 不再从环境变量读取默认模型。进入管理后台后，在“模型”模块新增 OpenAI-compatible 模型并启用；未启用模型时，对话会提示先配置模型。
 
 如果后台配置后仍不可用，确认启动命令使用了生产 env：
 
@@ -239,7 +248,7 @@ docker compose --env-file deploy/.env.prod -f docker-compose.yml up -d --build
 
 不要只运行 `docker compose up` 后依赖根目录 `.env`，因为根目录 `.env` 可能是本地开发配置。
 
-### `public_answer_system.md` 找不到
+### public routed prompt 找不到
 
 这通常是镜像太旧或构建上下文不对。当前 Dockerfile 会复制：
 
@@ -247,19 +256,29 @@ docker compose --env-file deploy/.env.prod -f docker-compose.yml up -d --build
 COPY internal/llm/prompts /app/internal/llm/prompts
 ```
 
+公开问答当前使用 `public_router_system.md` 和 `public_specialist_*.md`。
+
 重新执行：
 
 ```bash
 docker compose --env-file deploy/.env.prod -f docker-compose.yml up -d --build
 ```
 
-### `Permission denied (publickey)`
+### 同步页提示认证失败
+
+检查三件事：
+
+- `WIKIOS_WIKI_GIT_URL` 是否是普通 HTTPS 地址。
+- `WIKIOS_WIKI_GIT_TOKEN` 是否已配置，并且 token 没有过期。
+- GitHub fine-grained token 是否给了目标仓库 `Contents: Read and write`。
+
+### 高级 SSH：`Permission denied (publickey)`
 
 检查三件事：
 
 - `~/.ssh/config` 里 `ssh.github.com` 是否指定了 `IdentityFile ~/.ssh/wikios_github`。
 - GitHub deploy key 是否加到了 `ThankCat/knowledge-base`，并勾选了 `Allow write access`。
-- `docker-compose.yml` 是否保留了 `~/.ssh:/root/.ssh:ro` 挂载。
+- 是否在 `docker-compose.yml` 中自行挂载了 `~/.ssh:/root/.ssh:ro`。
 
 ### 局域网无法访问
 

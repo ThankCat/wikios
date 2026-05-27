@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -81,6 +82,124 @@ func TestStreamChatEventsSeparatesReasoningContent(t *testing.T) {
 	}
 	if len(events) != 2 || events[0].ReasoningContent != "先查规则。" || events[1].Content != "正式回答" {
 		t.Fatalf("unexpected events: %#v", events)
+	}
+}
+
+func TestChatSendsEnableThinking(t *testing.T) {
+	var seen *bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			EnableThinking *bool `json:"enable_thinking"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		seen = payload.EnableThinking
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		APIKey:     "test-key",
+		BaseURL:    server.URL,
+		TimeoutSec: 5,
+	})
+	enableThinking := false
+	text, err := client.Chat(WithEnableThinking(context.Background(), &enableThinking), "test-model", []Message{{Role: "user", Content: "hi"}})
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if text != "ok" {
+		t.Fatalf("unexpected text: %q", text)
+	}
+	if seen == nil || *seen {
+		t.Fatalf("expected enable_thinking=false, got %#v", seen)
+	}
+}
+
+func TestChatSendsResponseFormat(t *testing.T) {
+	var seen *ResponseFormat
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			ResponseFormat *ResponseFormat `json:"response_format"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		seen = payload.ResponseFormat
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		APIKey:     "test-key",
+		BaseURL:    server.URL,
+		TimeoutSec: 5,
+	})
+	format := &ResponseFormat{
+		Type: "json_schema",
+		JSONSchema: &ResponseFormatJSONSchema{
+			Name:   "test_schema",
+			Strict: true,
+			Schema: map[string]any{"type": "object"},
+		},
+	}
+	text, err := client.Chat(WithResponseFormat(context.Background(), format), "test-model", []Message{{Role: "user", Content: "hi"}})
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if text != "ok" {
+		t.Fatalf("unexpected text: %q", text)
+	}
+	if seen == nil || seen.Type != "json_schema" || seen.JSONSchema == nil || seen.JSONSchema.Name != "test_schema" || !seen.JSONSchema.Strict {
+		t.Fatalf("expected response_format json_schema, got %#v", seen)
+	}
+}
+
+func TestChatFallsBackFromJSONSchemaToJSONObject(t *testing.T) {
+	formats := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			ResponseFormat *ResponseFormat `json:"response_format"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if payload.ResponseFormat == nil {
+			t.Fatal("expected response_format")
+		}
+		formats = append(formats, payload.ResponseFormat.Type)
+		if len(formats) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"invalid parameter: response_format json_schema is not supported"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		APIKey:     "test-key",
+		BaseURL:    server.URL,
+		TimeoutSec: 5,
+	})
+	format := &ResponseFormat{
+		Type: "json_schema",
+		JSONSchema: &ResponseFormatJSONSchema{
+			Name:   "test_schema",
+			Strict: true,
+			Schema: map[string]any{"type": "object"},
+		},
+	}
+	text, err := client.Chat(WithResponseFormat(context.Background(), format), "test-model", []Message{{Role: "user", Content: "hi"}})
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if text != "ok" {
+		t.Fatalf("unexpected text: %q", text)
+	}
+	if got := strings.Join(formats, ","); got != "json_schema,json_object" {
+		t.Fatalf("expected json_schema fallback to json_object, got %s", got)
 	}
 }
 

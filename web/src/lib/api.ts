@@ -1,15 +1,18 @@
 import type {
   AdminChatRequest,
   AdminChatResponse,
-  AdminLoginResponse,
+  AdminDashboardResponse,
+  AdminRuntimeSettings,
+  AdminRuntimeSettingsResponse,
   AdminStreamEvent,
-  AdminUser,
   ContextEstimateResponse,
   LLMModelResponse,
   LLMModelTestResponse,
   LLMModelsResponse,
   PublicChatHistoryItem,
   PublicAnswerResponse,
+  PublicConversationDetailResponse,
+  PublicConversationsResponse,
   PublicContextEstimateResponse,
   PublicIntentsResponse,
   ReviewActionResponse,
@@ -17,12 +20,16 @@ import type {
   ReviewNextResponse,
   PublicStreamEvent,
   SyncCommitResponse,
+  SyncDiagnosticResponse,
   SyncGenerateMessageResponse,
   SyncPushResponse,
   SyncStatusResponse,
   UploadResponse,
   UploadStreamEvent,
   WikiFileResponse,
+  WikiReplaceFileResponse,
+  WikiSaveFileRequest,
+  WikiSaveFileResponse,
   WikiTreeResponse,
 } from "@/types/api";
 
@@ -43,18 +50,14 @@ export type PublicAnswerMeta = {
   question_message_id?: string;
   answer_message_id?: string;
   question_created_at?: string;
-  stream?: boolean;
 };
-
-let memoryAdminSessionToken = "";
-let memoryAdminSessionExpiresAt = "";
 
 async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const normalizedInput = normalizeInput(input);
   const response = await fetch(normalizedInput, {
     credentials: "include",
     ...init,
-    headers: withAdminAuthHeaders(normalizedInput, init?.headers),
+    headers: init?.headers,
   });
   if (!response.ok) {
     const text = await response.text();
@@ -94,18 +97,26 @@ export const api = {
       signal,
     });
   },
-  async publicAnswerStream(
+  publicAnswerAudit(question: string, history?: PublicChatHistoryItem[], meta?: PublicAnswerMeta, signal?: AbortSignal) {
+    return request<PublicAnswerResponse>(apiURL("/api/v1/admin/public-answer/audit"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, history, ...meta, stream: false }),
+      signal,
+    });
+  },
+  async publicAnswerAuditStream(
     question: string,
     history: PublicChatHistoryItem[] | undefined,
     meta: PublicAnswerMeta | undefined,
     onEvent: (event: PublicStreamEvent) => void,
     signal?: AbortSignal,
   ) {
-    const response = await fetch(apiURL("/api/v1/public/answer"), {
+    const response = await fetch(apiURL("/api/v1/admin/public-answer/audit/stream"), {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, history, ...meta, stream: true }),
+      body: JSON.stringify({ question, history, ...meta }),
       signal,
     });
     if (!response.ok) {
@@ -117,26 +128,8 @@ export const api = {
     }
     await consumeSSE(response, onEvent);
   },
-  async login(username: string, password: string) {
-    const response = await request<AdminLoginResponse>(apiURL("/api/v1/admin/auth/login"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
-    });
-    storeAdminSessionToken(response.token, response.expires_at);
-    return response;
-  },
-  async logout() {
-    try {
-      return await request<{ ok: boolean }>(apiURL("/api/v1/admin/auth/logout"), {
-        method: "POST",
-      });
-    } finally {
-      clearAdminSessionToken();
-    }
-  },
-  me() {
-    return request<{ user: AdminUser }>(apiURL("/api/v1/admin/auth/me"));
+  adminDashboard(signal?: AbortSignal) {
+    return request<AdminDashboardResponse>(apiURL("/api/v1/admin/dashboard"), { signal });
   },
   getPublicIntents() {
     return request<PublicIntentsResponse>(apiURL("/api/v1/admin/public-intents"));
@@ -146,6 +139,17 @@ export const api = {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ source }),
+      signal,
+    });
+  },
+  getRuntimeSettings(signal?: AbortSignal) {
+    return request<AdminRuntimeSettingsResponse>(apiURL("/api/v1/admin/runtime-settings"), { signal });
+  },
+  updateRuntimeSettings(settings: AdminRuntimeSettings, signal?: AbortSignal) {
+    return request<AdminRuntimeSettingsResponse>(apiURL("/api/v1/admin/runtime-settings"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
       signal,
     });
   },
@@ -260,14 +264,62 @@ export const api = {
   wikiTree(path = "", signal?: AbortSignal) {
     return request<WikiTreeResponse>(apiURL(`/api/v1/admin/wiki/tree?path=${encodeURIComponent(path)}`), { signal });
   },
-  wikiFile(path: string, signal?: AbortSignal) {
-    return request<WikiFileResponse>(apiURL(`/api/v1/admin/wiki/file?path=${encodeURIComponent(path)}`), { signal });
+  async wikiFile(path: string, signal?: AbortSignal) {
+    const response = await request<WikiFileResponse>(apiURL(`/api/v1/admin/wiki/file?path=${encodeURIComponent(path)}`), { signal });
+    return normalizeWikiFileResponse(response);
+  },
+  wikiSaveFile(payload: WikiSaveFileRequest, signal?: AbortSignal) {
+    return request<WikiSaveFileResponse>(apiURL("/api/v1/admin/wiki/file"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal,
+    });
+  },
+  wikiReplaceFile(path: string, file: File, signal?: AbortSignal) {
+    const form = new FormData();
+    form.set("path", path);
+    form.set("file", file);
+    return request<WikiReplaceFileResponse>(apiURL("/api/v1/admin/wiki/file/replace"), {
+      method: "POST",
+      body: form,
+      signal,
+    });
   },
   wikiDownloadURL(path: string) {
     return apiURL(`/api/v1/admin/wiki/download?path=${encodeURIComponent(path)}`);
   },
+  publicConversations(params?: { q?: string; page?: number; page_size?: number; from?: string; to?: string }, signal?: AbortSignal) {
+    const search = new URLSearchParams();
+    if (params?.q) search.set("q", params.q);
+    if (params?.page) search.set("page", String(params.page));
+    if (params?.page_size) search.set("page_size", String(params.page_size));
+    if (params?.from) search.set("from", params.from);
+    if (params?.to) search.set("to", params.to);
+    const suffix = search.toString() ? `?${search.toString()}` : "";
+    return request<PublicConversationsResponse>(apiURL(`/api/v1/admin/public-conversations${suffix}`), { signal });
+  },
+  publicConversationDetail(id: string, signal?: AbortSignal) {
+    return request<PublicConversationDetailResponse>(apiURL(`/api/v1/admin/public-conversations/${encodeURIComponent(id)}`), { signal });
+  },
   syncStatus(signal?: AbortSignal) {
     return request<SyncStatusResponse>(apiURL("/api/v1/admin/sync/status"), { signal });
+  },
+  syncTest(signal?: AbortSignal) {
+    return request<SyncDiagnosticResponse>(apiURL("/api/v1/admin/sync/test"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+      signal,
+    });
+  },
+  syncSetup(signal?: AbortSignal) {
+    return request<SyncDiagnosticResponse>(apiURL("/api/v1/admin/sync/setup"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+      signal,
+    });
   },
   syncCommit(paths: string[], message: string, signal?: AbortSignal) {
     return request<SyncCommitResponse>(apiURL("/api/v1/admin/sync/commit"), {
@@ -298,7 +350,7 @@ export const api = {
     const response = await fetch(url, {
       method: "POST",
       credentials: "include",
-      headers: withAdminAuthHeaders(url, { "Content-Type": "application/json" }),
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
       signal,
     });
@@ -327,7 +379,6 @@ export const api = {
     const response = await fetch(url, {
       method: "POST",
       credentials: "include",
-      headers: withAdminAuthHeaders(url),
       body,
       signal,
     });
@@ -361,71 +412,60 @@ function normalizeInput(input: RequestInfo) {
   return input;
 }
 
-function withAdminAuthHeaders(input: RequestInfo, initHeaders?: HeadersInit) {
-  const headers = new Headers(initHeaders);
-  if (!isAdminAPIRequest(input) || headers.has("Authorization")) {
-    return headers;
-  }
-  const token = currentAdminSessionToken();
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
-  return headers;
-}
-
-function isAdminAPIRequest(input: RequestInfo) {
-  const url = typeof input === "string" ? input : input.url;
-  if (url.startsWith("/api/v1/admin/")) {
-    return true;
-  }
-  try {
-    const base = typeof window === "undefined" ? "http://localhost" : window.location.origin;
-    return new URL(url, base).pathname.startsWith("/api/v1/admin/");
-  } catch {
-    return false;
-  }
-}
-
-function storeAdminSessionToken(token?: string, expiresAt?: string) {
-	const cleanToken = token?.trim();
-	if (!cleanToken) {
-		clearAdminSessionToken();
-		return;
-	}
-	memoryAdminSessionToken = cleanToken;
-	memoryAdminSessionExpiresAt = expiresAt ?? "";
-}
-
-function clearAdminSessionToken() {
-	memoryAdminSessionToken = "";
-	memoryAdminSessionExpiresAt = "";
-}
-
-function currentAdminSessionToken() {
-	return currentMemoryAdminSessionToken();
-}
-
-function currentMemoryAdminSessionToken() {
-  if (!memoryAdminSessionToken) {
-    return "";
-  }
-  const expiresAt = memoryAdminSessionExpiresAt ? Date.parse(memoryAdminSessionExpiresAt) : 0;
-  if (expiresAt > 0 && expiresAt <= Date.now() + 5_000) {
-    clearAdminSessionToken();
-    return "";
-  }
-  return memoryAdminSessionToken;
-}
-
 function resolveAPIBaseURL() {
   const envBase = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
   if (envBase) {
     return envBase.replace(/\/$/, "");
   }
-  if (typeof window === "undefined") {
-    return "";
+  return "";
+}
+
+function normalizeWikiFileResponse(response: WikiFileResponse): WikiFileResponse {
+  const textKind = response.text_kind || inferWikiTextKind(response.path);
+  const editable = typeof response.editable === "boolean" ? response.editable : Boolean(textKind && typeof response.content === "string");
+  return {
+    ...response,
+    editable,
+    text_kind: textKind,
+    sha256: response.sha256 ?? "",
+    encoding: response.encoding ?? (editable ? "utf-8" : ""),
+  };
+}
+
+function inferWikiTextKind(path: string) {
+  const ext = path.toLowerCase().slice(path.lastIndexOf("."));
+  switch (ext) {
+    case ".md":
+    case ".markdown":
+    case ".qmd":
+      return "markdown";
+    case ".yaml":
+    case ".yml":
+      return "yaml";
+    case ".json":
+      return "json";
+    case ".txt":
+    case ".log":
+      return "text";
+    case ".csv":
+      return "csv";
+    case ".tsv":
+      return "tsv";
+    case ".toml":
+      return "toml";
+    case ".ini":
+      return "ini";
+    case ".html":
+      return "html";
+    case ".css":
+      return "css";
+    case ".js":
+      return "javascript";
+    case ".ts":
+      return "typescript";
+    default:
+      return "";
   }
-  return window.location.origin;
 }
 
 async function consumeSSE(

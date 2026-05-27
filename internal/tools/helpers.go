@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"wikios/internal/config"
 	"wikios/internal/runtime"
@@ -87,15 +86,6 @@ func optionalString(args map[string]any, key string) string {
 	return ""
 }
 
-func optionalBool(args map[string]any, key string) bool {
-	if raw, ok := args[key]; ok {
-		if value, ok := raw.(bool); ok {
-			return value
-		}
-	}
-	return false
-}
-
 func optionalStringSlice(args map[string]any, key string) ([]string, error) {
 	raw, ok := args[key]
 	if !ok || raw == nil {
@@ -153,10 +143,6 @@ func runCommand(ctx context.Context, cwd string, name string, args []string, env
 		return stdout.String(), stderr.String(), exitCode, nil
 	}
 	return stdout.String(), stderr.String(), exitCode, err
-}
-
-func nowDate() string {
-	return time.Now().Format("2006-01-02")
 }
 
 func computeSHA256(content []byte) string {

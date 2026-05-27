@@ -634,18 +634,3 @@ func stringifySlice(value any) []string {
 		return nil
 	}
 }
-
-func buildOutputDocument(title string, body string, sourceCount int) string {
-	return fmt.Sprintf(`---
-type: synthesis
-title: %q
-date: %s
-tags: []
-source_count: %d
-confidence: low
-graph-excluded: true
----
-
-%s
-`, title, nowDate(), sourceCount, body)
-}

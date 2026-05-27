@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"fmt"
 	"os"
 
@@ -35,13 +34,6 @@ func New(cfg *config.Config) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite store: %w", err)
 	}
-	if err := dataStore.EnsureDefaultAdmin(
-		context.Background(),
-		cfg.Auth.DefaultAdminUsername,
-		cfg.Auth.DefaultAdminPassword,
-	); err != nil {
-		return nil, fmt.Errorf("seed default admin: %w", err)
-	}
 
 	resolver := wikiadapter.NewPathResolver(cfg.MountedWiki.Root)
 	registry := runtime.NewRegistry()
@@ -72,7 +64,6 @@ func New(cfg *config.Config) (*App, error) {
 		service.NewSyncService(deps),
 		dataStore,
 		cfg,
-		cfg.Auth,
 		publicIntents,
 		contextCounter,
 	)
@@ -84,8 +75,4 @@ func New(cfg *config.Config) (*App, error) {
 
 func (a *App) Run() error {
 	return a.engine.Run(fmt.Sprintf(":%d", a.cfg.Server.Port))
-}
-
-func (a *App) Engine() *gin.Engine {
-	return a.engine
 }

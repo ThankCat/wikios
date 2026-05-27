@@ -34,14 +34,6 @@ func DecodeJSONObject[T any](text string, out *T) error {
 	return fmt.Errorf("decode json object: no valid candidate")
 }
 
-func ExtractJSONObject(text string) (string, error) {
-	candidates := extractJSONObjectCandidates(text)
-	if len(candidates) == 0 {
-		return "", fmt.Errorf("no json object found in llm response")
-	}
-	return candidates[0], nil
-}
-
 func extractJSONObjectCandidates(text string) []string {
 	trimmed := stripMarkdownFence(strings.TrimSpace(text))
 	if trimmed == "" {

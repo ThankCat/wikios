@@ -10,19 +10,39 @@ type publicAnswerStream struct {
 	emitter   StreamEmitter
 	extractor *jsonStringFieldExtractor
 	emitted   strings.Builder
+	debug     bool
 }
 
-func newPublicAnswerStream(emitter StreamEmitter) *publicAnswerStream {
-	stream := &publicAnswerStream{emitter: emitter}
-	stream.extractor = newJSONStringFieldExtractor("answer_markdown", stream.emitAnswerDelta)
+func newPublicAnswerStream(emitter StreamEmitter, debug bool) *publicAnswerStream {
+	stream := &publicAnswerStream{emitter: emitter, debug: debug}
+	stream.extractor = newJSONStringFieldExtractor("answer", stream.emitAnswerDelta)
 	return stream
 }
 
-func (s *publicAnswerStream) emit(eventType string, data any) {
+func (s *publicAnswerStream) Emit(event StreamEvent) {
 	if s == nil || s.emitter == nil {
 		return
 	}
-	s.emitter.Emit(StreamEvent{Type: eventType, Data: data})
+	if !s.debug && isInternalPublicStreamEvent(event.Type) {
+		return
+	}
+	s.emitter.Emit(event)
+}
+
+func (s *publicAnswerStream) emit(eventType string, data any) {
+	if s == nil {
+		return
+	}
+	s.Emit(StreamEvent{Type: eventType, Data: data})
+}
+
+func isInternalPublicStreamEvent(eventType string) bool {
+	switch eventType {
+	case "prompt", "llm_delta", "llm_reasoning_delta", "llm_done", "step_start", "step_finish":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *publicAnswerStream) feedLLMContent(delta string) {
@@ -43,20 +63,22 @@ func (s *publicAnswerStream) emitAnswerDelta(delta string) {
 	})
 }
 
-func (s *publicAnswerStream) emitStep(name string, output map[string]any) {
-	name = strings.TrimSpace(name)
-	if s == nil || name == "" {
+func (s *publicAnswerStream) emitRemainingAnswer(answer string) {
+	if s == nil {
 		return
 	}
-	now := time.Now()
-	s.emit("step_finish", Step{
-		Name:      name,
-		Tool:      "public.answer",
-		Status:    "SUCCESS",
-		Output:    output,
-		StartedAt: now,
-		EndedAt:   now,
-	})
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		return
+	}
+	already := s.emitted.String()
+	if already == "" {
+		s.emitAnswerDelta(answer)
+		return
+	}
+	if strings.HasPrefix(answer, already) {
+		s.emitAnswerDelta(strings.TrimPrefix(answer, already))
+	}
 }
 
 type jsonStringFieldExtractor struct {

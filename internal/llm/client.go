@@ -56,6 +56,19 @@ func NewClient(cfg ClientConfig) Client {
 }
 
 type requestTimeoutKey struct{}
+type enableThinkingKey struct{}
+type responseFormatKey struct{}
+
+type ResponseFormat struct {
+	Type       string                    `json:"type"`
+	JSONSchema *ResponseFormatJSONSchema `json:"json_schema,omitempty"`
+}
+
+type ResponseFormatJSONSchema struct {
+	Name   string         `json:"name"`
+	Strict bool           `json:"strict,omitempty"`
+	Schema map[string]any `json:"schema"`
+}
 
 func WithRequestTimeout(ctx context.Context, timeout time.Duration) context.Context {
 	if timeout <= 0 {
@@ -64,10 +77,26 @@ func WithRequestTimeout(ctx context.Context, timeout time.Duration) context.Cont
 	return context.WithValue(ctx, requestTimeoutKey{}, timeout)
 }
 
+func WithEnableThinking(ctx context.Context, enabled *bool) context.Context {
+	if enabled == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, enableThinkingKey{}, *enabled)
+}
+
+func WithResponseFormat(ctx context.Context, format *ResponseFormat) context.Context {
+	if format == nil || strings.TrimSpace(format.Type) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, responseFormatKey{}, *format)
+}
+
 type chatRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Stream   bool      `json:"stream,omitempty"`
+	Model          string          `json:"model"`
+	Messages       []Message       `json:"messages"`
+	Stream         bool            `json:"stream,omitempty"`
+	EnableThinking *bool           `json:"enable_thinking,omitempty"`
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 }
 
 type chatResponse struct {
@@ -120,17 +149,31 @@ func (c *OpenAICompatibleClient) doChat(ctx context.Context, model string, messa
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	payload, err := json.Marshal(chatRequest{
-		Model:    model,
-		Messages: messages,
-		Stream:   stream,
-	})
-	if err != nil {
-		return "", err
+	var enableThinking *bool
+	if value, ok := ctx.Value(enableThinkingKey{}).(bool); ok {
+		enableThinking = &value
 	}
-
+	var responseFormat *ResponseFormat
+	if value, ok := ctx.Value(responseFormatKey{}).(ResponseFormat); ok {
+		responseFormat = &value
+	}
 	var lastErr error
+	fallbackToJSONObject := false
 	for attempt := 0; attempt < maxTransientLLMAttempts; attempt++ {
+		payloadResponseFormat := responseFormat
+		if fallbackToJSONObject {
+			payloadResponseFormat = &ResponseFormat{Type: "json_object"}
+		}
+		payload, err := json.Marshal(chatRequest{
+			Model:          model,
+			Messages:       messages,
+			Stream:         stream,
+			EnableThinking: enableThinking,
+			ResponseFormat: payloadResponseFormat,
+		})
+		if err != nil {
+			return "", err
+		}
 		emittedDelta := false
 		attemptDelta := onDelta
 		if stream && onDelta != nil {
@@ -145,6 +188,10 @@ func (c *OpenAICompatibleClient) doChat(ctx context.Context, model string, messa
 		if err != nil {
 			err = c.wrapTimeoutError(ctx, timeout, err)
 			lastErr = err
+			if !fallbackToJSONObject && canFallbackJSONSchemaResponseFormat(responseFormat, err) && !(stream && emittedDelta) {
+				fallbackToJSONObject = true
+				continue
+			}
 			if !canRetryLLMError(err) || (stream && emittedDelta) || attempt == maxTransientLLMAttempts-1 {
 				return "", err
 			}
@@ -159,6 +206,21 @@ func (c *OpenAICompatibleClient) doChat(ctx context.Context, model string, messa
 		return "", lastErr
 	}
 	return "", fmt.Errorf("llm request failed")
+}
+
+func canFallbackJSONSchemaResponseFormat(format *ResponseFormat, err error) bool {
+	if format == nil || strings.TrimSpace(format.Type) != "json_schema" || err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	if !strings.Contains(text, "json_schema") && !strings.Contains(text, "response_format") && !strings.Contains(text, "structured") && !strings.Contains(text, "schema") {
+		return false
+	}
+	return strings.Contains(text, "not support") ||
+		strings.Contains(text, "unsupported") ||
+		strings.Contains(text, "invalid parameter") ||
+		strings.Contains(text, "invalid_request") ||
+		strings.Contains(text, "invalid request")
 }
 
 func (c *OpenAICompatibleClient) doChatOnce(ctx context.Context, payload []byte, stream bool, onDelta func(StreamDelta)) (string, error) {

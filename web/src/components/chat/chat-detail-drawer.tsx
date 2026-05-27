@@ -1,28 +1,27 @@
 "use client";
 
 import { useEffect } from "react";
-import { GripVertical, X } from "lucide-react";
+import { X } from "lucide-react";
 
 import { MessageDetails } from "@/components/chat/message-details";
 import { Button } from "@/components/ui/button";
 import { ScrollJumpControls } from "@/components/ui/scroll-jump-controls";
 import { useScrollFollow } from "@/lib/use-scroll-follow";
-import { cn } from "@/lib/utils";
 
 type Props = {
   title: string;
   open: boolean;
-  width: number;
   selected: {
     role: "user" | "assistant";
     content: string;
+    createdAt?: string;
     details?: unknown;
+    statusText?: string;
   } | null;
   onClear: () => void;
-  onResizeStart: (clientX?: number) => void;
 };
 
-export function ChatDetailDrawer({ title, open, width, selected, onClear, onResizeStart }: Props) {
+export function ChatDetailDrawer({ title, open, selected, onClear }: Props) {
   const messageScroll = useScrollFollow<HTMLDivElement>([open, selected?.content]);
   const detailScroll = useScrollFollow<HTMLDivElement>([open, selected?.details]);
 
@@ -39,43 +38,20 @@ export function ChatDetailDrawer({ title, open, width, selected, onClear, onResi
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [open, onClear]);
 
+  if (!open || !selected) {
+    return null;
+  }
+
   return (
     <>
-      <div
-        className={cn(
-          "absolute inset-0 z-20 bg-slate-950/15 transition-opacity",
-          open ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
-        )}
-        onClick={onClear}
-      />
+      <div className="absolute inset-0 z-20 bg-slate-950/15 dark:bg-black/45" onClick={onClear} />
       <aside
-        className={cn(
-          "absolute inset-y-0 right-0 z-30 flex min-h-0 max-w-[calc(100%-40px)] flex-col overflow-visible rounded-l-3xl border-l border-slate-200 bg-white shadow-2xl transition-transform duration-200",
-          open ? "translate-x-0" : "translate-x-full",
-        )}
-        style={{ width }}
+        className="absolute inset-y-0 right-0 z-30 flex min-h-0 w-[min(980px,92vw)] max-w-[calc(100%-40px)] translate-x-0 flex-col overflow-visible break-words rounded-l-3xl border-l border-slate-200 bg-white shadow-2xl transition-transform duration-200 [overflow-wrap:anywhere] dark:border-border dark:bg-card dark:shadow-none"
       >
-        <button
-          type="button"
-          aria-label="调整详情抽屉宽度"
-          onPointerDown={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onResizeStart(event.clientX);
-          }}
-          className="absolute left-0 top-0 z-40 flex h-full w-6 -translate-x-1/2 touch-none cursor-col-resize items-center justify-center"
-        >
-          <span className="flex h-16 w-3 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-400 shadow-sm">
-            <GripVertical className="h-4 w-4" />
-          </span>
-        </button>
         <header className="border-b px-5 py-4">
           <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold">{title}</h2>
-              <p className="mt-1 text-xs text-muted-foreground">
-                详情以抽屉形式显示，不占用聊天主区宽度。
-              </p>
+            <div className="min-w-0">
+              <h2 className="break-words text-sm font-semibold [overflow-wrap:anywhere]">{title}</h2>
             </div>
             <Button type="button" variant="ghost" size="sm" onClick={onClear}>
               <X className="mr-2 h-4 w-4" />
@@ -89,20 +65,24 @@ export function ChatDetailDrawer({ title, open, width, selected, onClear, onResi
               <div ref={detailScroll.viewportRef} className="detail-scroll h-full overflow-y-auto px-5 pb-5">
                 <MessageDetails
                   details={selected.details ?? {}}
+                  message={{
+                    role: selected.role,
+                    content: selected.content,
+                    createdAt: selected.createdAt,
+                    statusText: selected.statusText,
+                    answer: selected.role === "assistant" ? selected.content : undefined,
+                  }}
                   leadingContent={
-                    <section className="rounded-2xl border border-slate-200 bg-white p-4">
-                      <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                        当前消息
-                      </div>
-                      <div className="mb-3 flex items-center gap-2 text-xs text-slate-500">
-                        <span className="rounded-full bg-slate-100 px-2 py-1">
+                    <section className="min-w-0 rounded-xl bg-slate-50 px-3 py-2 dark:bg-secondary/50">
+                      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                        <span className="break-words rounded-full bg-slate-100 px-2 py-1 [overflow-wrap:anywhere] dark:bg-secondary">
                           {selected.role === "assistant" ? "Assistant" : "User"}
                         </span>
                       </div>
                       <div className="relative">
                         <div
                           ref={messageScroll.viewportRef}
-                          className="detail-scroll max-h-44 overflow-y-auto whitespace-pre-wrap pr-2 text-sm leading-6 text-slate-900"
+                          className="detail-scroll max-h-28 overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words pr-2 text-xs leading-5 text-slate-600 [overflow-wrap:anywhere] dark:text-muted-foreground"
                         >
                           {selected.content}
                         </div>
@@ -126,7 +106,7 @@ export function ChatDetailDrawer({ title, open, width, selected, onClear, onResi
             </div>
           ) : (
             <div className="detail-scroll min-h-0 flex-1 overflow-y-auto p-5">
-              <div className="rounded-2xl border border-dashed border-slate-300 bg-white/70 p-6 text-sm leading-6 text-slate-500">
+              <div className="break-words rounded-2xl border border-dashed border-slate-300 bg-white/70 p-6 text-sm leading-6 text-slate-500 [overflow-wrap:anywhere]">
                 选择一条带详情的消息后，这里会显示结构化结果、执行步骤、Prompt 和 JSON。
               </div>
             </div>

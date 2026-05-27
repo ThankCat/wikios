@@ -216,7 +216,8 @@ func (s *UploadService) validateUploadSize(ext string, sizeBytes int) error {
 	if kind != "document" {
 		return nil
 	}
-	maxBytes := s.deps.Config.Upload.MaxTextFileKB * 1024
+	runtimeSettings := LoadRuntimeSettingsOrDefault(context.Background(), s.deps.Store, s.deps.Config)
+	maxBytes := runtimeSettings.Knowledge.MaxTextFileKB * 1024
 	if isOfficeDocumentExt(ext) && s.deps.Config.Workspace.MaxFileSizeMB > 0 {
 		maxBytes = s.deps.Config.Workspace.MaxFileSizeMB * 1024 * 1024
 	}

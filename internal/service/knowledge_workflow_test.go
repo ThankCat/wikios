@@ -144,7 +144,7 @@ func TestPublicEvidencePriorityUsesFormalKnowledgeDirs(t *testing.T) {
 	if got[len(got)-2].Path != "wiki/intents/customer-router.md" || got[len(got)-1].Path != "wiki/sources/raw-note.md" {
 		t.Fatalf("expected intents then sources after formal evidence dirs, got %#v", got)
 	}
-	if isPublicReadableEvidence("wiki/unconfirmed/legacy.md") {
+	if isPublicReadableEvidence("wiki/unconfirmed/draft.md") {
 		t.Fatal("unconfirmed path must not be public readable evidence")
 	}
 }

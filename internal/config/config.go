@@ -18,7 +18,6 @@ type Config struct {
 	Server        ServerConfig        `yaml:"server"`
 	MountedWiki   MountedWikiConfig   `yaml:"mounted_wiki"`
 	LLM           LLMConfig           `yaml:"llm"`
-	Auth          AuthConfig          `yaml:"auth"`
 	Retrieval     RetrievalConfig     `yaml:"retrieval"`
 	Workspace     WorkspaceConfig     `yaml:"workspace"`
 	Sandbox       SandboxConfig       `yaml:"sandbox"`
@@ -46,16 +45,6 @@ type MountedWikiConfig struct {
 type LLMConfig struct {
 	TimeoutSec      int `yaml:"timeout_sec"`
 	AdminTimeoutSec int `yaml:"admin_timeout_sec"`
-}
-
-type AuthConfig struct {
-	DefaultAdminUsername  string `yaml:"default_admin_username"`
-	DefaultAdminPassword  string `yaml:"default_admin_password"`
-	SessionCookieName     string `yaml:"session_cookie_name"`
-	SessionTTLHours       int    `yaml:"session_ttl_hours"`
-	SessionCookieDomain   string `yaml:"session_cookie_domain"`
-	SessionCookieSecure   bool   `yaml:"session_cookie_secure"`
-	SessionCookieSameSite string `yaml:"session_cookie_same_site"`
 }
 
 type RetrievalConfig struct {
@@ -100,10 +89,11 @@ type PublicIntentsConfig struct {
 }
 
 type PublicQueryConfig struct {
-	Confidence       PublicQueryConfidenceConfig `yaml:"confidence"`
-	CandidateTopK    int                         `yaml:"candidate_top_k"`
-	MaxEvidenceChars int                         `yaml:"max_evidence_chars"`
-	AnswerLog        PublicAnswerLogConfig       `yaml:"answer_log"`
+	Confidence         PublicQueryConfidenceConfig `yaml:"confidence"`
+	CandidateTopK      int                         `yaml:"candidate_top_k"`
+	MaxEvidenceChars   int                         `yaml:"max_evidence_chars"`
+	ResponseTimeoutSec int                         `yaml:"response_timeout_sec"`
+	AnswerLog          PublicAnswerLogConfig       `yaml:"answer_log"`
 }
 
 type PublicAnswerLogConfig struct {
@@ -177,7 +167,7 @@ func (c *Config) normalizeAndValidate() error {
 		c.Sandbox.QMDTimeoutSec = 30
 	}
 	if c.LLM.TimeoutSec <= 0 {
-		c.LLM.TimeoutSec = 90
+		c.LLM.TimeoutSec = envInt("WIKIOS_LLM_TIMEOUT_SEC", 300)
 	}
 	if c.LLM.AdminTimeoutSec <= 0 {
 		c.LLM.AdminTimeoutSec = 300
@@ -242,6 +232,9 @@ func (c *Config) normalizeAndValidate() error {
 	if c.PublicQuery.MaxEvidenceChars <= 0 {
 		c.PublicQuery.MaxEvidenceChars = 2400
 	}
+	if c.PublicQuery.ResponseTimeoutSec <= 0 {
+		c.PublicQuery.ResponseTimeoutSec = envInt("WIKIOS_PUBLIC_RESPONSE_TIMEOUT_SEC", 300)
+	}
 	if c.PublicQuery.AnswerLog.Enabled == nil {
 		enabled := parseEnvBool(os.Getenv("WIKIOS_PUBLIC_ANSWER_LOG_ENABLED"), true)
 		c.PublicQuery.AnswerLog.Enabled = &enabled
@@ -276,33 +269,6 @@ func (c *Config) normalizeAndValidate() error {
 	}
 	if strings.TrimSpace(c.Context.Tokenizer) == "" {
 		c.Context.Tokenizer = firstEnv("WIKIOS_CONTEXT_TOKENIZER", "cl100k_base")
-	}
-	if strings.TrimSpace(c.Auth.DefaultAdminUsername) == "" {
-		c.Auth.DefaultAdminUsername = "admin"
-	}
-	if strings.TrimSpace(c.Auth.DefaultAdminPassword) == "" {
-		c.Auth.DefaultAdminPassword = "admin123"
-	}
-	if strings.EqualFold(strings.TrimSpace(c.Server.Mode), "release") && strings.TrimSpace(c.Auth.DefaultAdminPassword) == "admin123" {
-		return errors.New("auth.default_admin_password must be set to a secure non-default value in release mode")
-	}
-	if strings.TrimSpace(c.Auth.SessionCookieName) == "" {
-		c.Auth.SessionCookieName = "wikios_admin_session"
-	}
-	if c.Auth.SessionTTLHours <= 0 {
-		c.Auth.SessionTTLHours = 24 * 7
-	}
-	if value := strings.TrimSpace(os.Getenv("WIKIOS_AUTH_COOKIE_DOMAIN")); value != "" {
-		c.Auth.SessionCookieDomain = value
-	}
-	if value := strings.TrimSpace(os.Getenv("WIKIOS_AUTH_COOKIE_SECURE")); value != "" {
-		c.Auth.SessionCookieSecure = parseEnvBool(value, c.Auth.SessionCookieSecure)
-	}
-	if value := strings.TrimSpace(os.Getenv("WIKIOS_AUTH_COOKIE_SAME_SITE")); value != "" {
-		c.Auth.SessionCookieSameSite = value
-	}
-	if strings.TrimSpace(c.Auth.SessionCookieSameSite) == "" {
-		c.Auth.SessionCookieSameSite = "lax"
 	}
 	c.Web.DistDir = filepath.Clean(c.Web.DistDir)
 	c.PublicIntents.Path = filepath.Clean(c.PublicIntents.Path)

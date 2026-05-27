@@ -2,13 +2,17 @@ package llm
 
 import "testing"
 
-func TestExtractJSONObjectSkipsInvalidBracesAndUsesBalancedObject(t *testing.T) {
-	got, err := ExtractJSONObject(`说明里有 {不是 JSON}，最终输出 {"answer":"包含 } 的文本","ok":true} 后面还有文字`)
-	if err != nil {
-		t.Fatalf("ExtractJSONObject: %v", err)
+func TestDecodeJSONObjectSkipsInvalidBracesAndUsesBalancedObject(t *testing.T) {
+	var got struct {
+		Answer string `json:"answer"`
+		OK     bool   `json:"ok"`
 	}
-	if got != `{"answer":"包含 } 的文本","ok":true}` {
-		t.Fatalf("unexpected json object: %q", got)
+	err := DecodeJSONObject(`说明里有 {不是 JSON}，最终输出 {"answer":"包含 } 的文本","ok":true} 后面还有文字`, &got)
+	if err != nil {
+		t.Fatalf("DecodeJSONObject: %v", err)
+	}
+	if got.Answer != "包含 } 的文本" || !got.OK {
+		t.Fatalf("unexpected decoded object: %#v", got)
 	}
 }
 
@@ -26,12 +30,15 @@ func TestDecodeJSONObjectSkipsEarlierInvalidObjectCandidate(t *testing.T) {
 	}
 }
 
-func TestExtractJSONObjectHandlesMarkdownFence(t *testing.T) {
-	got, err := ExtractJSONObject("```json\n{\"ok\":true}\n```")
-	if err != nil {
-		t.Fatalf("ExtractJSONObject: %v", err)
+func TestDecodeJSONObjectHandlesMarkdownFence(t *testing.T) {
+	var got struct {
+		OK bool `json:"ok"`
 	}
-	if got != `{"ok":true}` {
-		t.Fatalf("unexpected fenced json object: %q", got)
+	err := DecodeJSONObject("```json\n{\"ok\":true}\n```", &got)
+	if err != nil {
+		t.Fatalf("DecodeJSONObject: %v", err)
+	}
+	if !got.OK {
+		t.Fatalf("unexpected decoded object: %#v", got)
 	}
 }

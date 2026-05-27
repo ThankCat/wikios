@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,18 +13,18 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"wikios/internal/app/middleware"
 	"wikios/internal/config"
+	wikigit "wikios/internal/git"
 	"wikios/internal/llm"
 	"wikios/internal/service"
 	"wikios/internal/store"
@@ -35,7 +37,6 @@ type Handlers struct {
 	Upload         *service.UploadService
 	Sync           *service.SyncService
 	Store          *store.Store
-	AuthConfig     config.AuthConfig
 	Config         *config.Config
 	PublicIntents  *service.PublicIntentManager
 	ContextCounter *service.ContextCounter
@@ -49,7 +50,6 @@ func NewHandlers(
 	syncSvc *service.SyncService,
 	dataStore *store.Store,
 	cfg *config.Config,
-	authCfg config.AuthConfig,
 	publicIntents *service.PublicIntentManager,
 	contextCounter *service.ContextCounter,
 ) *Handlers {
@@ -60,7 +60,6 @@ func NewHandlers(
 		Upload:         uploadSvc,
 		Sync:           syncSvc,
 		Store:          dataStore,
-		AuthConfig:     authCfg,
 		Config:         cfg,
 		PublicIntents:  publicIntents,
 		ContextCounter: contextCounter,
@@ -79,6 +78,8 @@ type adminChatRequest struct {
 type publicAnswerRequest struct {
 	Question          string         `json:"question"`
 	Stream            bool           `json:"stream,omitempty"`
+	PersistLog        *bool          `json:"persist_log,omitempty"`
+	Simulation        bool           `json:"simulation,omitempty"`
 	UserID            string         `json:"user_id"`
 	SessionID         string         `json:"session_id"`
 	QuestionMessageID string         `json:"question_message_id"`
@@ -86,6 +87,12 @@ type publicAnswerRequest struct {
 	QuestionCreatedAt string         `json:"question_created_at"`
 	Context           map[string]any `json:"context"`
 	History           []chatMessage  `json:"history"`
+}
+
+type adminWikiSaveFileRequest struct {
+	Path           string `json:"path"`
+	Content        string `json:"content"`
+	ExpectedSHA256 string `json:"expected_sha256"`
 }
 
 type adminLLMModelRequest struct {
@@ -134,15 +141,14 @@ type attachment struct {
 }
 
 const chatHistoryLimit = 8
-
-type loginRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
+const defaultPublicAnswerResponseTimeoutSec = 300
+const publicAnswerTimeoutFallbackMessage = "当前在线回复暂时不可用，请稍后再试。"
 
 type publicIntentsUpdateRequest struct {
 	Source string `json:"source"`
 }
+
+type runtimeSettingsRequest = service.RuntimeSettings
 
 type adminContextEstimateRequest adminChatRequest
 
@@ -154,6 +160,12 @@ type syncCommitRequest struct {
 type syncPushRequest struct {
 	Remote string `json:"remote"`
 	Branch string `json:"branch"`
+}
+
+type syncSetupRequest struct {
+	Remote string `json:"remote"`
+	Branch string `json:"branch"`
+	URL    string `json:"url"`
 }
 
 type syncGenerateMessageRequest struct {
@@ -186,22 +198,47 @@ func (h *Handlers) PublicAnswer(c *gin.Context) {
 		return
 	}
 	if req.Stream {
-		h.handlePublicAnswerStream(c, req)
+		streamNotSupported(c)
 		return
 	}
+	req.Stream = false
+	req.PersistLog = nil
+	req.Simulation = false
 	receivedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	resp, err := h.PublicQuery.Answer(c.Request.Context(), traceID(c), service.PublicAnswerRequest{
-		Question:          req.Question,
-		Stream:            false,
-		UserID:            req.UserID,
-		SessionID:         req.SessionID,
-		QuestionMessageID: req.QuestionMessageID,
-		AnswerMessageID:   req.AnswerMessageID,
-		QuestionCreatedAt: req.QuestionCreatedAt,
-		ReceivedAt:        receivedAt,
-		Context:           req.Context,
-		History:           toServiceHistory(req.History),
-	})
+	answerCtx, cancel := context.WithTimeout(c.Request.Context(), h.publicAnswerResponseTimeout())
+	defer cancel()
+	resp, err := h.PublicQuery.Answer(answerCtx, traceID(c), publicAnswerServiceRequest(req, false, receivedAt))
+	if err != nil {
+		if publicAnswerResponseTimedOut(answerCtx, c.Request.Context(), err) {
+			log.Printf("public answer timed out trace=%s timeout=%s question=%q err=%v", traceID(c), h.publicAnswerResponseTimeout(), truncateAPIText(req.Question, 80), err)
+			c.JSON(http.StatusOK, publicAnswerClientPayload(&service.PublicAnswerResponse{
+				Answer:     publicAnswerTimeoutFallbackMessage,
+				ReceivedAt: receivedAt,
+				AnsweredAt: time.Now().UTC().Format(time.RFC3339Nano),
+			}, false))
+			return
+		}
+		if requestContextCanceled(c.Request.Context(), err) {
+			return
+		}
+		publicAnswerFailure(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, publicAnswerClientPayload(resp, false))
+}
+
+func (h *Handlers) AdminPublicAnswerAudit(c *gin.Context) {
+	var req publicAnswerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	persistLog := false
+	req.PersistLog = &persistLog
+	req.Simulation = true
+	req.Stream = false
+	receivedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	resp, err := h.PublicQuery.Answer(c.Request.Context(), traceID(c), publicAnswerServiceRequest(req, false, receivedAt))
 	if err != nil {
 		if requestContextCanceled(c.Request.Context(), err) {
 			return
@@ -209,17 +246,20 @@ func (h *Handlers) PublicAnswer(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, resp)
+	c.JSON(http.StatusOK, publicAnswerClientPayload(resp, true))
 }
 
-func (h *Handlers) PublicAnswerStream(c *gin.Context) {
+func (h *Handlers) AdminPublicAnswerAuditStream(c *gin.Context) {
 	var req publicAnswerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		badRequest(c, err)
 		return
 	}
+	persistLog := false
+	req.PersistLog = &persistLog
+	req.Simulation = true
 	req.Stream = true
-	h.handlePublicAnswerStream(c, req)
+	h.handlePublicAnswerStream(c, req, true)
 }
 
 func (h *Handlers) PublicContextEstimate(c *gin.Context) {
@@ -234,7 +274,7 @@ func (h *Handlers) PublicContextEstimate(c *gin.Context) {
 	})
 }
 
-func (h *Handlers) handlePublicAnswerStream(c *gin.Context, req publicAnswerRequest) {
+func (h *Handlers) handlePublicAnswerStream(c *gin.Context, req publicAnswerRequest, includeDetails bool) {
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
@@ -244,18 +284,22 @@ func (h *Handlers) handlePublicAnswerStream(c *gin.Context, req publicAnswerRequ
 	defer stopKeepalive()
 	receivedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	writeSSEWithLock(c, "meta", gin.H{"stream": true, "received_at": receivedAt}, mu)
-	resp, err := h.PublicQuery.AnswerStream(c.Request.Context(), traceID(c), service.PublicAnswerRequest{
-		Question:          req.Question,
-		Stream:            true,
-		UserID:            req.UserID,
-		SessionID:         req.SessionID,
-		QuestionMessageID: req.QuestionMessageID,
-		AnswerMessageID:   req.AnswerMessageID,
-		QuestionCreatedAt: req.QuestionCreatedAt,
-		ReceivedAt:        receivedAt,
-		Context:           req.Context,
-		History:           toServiceHistory(req.History),
-	}, &sseEmitter{c: c, mu: mu})
+	serviceReq := publicAnswerServiceRequest(req, true, receivedAt)
+	if includeDetails {
+		resp, err := h.PublicQuery.AnswerDebugStream(c.Request.Context(), traceID(c), serviceReq, &sseEmitter{c: c, mu: mu})
+		if err != nil {
+			if requestContextCanceled(c.Request.Context(), err) {
+				return
+			}
+			writeSSEWithLock(c, "error", gin.H{"message": err.Error()}, mu)
+			writeSSEWithLock(c, "done", gin.H{"ok": false}, mu)
+			return
+		}
+		writeSSEWithLock(c, "result", publicAnswerClientPayload(resp, includeDetails), mu)
+		writeSSEWithLock(c, "done", gin.H{"ok": true}, mu)
+		return
+	}
+	resp, err := h.PublicQuery.AnswerStream(c.Request.Context(), traceID(c), serviceReq, &sseEmitter{c: c, mu: mu})
 	if err != nil {
 		if requestContextCanceled(c.Request.Context(), err) {
 			return
@@ -264,100 +308,81 @@ func (h *Handlers) handlePublicAnswerStream(c *gin.Context, req publicAnswerRequ
 		writeSSEWithLock(c, "done", gin.H{"ok": false}, mu)
 		return
 	}
-	writeSSEWithLock(c, "result", gin.H{"answer": resp.Answer, "answered_at": resp.AnsweredAt, "user_intent": resp.UserIntent, "details": resp.Details}, mu)
+	writeSSEWithLock(c, "result", publicAnswerClientPayload(resp, includeDetails), mu)
 	writeSSEWithLock(c, "done", gin.H{"ok": true}, mu)
+}
+
+func publicAnswerServiceRequest(req publicAnswerRequest, stream bool, receivedAt string) service.PublicAnswerRequest {
+	return service.PublicAnswerRequest{
+		Question:          req.Question,
+		Stream:            stream,
+		PersistLog:        req.PersistLog,
+		Simulation:        req.Simulation,
+		UserID:            req.UserID,
+		SessionID:         req.SessionID,
+		QuestionMessageID: req.QuestionMessageID,
+		AnswerMessageID:   req.AnswerMessageID,
+		QuestionCreatedAt: req.QuestionCreatedAt,
+		ReceivedAt:        receivedAt,
+		Context:           req.Context,
+		History:           toServiceHistory(req.History),
+	}
+}
+
+func publicAnswerClientPayload(resp *service.PublicAnswerResponse, includeDetails bool) gin.H {
+	if resp == nil {
+		return gin.H{}
+	}
+	payload := gin.H{
+		"answer":      resp.Answer,
+		"received_at": resp.ReceivedAt,
+		"answered_at": resp.AnsweredAt,
+	}
+	if includeDetails && len(resp.Details) > 0 {
+		payload["details"] = resp.Details
+	}
+	return payload
 }
 
 func requestContextCanceled(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled)
 }
 
-func (h *Handlers) AdminLogin(c *gin.Context) {
-	var req loginRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		badRequest(c, err)
-		return
+func publicAnswerResponseTimedOut(answerCtx context.Context, requestCtx context.Context, err error) bool {
+	if requestCtx != nil && errors.Is(requestCtx.Err(), context.Canceled) {
+		return false
 	}
-	user, err := h.Store.AuthenticateAdmin(c.Request.Context(), strings.TrimSpace(req.Username), req.Password)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error": gin.H{"code": "UNAUTHORIZED", "message": err.Error()},
-		})
-		return
-	}
-	token := "sess_" + uuid.NewString()
-	expiresAt := time.Now().Add(time.Duration(h.AuthConfig.SessionTTLHours) * time.Hour)
-	if err := h.Store.CreateSession(c.Request.Context(), store.AdminSession{
-		Token:     token,
-		UserID:    user.ID,
-		ExpiresAt: expiresAt,
-	}); err != nil {
-		internalError(c, err)
-		return
-	}
-	h.setAdminSessionCookie(c, token, int(time.Until(expiresAt).Seconds()))
-	c.JSON(http.StatusOK, gin.H{
-		"token":      token,
-		"expires_at": expiresAt.UTC().Format(time.RFC3339Nano),
-		"user": gin.H{
-			"id":       user.ID,
-			"username": user.Username,
+	return errors.Is(answerCtx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func publicAnswerFailure(c *gin.Context, err error) {
+	log.Printf("public answer generation failed trace=%s err=%v", traceID(c), err)
+	c.JSON(http.StatusInternalServerError, gin.H{
+		"error": gin.H{
+			"code":    "PUBLIC_ANSWER_FAILED",
+			"message": "当前回复服务暂时不可用，请稍后再试。",
 		},
 	})
 }
 
-func (h *Handlers) AdminLogout(c *gin.Context) {
-	if token, ok := middleware.AuthenticatedAdminSessionToken(c); ok {
-		_ = h.Store.DeleteSession(c.Request.Context(), token)
+func (h *Handlers) publicAnswerResponseTimeout() time.Duration {
+	seconds := defaultPublicAnswerResponseTimeoutSec
+	if h != nil && h.Config != nil && h.Config.PublicQuery.ResponseTimeoutSec > 0 {
+		seconds = h.Config.PublicQuery.ResponseTimeoutSec
 	}
-	h.setAdminSessionCookie(c, "", -1)
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	return time.Duration(seconds) * time.Second
 }
 
-func (h *Handlers) setAdminSessionCookie(c *gin.Context, value string, maxAge int) {
-	cookie := &http.Cookie{
-		Name:     h.AuthConfig.SessionCookieName,
-		Value:    value,
-		Path:     "/",
-		Domain:   strings.TrimSpace(h.AuthConfig.SessionCookieDomain),
-		MaxAge:   maxAge,
-		HttpOnly: true,
-		Secure:   h.AuthConfig.SessionCookieSecure,
-		SameSite: adminCookieSameSite(h.AuthConfig.SessionCookieSameSite),
+func truncateAPIText(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 {
+		return text
 	}
-	if maxAge < 0 {
-		cookie.Expires = time.Unix(0, 0)
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
 	}
-	http.SetCookie(c.Writer, cookie)
-}
-
-func adminCookieSameSite(value string) http.SameSite {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "none":
-		return http.SameSiteNoneMode
-	case "strict":
-		return http.SameSiteStrictMode
-	case "lax", "":
-		return http.SameSiteLaxMode
-	default:
-		return http.SameSiteLaxMode
-	}
-}
-
-func (h *Handlers) AdminMe(c *gin.Context) {
-	user, ok := middleware.AdminUser(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error": gin.H{"code": "UNAUTHORIZED", "message": "admin login required"},
-		})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"user": gin.H{
-			"id":       user.ID,
-			"username": user.Username,
-		},
-	})
+	return string(runes[:limit]) + "..."
 }
 
 func (h *Handlers) AdminGetPublicIntents(c *gin.Context) {
@@ -400,6 +425,42 @@ func (h *Handlers) AdminUpdatePublicIntents(c *gin.Context) {
 		"source": h.PublicIntents.SourceOrDefault(),
 		"status": status,
 	})
+}
+
+func (h *Handlers) AdminGetRuntimeSettings(c *gin.Context) {
+	snapshot, err := service.LoadRuntimeSettings(c.Request.Context(), h.Store, h.Config)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, snapshot)
+}
+
+func (h *Handlers) AdminUpdateRuntimeSettings(c *gin.Context) {
+	var req runtimeSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	snapshot, fields, err := service.SaveRuntimeSettings(c.Request.Context(), h.Store, h.Config, service.RuntimeSettings(req))
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	if len(fields) > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"code":    "INVALID_RUNTIME_SETTINGS",
+				"message": "runtime settings are invalid",
+				"fields":  fields,
+			},
+			"settings":    snapshot.Settings,
+			"defaults":    snapshot.Defaults,
+			"environment": snapshot.Environment,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, snapshot)
 }
 
 func (h *Handlers) AdminReviewCount(c *gin.Context) {
@@ -879,27 +940,144 @@ func (h *Handlers) AdminWikiFile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "IS_DIRECTORY", "message": "path is a directory"}})
 		return
 	}
-	kind := wikiPreviewKind(rel)
-	resp := gin.H{
-		"path":         rel,
-		"name":         filepath.Base(rel),
-		"size":         info.Size(),
-		"modified_at":  info.ModTime().Format(time.RFC3339Nano),
-		"preview":      kind,
-		"download_url": "/api/v1/admin/wiki/download?path=" + urlQueryEscape(rel),
-	}
-	if kind == "download" {
-		log.Printf("audit wiki.file path=%s preview=download", rel)
-		c.JSON(http.StatusOK, resp)
+	resp, err := h.wikiFileResponse(c.Request.Context(), abs, rel, info)
+	if err != nil {
+		if errors.Is(err, errWikiFileTooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": gin.H{"code": "FILE_TOO_LARGE", "message": err.Error()}})
+			return
+		}
+		if errors.Is(err, errWikiInvalidEncoding) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "INVALID_ENCODING", "message": err.Error()}})
+			return
+		}
+		internalError(c, err)
 		return
 	}
-	content, err := os.ReadFile(abs)
+	log.Printf("audit wiki.file path=%s preview=%s size=%d", rel, resp["preview"], info.Size())
+	c.JSON(http.StatusOK, resp)
+}
+
+func (h *Handlers) AdminWikiSaveFile(c *gin.Context) {
+	var req adminWikiSaveFileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	abs, rel, err := h.resolveWikiPath(req.Path)
+	if err != nil {
+		badRequest(c, err)
+		return
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "FILE_NOT_FOUND", "message": "file not found"}})
+			return
+		}
+		badRequest(c, err)
+		return
+	}
+	if info.IsDir() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "IS_DIRECTORY", "message": "path is a directory"}})
+		return
+	}
+	if !wikiFileEditable(rel) {
+		c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": gin.H{"code": "UNSUPPORTED_EDIT_TYPE", "message": "file type is not editable"}})
+		return
+	}
+	if err := h.validateWikiTextSize(c.Request.Context(), []byte(req.Content)); err != nil {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": gin.H{"code": "FILE_TOO_LARGE", "message": err.Error()}})
+		return
+	}
+	current, err := os.ReadFile(abs)
 	if err != nil {
 		internalError(c, err)
 		return
 	}
-	resp["content"] = string(content)
-	log.Printf("audit wiki.file path=%s preview=%s size=%d", rel, kind, info.Size())
+	currentSHA := sha256Hex(current)
+	if strings.TrimSpace(req.ExpectedSHA256) != "" && !strings.EqualFold(strings.TrimSpace(req.ExpectedSHA256), currentSHA) {
+		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "FILE_CONFLICT", "message": "file changed since it was loaded"}, "sha256": currentSHA})
+		return
+	}
+	if err := os.WriteFile(abs, []byte(req.Content), 0o644); err != nil {
+		internalError(c, err)
+		return
+	}
+	nextInfo, err := os.Stat(abs)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	resp, err := h.wikiFileResponse(c.Request.Context(), abs, rel, nextInfo)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	log.Printf("audit wiki.file.save path=%s size=%d", rel, nextInfo.Size())
+	c.JSON(http.StatusOK, resp)
+}
+
+func (h *Handlers) AdminWikiReplaceFile(c *gin.Context) {
+	rawPath := strings.TrimSpace(c.PostForm("path"))
+	abs, rel, err := h.resolveWikiPath(rawPath)
+	if err != nil {
+		badRequest(c, err)
+		return
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "FILE_NOT_FOUND", "message": "file not found"}})
+			return
+		}
+		badRequest(c, err)
+		return
+	}
+	if info.IsDir() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "IS_DIRECTORY", "message": "path is a directory"}})
+		return
+	}
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		badRequest(c, fmt.Errorf("parse replacement file: %w", err))
+		return
+	}
+	file, err := fileHeader.Open()
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	if len(data) == 0 {
+		badRequest(c, fmt.Errorf("replacement file is empty"))
+		return
+	}
+	if wikiFileEditable(rel) {
+		if err := h.validateWikiTextSize(c.Request.Context(), data); err != nil {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": gin.H{"code": "FILE_TOO_LARGE", "message": err.Error()}})
+			return
+		}
+	}
+	if err := os.WriteFile(abs, data, 0o644); err != nil {
+		internalError(c, err)
+		return
+	}
+	nextInfo, err := os.Stat(abs)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	resp, err := h.wikiFileResponse(c.Request.Context(), abs, rel, nextInfo)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	log.Printf("audit wiki.file.replace path=%s size=%d", rel, nextInfo.Size())
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -932,6 +1110,205 @@ func (h *Handlers) AdminSyncStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, status)
 }
 
+func (h *Handlers) AdminSyncTest(c *gin.Context) {
+	status, err := h.gitStatus(c.Request.Context())
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	runner, _, branch := h.gitRunner(c.Request.Context(), "", "")
+	target := strings.TrimSpace(runner.URL())
+	useRepo := false
+	if target == "" && status.RepoReady && status.RemoteReady {
+		target = status.Remote
+		useRepo = true
+	}
+	if strings.TrimSpace(target) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"ok": false,
+			"error": gin.H{
+				"code":    "SYNC_REMOTE_MISSING",
+				"message": "未配置 WIKIOS_WIKI_GIT_URL，且当前仓库没有可用 remote。",
+			},
+			"status": status,
+		})
+		return
+	}
+	branch = firstNonEmpty(branch, status.Branch)
+	var result wikigit.Result
+	if useRepo {
+		result, err = runner.Run(c.Request.Context(), "ls-remote", "--heads", target, branch)
+	} else {
+		result, err = runner.RunAt(c.Request.Context(), "", "ls-remote", "--heads", target, branch)
+	}
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	if result.ExitCode != 0 {
+		gitCommandError(c, http.StatusBadRequest, "GIT_REMOTE_TEST_FAILED", "git remote test failed", result.Stdout, result.Stderr, result.ExitCode)
+		return
+	}
+	if strings.TrimSpace(result.Stdout) == "" {
+		gitCommandError(c, http.StatusBadRequest, "GIT_REMOTE_BRANCH_MISSING", "remote branch was not found", result.Stdout, result.Stderr, result.ExitCode)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":        true,
+		"remote":    status.Remote,
+		"branch":    branch,
+		"status":    status,
+		"stdout":    result.Stdout,
+		"stderr":    result.Stderr,
+		"exit_code": result.ExitCode,
+	})
+}
+
+func (h *Handlers) AdminSyncSetup(c *gin.Context) {
+	var req syncSetupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	runner, remote, branch := h.gitRunner(c.Request.Context(), req.Remote, req.Branch)
+	if !safeGitName(remote) || !safeGitName(branch) {
+		badRequest(c, fmt.Errorf("invalid remote or branch"))
+		return
+	}
+	urlValue := runner.URL()
+	if strings.TrimSpace(urlValue) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{"code": "SYNC_URL_MISSING", "message": "WIKIOS_WIKI_GIT_URL is required for setup"},
+		})
+		return
+	}
+
+	root := h.Config.MountedWiki.Root
+	empty, err := wikigit.DirectoryEmpty(root)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	if empty {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			internalError(c, err)
+			return
+		}
+		result, err := runner.RunAt(c.Request.Context(), filepath.Dir(root), "clone", "--branch", branch, urlValue, root)
+		if err != nil {
+			internalError(c, err)
+			return
+		}
+		if result.ExitCode != 0 {
+			gitCommandError(c, http.StatusBadRequest, "GIT_CLONE_FAILED", "git clone failed", result.Stdout, result.Stderr, result.ExitCode)
+			return
+		}
+		status, statusErr := h.gitStatus(c.Request.Context())
+		if statusErr != nil {
+			internalError(c, statusErr)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true, "action": "clone", "status": status, "stdout": result.Stdout, "stderr": result.Stderr, "exit_code": result.ExitCode})
+		return
+	}
+	if !wikigit.IsGitRepository(root) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"code":    "WIKI_ROOT_NOT_GIT",
+				"message": "wiki root is not empty and is not a git repository; refusing to overwrite it",
+			},
+		})
+		return
+	}
+
+	if _, ok := runner.RemoteURL(c.Request.Context(), remote); ok {
+		if result, err := runner.Run(c.Request.Context(), "remote", "set-url", remote, urlValue); err != nil {
+			internalError(c, err)
+			return
+		} else if result.ExitCode != 0 {
+			gitCommandError(c, http.StatusBadRequest, "GIT_REMOTE_SET_FAILED", "git remote set-url failed", result.Stdout, result.Stderr, result.ExitCode)
+			return
+		}
+	} else {
+		if result, err := runner.Run(c.Request.Context(), "remote", "add", remote, urlValue); err != nil {
+			internalError(c, err)
+			return
+		} else if result.ExitCode != 0 {
+			gitCommandError(c, http.StatusBadRequest, "GIT_REMOTE_ADD_FAILED", "git remote add failed", result.Stdout, result.Stderr, result.ExitCode)
+			return
+		}
+	}
+	fetch, err := runner.Run(c.Request.Context(), "fetch", remote, branch)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	if fetch.ExitCode != 0 {
+		gitCommandError(c, http.StatusBadRequest, "GIT_FETCH_FAILED", "git fetch failed", fetch.Stdout, fetch.Stderr, fetch.ExitCode)
+		return
+	}
+	if exists, err := gitBranchExists(c.Request.Context(), runner, branch); err != nil {
+		internalError(c, err)
+		return
+	} else if !exists {
+		if dirty, dirtyErr := gitWorktreeDirty(c.Request.Context(), runner); dirtyErr != nil {
+			internalError(c, dirtyErr)
+			return
+		} else if dirty {
+			gitCommandError(c, http.StatusBadRequest, "GIT_WORKTREE_DIRTY", "当前知识库有未提交改动，无法自动切换/创建分支。请先提交或手动处理后再修复同步配置。", "", "", 1)
+			return
+		}
+		result, err := runner.Run(c.Request.Context(), "checkout", "-b", branch, "--track", remote+"/"+branch)
+		if err != nil {
+			internalError(c, err)
+			return
+		}
+		if result.ExitCode != 0 {
+			gitCommandError(c, http.StatusBadRequest, "GIT_BRANCH_SETUP_FAILED", "git branch setup failed", result.Stdout, result.Stderr, result.ExitCode)
+			return
+		}
+	} else {
+		result, err := runner.Run(c.Request.Context(), "branch", "--set-upstream-to="+remote+"/"+branch, branch)
+		if err != nil {
+			internalError(c, err)
+			return
+		}
+		if result.ExitCode != 0 {
+			gitCommandError(c, http.StatusBadRequest, "GIT_UPSTREAM_SETUP_FAILED", "git upstream setup failed", result.Stdout, result.Stderr, result.ExitCode)
+			return
+		}
+		current, currentErr := gitCurrentBranch(c.Request.Context(), runner)
+		if currentErr != nil {
+			internalError(c, currentErr)
+			return
+		}
+		if current != "" && current != branch {
+			if dirty, dirtyErr := gitWorktreeDirty(c.Request.Context(), runner); dirtyErr != nil {
+				internalError(c, dirtyErr)
+				return
+			} else if dirty {
+				gitCommandError(c, http.StatusBadRequest, "GIT_WORKTREE_DIRTY", "当前知识库有未提交改动，无法自动切换到目标分支。请先提交或手动处理后再修复同步配置。", "", "", 1)
+				return
+			}
+			checkout, checkoutErr := runner.Run(c.Request.Context(), "checkout", branch)
+			if checkoutErr != nil {
+				internalError(c, checkoutErr)
+				return
+			}
+			if checkout.ExitCode != 0 {
+				gitCommandError(c, http.StatusBadRequest, "GIT_CHECKOUT_FAILED", "git checkout failed", checkout.Stdout, checkout.Stderr, checkout.ExitCode)
+				return
+			}
+		}
+	}
+	status, err := h.gitStatus(c.Request.Context())
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "action": "setup", "status": status, "stdout": fetch.Stdout, "stderr": fetch.Stderr, "exit_code": fetch.ExitCode})
+}
+
 func (h *Handlers) AdminSyncGenerateMessage(c *gin.Context) {
 	var req syncGenerateMessageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -949,12 +1326,12 @@ func (h *Handlers) AdminSyncGenerateMessage(c *gin.Context) {
 		return
 	}
 	files := syncFilesByPath(paths, status.Files)
-	diffStat, _, _, _ := h.runWikiGit(c.Request.Context(), append([]string{"diff", "--stat", "--"}, paths...)...)
-	nameStatus, _, _, _ := h.runWikiGit(c.Request.Context(), append([]string{"diff", "--name-status", "--"}, paths...)...)
+	diffStat, _ := h.runWikiGit(c.Request.Context(), append([]string{"diff", "--stat", "--"}, paths...)...)
+	nameStatus, _ := h.runWikiGit(c.Request.Context(), append([]string{"diff", "--name-status", "--"}, paths...)...)
 	message, rule, err := h.Sync.GenerateCommitMessage(c.Request.Context(), service.SyncCommitMessageRequest{
 		Files:      toServiceSyncFiles(files),
-		DiffStat:   diffStat,
-		NameStatus: nameStatus,
+		DiffStat:   diffStat.Stdout,
+		NameStatus: nameStatus.Stdout,
 	})
 	if err != nil {
 		internalError(c, err)
@@ -990,29 +1367,32 @@ func (h *Handlers) AdminSyncCommit(c *gin.Context) {
 		return
 	}
 	args := append([]string{"add", "--"}, paths...)
-	if _, stderr, exitCode, err := h.runWikiGit(c.Request.Context(), args...); err != nil || exitCode != 0 {
-		internalError(c, fmt.Errorf("git add failed: %s", strings.TrimSpace(stderr)))
-		return
-	}
-	stdout, stderr, exitCode, err := h.runWikiGit(c.Request.Context(), "commit", "-m", message)
+	result, err := h.runWikiGit(c.Request.Context(), args...)
 	if err != nil {
 		internalError(c, err)
 		return
 	}
-	if exitCode != 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": gin.H{"code": "GIT_COMMIT_FAILED", "message": strings.TrimSpace(stdout + stderr)},
-		})
+	if result.ExitCode != 0 {
+		gitCommandError(c, http.StatusBadRequest, "GIT_ADD_FAILED", "git add failed", result.Stdout, result.Stderr, result.ExitCode)
 		return
 	}
-	hash, _, _, _ := h.runWikiGit(c.Request.Context(), "rev-parse", "--short", "HEAD")
-	log.Printf("audit sync.commit paths=%d hash=%s", len(paths), strings.TrimSpace(hash))
+	result, err = h.runWikiGit(c.Request.Context(), "commit", "-m", message)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	if result.ExitCode != 0 {
+		gitCommandError(c, http.StatusBadRequest, "GIT_COMMIT_FAILED", "git commit failed", result.Stdout, result.Stderr, result.ExitCode)
+		return
+	}
+	hashResult, _ := h.runWikiGit(c.Request.Context(), "rev-parse", "--short", "HEAD")
+	log.Printf("audit sync.commit paths=%d hash=%s", len(paths), strings.TrimSpace(hashResult.Stdout))
 	c.JSON(http.StatusOK, gin.H{
 		"ok":        true,
-		"hash":      strings.TrimSpace(hash),
-		"stdout":    stdout,
-		"stderr":    stderr,
-		"exit_code": exitCode,
+		"hash":      strings.TrimSpace(hashResult.Stdout),
+		"stdout":    result.Stdout,
+		"stderr":    result.Stderr,
+		"exit_code": result.ExitCode,
 	})
 }
 
@@ -1022,8 +1402,8 @@ func (h *Handlers) AdminSyncPush(c *gin.Context) {
 		badRequest(c, err)
 		return
 	}
-	remote := firstNonEmpty(req.Remote, h.Config.Sync.Remote)
-	branch := firstNonEmpty(req.Branch, h.Config.Sync.Branch)
+	explicitTarget := strings.TrimSpace(req.Remote) != "" || strings.TrimSpace(req.Branch) != ""
+	runner, remote, branch := h.gitRunner(c.Request.Context(), req.Remote, req.Branch)
 	if !safeGitName(remote) || !safeGitName(branch) {
 		badRequest(c, fmt.Errorf("invalid remote or branch"))
 		return
@@ -1033,25 +1413,21 @@ func (h *Handlers) AdminSyncPush(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
-	if status.PushCount <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": gin.H{"code": "NO_COMMITS_TO_PUSH", "message": "当前没有未推送的提交，请先选择文件并提交。"},
-		})
+	if !status.CanPush && status.Clean && !explicitTarget {
+		gitCommandError(c, http.StatusBadRequest, "GIT_NOTHING_TO_PUSH", firstNonEmpty(status.SetupHint, "当前没有待推送提交。"), "", "", 0)
 		return
 	}
-	stdout, stderr, exitCode, err := h.runWikiGit(c.Request.Context(), "push", remote, branch)
+	result, err := runner.Run(c.Request.Context(), "push", remote, branch)
 	if err != nil {
 		internalError(c, err)
 		return
 	}
-	if exitCode != 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": gin.H{"code": "GIT_PUSH_FAILED", "message": strings.TrimSpace(stdout + stderr)},
-		})
+	if result.ExitCode != 0 {
+		gitCommandError(c, http.StatusBadRequest, "GIT_PUSH_FAILED", "git push failed", result.Stdout, result.Stderr, result.ExitCode)
 		return
 	}
 	log.Printf("audit sync.push remote=%s branch=%s", remote, branch)
-	c.JSON(http.StatusOK, gin.H{"ok": true, "remote": remote, "branch": branch, "stdout": stdout, "stderr": stderr, "exit_code": exitCode})
+	c.JSON(http.StatusOK, gin.H{"ok": true, "remote": remote, "branch": branch, "stdout": result.Stdout, "stderr": result.Stderr, "exit_code": result.ExitCode})
 }
 
 func (h *Handlers) buildDirectAdminRequest(req adminChatRequest, mode string) service.DirectAdminRequest {
@@ -1109,16 +1485,27 @@ func (h *Handlers) estimatePublicContext(req publicAnswerRequest) service.Contex
 }
 
 type syncStatusResponse struct {
-	Branch        string           `json:"branch"`
-	Remote        string           `json:"remote"`
-	Ahead         int              `json:"ahead"`
-	Behind        int              `json:"behind"`
-	Files         []syncStatusFile `json:"files"`
-	ChangedCount  int              `json:"changed_count"`
-	PushCount     int              `json:"push_count"`
-	CanPush       bool             `json:"can_push"`
-	CommitsToPush []syncCommitInfo `json:"commits_to_push"`
-	RecentCommits []syncCommitInfo `json:"recent_commits"`
+	Branch                  string           `json:"branch"`
+	Remote                  string           `json:"remote"`
+	Ahead                   int              `json:"ahead"`
+	Behind                  int              `json:"behind"`
+	Files                   []syncStatusFile `json:"files"`
+	ChangedCount            int              `json:"changed_count"`
+	PushCount               int              `json:"push_count"`
+	CanPush                 bool             `json:"can_push"`
+	CanCommit               bool             `json:"can_commit"`
+	RepoReady               bool             `json:"repo_ready"`
+	RemoteReady             bool             `json:"remote_ready"`
+	BranchReady             bool             `json:"branch_ready"`
+	AuthConfigured          bool             `json:"auth_configured"`
+	NeedsSetup              bool             `json:"needs_setup"`
+	Clean                   bool             `json:"clean"`
+	ConfiguredURLRedacted   string           `json:"configured_url_redacted"`
+	RemoteURLRedacted       string           `json:"remote_url_redacted"`
+	RemoteMatchesConfigured bool             `json:"remote_matches_configured"`
+	SetupHint               string           `json:"setup_hint"`
+	CommitsToPush           []syncCommitInfo `json:"commits_to_push"`
+	RecentCommits           []syncCommitInfo `json:"recent_commits"`
 }
 
 type syncStatusFile struct {
@@ -1170,10 +1557,97 @@ func (h *Handlers) resolveWikiPath(raw string) (string, string, error) {
 	return abs, filepath.ToSlash(rel), nil
 }
 
+var (
+	errWikiFileTooLarge    = errors.New("wiki file is too large to edit")
+	errWikiInvalidEncoding = errors.New("wiki file is not valid utf-8 text")
+	wikiEditableTextExts   = map[string]string{
+		".md":       "markdown",
+		".markdown": "markdown",
+		".qmd":      "markdown",
+		".yaml":     "yaml",
+		".yml":      "yaml",
+		".json":     "json",
+		".txt":      "text",
+		".csv":      "csv",
+		".tsv":      "tsv",
+		".log":      "text",
+		".toml":     "toml",
+		".ini":      "ini",
+		".html":     "html",
+		".css":      "css",
+		".js":       "javascript",
+		".ts":       "typescript",
+	}
+)
+
+func (h *Handlers) wikiFileResponse(ctx context.Context, abs string, rel string, info os.FileInfo) (gin.H, error) {
+	preview := wikiPreviewKind(rel)
+	editable := wikiFileEditable(rel)
+	textKind := wikiTextKind(rel)
+	resp := gin.H{
+		"path":         rel,
+		"name":         filepath.Base(rel),
+		"size":         info.Size(),
+		"modified_at":  info.ModTime().Format(time.RFC3339Nano),
+		"preview":      preview,
+		"editable":     editable,
+		"text_kind":    textKind,
+		"encoding":     "",
+		"sha256":       "",
+		"download_url": "/api/v1/admin/wiki/download?path=" + urlQueryEscape(rel),
+	}
+	if !editable {
+		return resp, nil
+	}
+	if err := h.validateWikiTextSize(ctx, nil, int64(info.Size())); err != nil {
+		return nil, err
+	}
+	content, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, err
+	}
+	if !utf8.Valid(content) {
+		return nil, errWikiInvalidEncoding
+	}
+	resp["content"] = string(content)
+	resp["encoding"] = "utf-8"
+	resp["sha256"] = sha256Hex(content)
+	return resp, nil
+}
+
+func (h *Handlers) validateWikiTextSize(ctx context.Context, content []byte, sizes ...int64) error {
+	runtimeSettings := service.LoadRuntimeSettingsOrDefault(ctx, h.Store, h.Config)
+	maxBytes := int64(runtimeSettings.Knowledge.MaxTextFileKB) * 1024
+	if maxBytes <= 0 {
+		maxBytes = 500 * 1024
+	}
+	size := int64(len(content))
+	if len(sizes) > 0 {
+		size = sizes[0]
+	}
+	if size > maxBytes {
+		return fmt.Errorf("%w: file exceeds editable text limit of %dKB", errWikiFileTooLarge, maxBytes/1024)
+	}
+	return nil
+}
+
+func wikiFileEditable(path string) bool {
+	return wikiTextKind(path) != ""
+}
+
+func wikiTextKind(path string) string {
+	return wikiEditableTextExts[strings.ToLower(filepath.Ext(path))]
+}
+
+func sha256Hex(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
+
 func wikiPreviewKind(path string) string {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
-	case ".md", ".markdown":
+	case ".md", ".markdown", ".qmd":
 		return "markdown"
 	default:
 		return "download"
@@ -1184,60 +1658,112 @@ func urlQueryEscape(value string) string {
 	return url.QueryEscape(value)
 }
 
-func (h *Handlers) runWikiGit(ctx context.Context, args ...string) (string, string, int, error) {
-	runCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(runCtx, "git", args...)
-	cmd.Dir = h.Config.MountedWiki.Root
-	out, err := cmd.Output()
-	stderr := ""
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			stderr = string(exitErr.Stderr)
-			return string(out), stderr, exitErr.ExitCode(), nil
-		}
-		return string(out), stderr, -1, err
-	}
-	return string(out), stderr, 0, nil
+func (h *Handlers) runWikiGit(ctx context.Context, args ...string) (wikigit.Result, error) {
+	runner, _, _ := h.gitRunner(ctx, "", "")
+	return runner.Run(ctx, args...)
+}
+
+func (h *Handlers) gitRunner(ctx context.Context, remoteOverride string, branchOverride string) (*wikigit.Runner, string, string) {
+	runtimeSettings := service.LoadRuntimeSettingsOrDefault(ctx, h.Store, h.Config)
+	remote := firstNonEmpty(remoteOverride, runtimeSettings.Sync.Remote)
+	branch := firstNonEmpty(branchOverride, runtimeSettings.Sync.Branch)
+	return wikigit.NewRunner(wikigit.ConfigFromEnv(h.Config.MountedWiki.Root, remote, branch)), remote, branch
+}
+
+func gitCommandError(c *gin.Context, status int, code string, fallback string, stdout string, stderr string, exitCode int) {
+	stdout = strings.TrimSpace(stdout)
+	stderr = strings.TrimSpace(stderr)
+	message := firstNonEmpty(stdout, stderr, fallback)
+	c.JSON(status, gin.H{
+		"error": gin.H{
+			"code":      code,
+			"message":   message,
+			"stdout":    stdout,
+			"stderr":    stderr,
+			"exit_code": exitCode,
+		},
+		"stdout":    stdout,
+		"stderr":    stderr,
+		"exit_code": exitCode,
+	})
 }
 
 func (h *Handlers) gitStatus(ctx context.Context) (syncStatusResponse, error) {
-	stdout, stderr, exitCode, err := h.runWikiGit(ctx, "status", "--porcelain=v1", "-b")
+	runtimeSettings := service.LoadRuntimeSettingsOrDefault(ctx, h.Store, h.Config)
+	runner, remote, branch := h.gitRunner(ctx, "", "")
+	status := syncStatusResponse{
+		Branch:         branch,
+		Remote:         remote,
+		Files:          []syncStatusFile{},
+		RepoReady:      wikigit.IsGitRepository(h.Config.MountedWiki.Root),
+		AuthConfigured: runner.AuthConfigured(),
+	}
+	if runner.URL() != "" {
+		status.ConfiguredURLRedacted = runner.RedactedURL(runner.URL())
+	}
+	if remoteURL, ok := runner.RemoteURL(ctx, remote); ok {
+		status.RemoteReady = true
+		status.RemoteURLRedacted = runner.RedactedURL(remoteURL)
+		status.AuthConfigured = runner.AuthConfiguredFor(remoteURL)
+		if configured := strings.TrimSpace(runner.URL()); configured != "" {
+			status.RemoteMatchesConfigured = strings.TrimSpace(remoteURL) == configured
+		}
+	} else if runner.URL() != "" {
+		status.RemoteURLRedacted = runner.RedactedURL(runner.URL())
+	}
+	if !status.RepoReady {
+		status.BranchReady = branch != ""
+		status.NeedsSetup = true
+		status.Clean = true
+		status.SetupHint = syncSetupHint(status, runner)
+		return status, nil
+	}
+
+	result, err := runner.Run(ctx, "status", "--porcelain=v1", "--untracked-files=all", "-b", "-z")
 	if err != nil {
 		return syncStatusResponse{}, err
 	}
-	if exitCode != 0 {
-		return syncStatusResponse{}, fmt.Errorf("git status failed: %s", strings.TrimSpace(stderr))
+	if result.ExitCode != 0 {
+		status.NeedsSetup = true
+		status.SetupHint = firstNonEmpty(strings.TrimSpace(result.Stderr), "git status failed")
+		return status, nil
 	}
-	status := syncStatusResponse{
-		Remote: h.Config.Sync.Remote,
-		Files:  []syncStatusFile{},
-	}
-	for _, line := range strings.Split(stdout, "\n") {
-		line = strings.TrimRight(line, "\r")
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "## ") {
-			parseBranchLine(strings.TrimPrefix(line, "## "), &status)
-			continue
-		}
-		file, ok := parseStatusLine(line)
-		if ok {
-			status.Files = append(status.Files, file)
-		}
-	}
+	status.Files = append(status.Files, parseStatusOutput(result.Stdout, &status)...)
+	status.Files = mergeUntrackedFiles(status.Files, h.gitUntrackedFiles(ctx))
 	sort.Slice(status.Files, func(i, j int) bool {
 		return status.Files[i].Path < status.Files[j].Path
 	})
+	if strings.TrimSpace(status.Branch) == "" || status.Branch == "HEAD" {
+		status.Branch = runtimeSettings.Sync.Branch
+	}
+	upstreamReady, upstreamErr := gitRefExists(ctx, runner, "@{u}")
+	if upstreamErr != nil {
+		return syncStatusResponse{}, upstreamErr
+	}
+	remoteBranchReady := false
+	if status.RemoteReady && strings.TrimSpace(status.Branch) != "" {
+		if ok, refErr := gitRefExists(ctx, runner, remote+"/"+status.Branch); refErr != nil {
+			return syncStatusResponse{}, refErr
+		} else {
+			remoteBranchReady = ok
+		}
+	}
+	status.BranchReady = strings.TrimSpace(status.Branch) != "" && strings.TrimSpace(status.Branch) != "HEAD" && (upstreamReady || remoteBranchReady)
 	status.ChangedCount = len(status.Files)
 	status.CommitsToPush = h.gitLog(ctx, "@{u}..HEAD", 20)
+	if len(status.CommitsToPush) == 0 && remoteBranchReady {
+		status.CommitsToPush = h.gitLog(ctx, remote+"/"+status.Branch+"..HEAD", 20)
+	}
 	status.RecentCommits = h.gitLog(ctx, "", 10)
 	status.PushCount = len(status.CommitsToPush)
 	if status.PushCount == 0 {
 		status.PushCount = status.Ahead
 	}
-	status.CanPush = status.PushCount > 0
+	status.CanCommit = status.RepoReady && status.ChangedCount > 0
+	status.CanPush = status.RepoReady && status.RemoteReady && status.BranchReady && status.PushCount > 0
+	status.Clean = status.ChangedCount == 0 && status.PushCount == 0 && status.Behind == 0
+	status.NeedsSetup = !status.RepoReady || !status.RemoteReady || !status.BranchReady || !status.AuthConfigured
+	status.SetupHint = syncSetupHint(status, runner)
 	return status, nil
 }
 
@@ -1246,12 +1772,12 @@ func (h *Handlers) gitLog(ctx context.Context, rev string, limit int) []syncComm
 	if strings.TrimSpace(rev) != "" {
 		args = append(args, rev)
 	}
-	stdout, _, exitCode, err := h.runWikiGit(ctx, args...)
-	if err != nil || exitCode != 0 {
+	result, err := h.runWikiGit(ctx, args...)
+	if err != nil || result.ExitCode != 0 {
 		return nil
 	}
 	out := []syncCommitInfo{}
-	for _, line := range strings.Split(stdout, "\n") {
+	for _, line := range strings.Split(result.Stdout, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -1268,6 +1794,100 @@ func (h *Handlers) gitLog(ctx context.Context, rev string, limit int) []syncComm
 		})
 	}
 	return out
+}
+
+func (h *Handlers) gitUntrackedFiles(ctx context.Context) []syncStatusFile {
+	result, err := h.runWikiGit(ctx, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil || result.ExitCode != 0 {
+		return nil
+	}
+	files := []syncStatusFile{}
+	for _, entry := range splitNUL(result.Stdout) {
+		path := filepath.ToSlash(strings.TrimSpace(entry))
+		if path == "" || path == ".." || strings.HasPrefix(path, "../") || strings.Contains("/"+path+"/", "/.git/") {
+			continue
+		}
+		files = append(files, syncStatusFile{
+			Path:      path,
+			Status:    "?",
+			Index:     "?",
+			Worktree:  "?",
+			Preview:   wikiPreviewKind(path),
+			DefaultOn: !strings.HasPrefix(path, ".obsidian/"),
+		})
+	}
+	return files
+}
+
+func mergeUntrackedFiles(files []syncStatusFile, untracked []syncStatusFile) []syncStatusFile {
+	if len(untracked) == 0 {
+		return files
+	}
+	seen := map[string]bool{}
+	for _, file := range files {
+		seen[file.Path] = true
+	}
+	for _, file := range untracked {
+		if seen[file.Path] {
+			continue
+		}
+		files = append(files, file)
+		seen[file.Path] = true
+	}
+	return files
+}
+
+func syncSetupHint(status syncStatusResponse, runner *wikigit.Runner) string {
+	if !status.RepoReady {
+		if strings.TrimSpace(runner.URL()) == "" {
+			return "知识库目录还不是 Git 仓库。配置 WIKIOS_WIKI_GIT_URL 后可在同步页执行修复同步配置。"
+		}
+		return "知识库目录还不是 Git 仓库，可执行修复同步配置来 clone/初始化。"
+	}
+	if strings.TrimSpace(runner.URL()) == "" && !status.RemoteReady {
+		return "未配置 WIKIOS_WIKI_GIT_URL，且当前仓库没有可用 remote。"
+	}
+	if !status.RemoteReady {
+		return "Git remote 未配置或不可用，可执行修复同步配置。"
+	}
+	if !status.BranchReady {
+		return "当前分支或 upstream 未就绪，可执行修复同步配置。"
+	}
+	if !status.AuthConfigured {
+		return "HTTPS 同步需要配置 WIKIOS_WIKI_GIT_TOKEN；SSH 同步请确认 key 可非交互使用。"
+	}
+	return ""
+}
+
+func gitCurrentBranch(ctx context.Context, runner *wikigit.Runner) (string, error) {
+	result, err := runner.Run(ctx, "branch", "--show-current")
+	if err != nil || result.ExitCode != 0 {
+		return "", err
+	}
+	return strings.TrimSpace(result.Stdout), nil
+}
+
+func gitBranchExists(ctx context.Context, runner *wikigit.Runner, branch string) (bool, error) {
+	return gitRefExists(ctx, runner, "refs/heads/"+branch)
+}
+
+func gitRefExists(ctx context.Context, runner *wikigit.Runner, ref string) (bool, error) {
+	result, err := runner.Run(ctx, "rev-parse", "--verify", ref)
+	if err != nil {
+		return false, err
+	}
+	return result.ExitCode == 0, nil
+}
+
+func gitWorktreeDirty(ctx context.Context, runner *wikigit.Runner) (bool, error) {
+	result, err := runner.Run(ctx, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return false, err
+	}
+	if result.ExitCode != 0 {
+		return false, fmt.Errorf("git status failed: %s", strings.TrimSpace(result.Stderr))
+	}
+	return strings.TrimSpace(result.Stdout) != "", nil
 }
 
 func parseBranchLine(line string, status *syncStatusResponse) {
@@ -1301,6 +1921,89 @@ func parseStatusNumberAfter(text string, marker string) int {
 		value = value*10 + int(r-'0')
 	}
 	return value
+}
+
+func parseStatusOutput(stdout string, status *syncStatusResponse) []syncStatusFile {
+	if strings.Contains(stdout, "\x00") {
+		return parseStatusOutputZ(stdout, status)
+	}
+	files := []syncStatusFile{}
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "## ") {
+			parseBranchLine(strings.TrimPrefix(line, "## "), status)
+			continue
+		}
+		file, ok := parseStatusLine(line)
+		if ok {
+			files = append(files, file)
+		}
+	}
+	return files
+}
+
+func parseStatusOutputZ(stdout string, status *syncStatusResponse) []syncStatusFile {
+	files := []syncStatusFile{}
+	entries := splitNUL(stdout)
+	for i := 0; i < len(entries); i++ {
+		entry := entries[i]
+		if strings.TrimSpace(entry) == "" {
+			continue
+		}
+		if strings.HasPrefix(entry, "## ") {
+			parseBranchLine(strings.TrimPrefix(entry, "## "), status)
+			continue
+		}
+		file, needsOldPath, ok := parseStatusEntryZ(entry)
+		if !ok {
+			continue
+		}
+		if needsOldPath && i+1 < len(entries) {
+			i++
+			file.OldPath = filepath.ToSlash(strings.TrimSpace(entries[i]))
+		}
+		files = append(files, file)
+	}
+	return files
+}
+
+func splitNUL(value string) []string {
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, "\x00")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func parseStatusEntryZ(entry string) (syncStatusFile, bool, bool) {
+	if len(entry) < 4 {
+		return syncStatusFile{}, false, false
+	}
+	index := strings.TrimSpace(entry[:1])
+	worktree := strings.TrimSpace(entry[1:2])
+	path := strings.TrimSpace(entry[3:])
+	status := firstNonEmpty(index, worktree)
+	deleted := index == "D" || worktree == "D"
+	file := syncStatusFile{
+		Path:      filepath.ToSlash(path),
+		Status:    status,
+		Index:     index,
+		Worktree:  worktree,
+		Preview:   wikiPreviewKind(path),
+		DefaultOn: !strings.HasPrefix(filepath.ToSlash(path), ".obsidian/"),
+		Deleted:   deleted,
+	}
+	needsOldPath := index == "R" || worktree == "R" || index == "C" || worktree == "C"
+	return file, needsOldPath, true
 }
 
 func parseStatusLine(line string) (syncStatusFile, bool) {
@@ -1338,25 +2041,50 @@ func validateSyncPaths(paths []string, files []syncStatusFile) ([]string, error)
 	out := make([]string, 0, len(paths))
 	seen := map[string]bool{}
 	for _, raw := range paths {
-		path := filepath.ToSlash(strings.TrimSpace(raw))
-		if path == "" {
-			continue
-		}
-		if path == ".." || strings.HasPrefix(path, "../") || strings.Contains("/"+path+"/", "/.git/") {
-			return nil, fmt.Errorf("invalid path: %s", raw)
-		}
-		if !allowed[path] {
-			return nil, fmt.Errorf("path is not in git status: %s", path)
-		}
-		if !seen[path] {
-			out = append(out, path)
-			seen[path] = true
+		for _, path := range normalizeSyncRequestPath(raw, allowed) {
+			if path == "" {
+				continue
+			}
+			if path == ".." || strings.HasPrefix(path, "../") || strings.Contains("/"+path+"/", "/.git/") {
+				return nil, fmt.Errorf("invalid path: %s", raw)
+			}
+			if !allowed[path] {
+				return nil, fmt.Errorf("path is not in git status: %s", path)
+			}
+			if !seen[path] {
+				out = append(out, path)
+				seen[path] = true
+			}
 		}
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("paths is required")
 	}
 	return out, nil
+}
+
+func normalizeSyncRequestPath(raw string, allowed map[string]bool) []string {
+	path := filepath.ToSlash(strings.TrimSpace(raw))
+	if path == "" || allowed[path] {
+		return []string{path}
+	}
+	if !strings.ContainsAny(path, " \t\r\n") {
+		return []string{path}
+	}
+	parts := strings.Fields(path)
+	if len(parts) <= 1 {
+		return []string{path}
+	}
+	for _, part := range parts {
+		if !allowed[filepath.ToSlash(strings.TrimSpace(part))] {
+			return []string{path}
+		}
+	}
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, filepath.ToSlash(strings.TrimSpace(part)))
+	}
+	return out
 }
 
 func syncFilesByPath(paths []string, files []syncStatusFile) []syncStatusFile {
@@ -1664,6 +2392,15 @@ func badRequest(c *gin.Context, err error) {
 	})
 }
 
+func streamNotSupported(c *gin.Context) {
+	c.JSON(http.StatusBadRequest, gin.H{
+		"error": gin.H{
+			"code":    "STREAM_NOT_SUPPORTED",
+			"message": "external public answer only supports non-streaming JSON responses",
+		},
+	})
+}
+
 func internalError(c *gin.Context, err error) {
 	log.Printf("error %s %s trace=%s err=%v", c.Request.Method, c.Request.URL.Path, traceID(c), err)
 	c.JSON(http.StatusInternalServerError, gin.H{
@@ -1702,59 +2439,6 @@ func stringOption(options map[string]any, key string) string {
 		return ""
 	}
 	value, _ := raw.(string)
-	return value
-}
-
-func stringSliceOption(options map[string]any, key string) []string {
-	if options == nil {
-		return nil
-	}
-	raw, ok := options[key]
-	if !ok {
-		return nil
-	}
-	switch typed := raw.(type) {
-	case []string:
-		return typed
-	case []any:
-		out := make([]string, 0, len(typed))
-		for _, item := range typed {
-			value, ok := item.(string)
-			if !ok || strings.TrimSpace(value) == "" {
-				continue
-			}
-			out = append(out, strings.TrimSpace(value))
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-func anySliceOption(options map[string]any, key string) []any {
-	if options == nil {
-		return nil
-	}
-	raw, ok := options[key]
-	if !ok {
-		return nil
-	}
-	values, _ := raw.([]any)
-	return values
-}
-
-func boolOption(options map[string]any, key string, fallback bool) bool {
-	if options == nil {
-		return fallback
-	}
-	raw, ok := options[key]
-	if !ok {
-		return fallback
-	}
-	value, ok := raw.(bool)
-	if !ok {
-		return fallback
-	}
 	return value
 }
 
@@ -1810,85 +2494,4 @@ func toDirectAdminAttachments(items []attachment) []service.DirectAdminAttachmen
 		})
 	}
 	return out
-}
-
-func contextualizeMessage(message string, history []chatMessage, context map[string]any) string {
-	current := strings.TrimSpace(message)
-	if current == "" {
-		return current
-	}
-	sections := []string{}
-	state := summarizeSessionState(context)
-	if state != "" {
-		sections = append(sections, "会话状态：\n"+state)
-	}
-	turns := make([]string, 0, len(history))
-	start := 0
-	if len(history) > chatHistoryLimit {
-		start = len(history) - chatHistoryLimit
-	}
-	for _, item := range history[start:] {
-		role := strings.TrimSpace(item.Role)
-		content := strings.TrimSpace(item.Content)
-		if role == "" || content == "" {
-			continue
-		}
-		turns = append(turns, fmt.Sprintf("%s: %s", role, content))
-	}
-	if len(turns) == 0 {
-		if len(sections) == 0 {
-			return current
-		}
-		return fmt.Sprintf("%s\n\n当前请求：%s", strings.Join(sections, "\n\n"), current)
-	}
-	sections = append(sections, "会话上下文：\n"+strings.Join(turns, "\n"))
-	return fmt.Sprintf("%s\n\n当前请求：%s", strings.Join(sections, "\n\n"), current)
-}
-
-func summarizeSessionState(context map[string]any) string {
-	if context == nil {
-		return ""
-	}
-	raw, ok := context["session_state"]
-	if !ok {
-		return ""
-	}
-	state, ok := raw.(map[string]any)
-	if !ok {
-		return ""
-	}
-	lines := []string{}
-	if value := strings.TrimSpace(stringOption(state, "lastMode")); value != "" {
-		lines = append(lines, "last_mode: "+value)
-	}
-	if value := strings.TrimSpace(stringOption(state, "lastSummary")); value != "" {
-		lines = append(lines, "last_summary: "+truncateContextValue(value, 300))
-	} else if value := strings.TrimSpace(stringOption(state, "lastReply")); value != "" {
-		lines = append(lines, "last_reply: "+truncateContextValue(value, 500))
-	}
-	if value := strings.TrimSpace(stringOption(state, "lastReportFile")); value != "" {
-		lines = append(lines, "last_report_file: "+value)
-	}
-	if values := stringSliceOption(state, "uploadedPaths"); len(values) > 0 {
-		lines = append(lines, "uploaded_paths: "+strings.Join(values, ", "))
-	}
-	if values := stringSliceOption(state, "lastOutputFiles"); len(values) > 0 {
-		lines = append(lines, "last_output_files: "+strings.Join(values, ", "))
-	}
-	if values := stringSliceOption(state, "lastCommands"); len(values) > 0 {
-		lines = append(lines, "last_commands: "+strings.Join(values, " | "))
-	}
-	if values := stringSliceOption(state, "lastArtifacts"); len(values) > 0 {
-		lines = append(lines, "last_artifacts: "+strings.Join(values, ", "))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func truncateContextValue(text string, limit int) string {
-	text = strings.TrimSpace(text)
-	if limit <= 0 || len([]rune(text)) <= limit {
-		return text
-	}
-	runes := []rune(text)
-	return string(runes[:limit]) + "..."
 }

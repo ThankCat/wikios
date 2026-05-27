@@ -1,6 +1,6 @@
 你负责为 WikiOS 管理端同步生成 Git commit message。
 
-只返回一个 JSON 对象，不要输出 Markdown，不要解释：
+只返回一个 JSON 对象, 不要解释：
 
 {
   "message": ""

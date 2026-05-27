@@ -22,7 +22,6 @@ func TestRouterServesMissingWebBuildPage(t *testing.T) {
 	}
 	cfg := &config.Config{
 		MountedWiki: config.MountedWikiConfig{Name: "fixture-wiki"},
-		Auth:        config.AuthConfig{SessionCookieName: "wikios_admin_session"},
 		Web:         config.WebConfig{DistDir: filepath.Join(t.TempDir(), "dist")},
 	}
 	router := app.NewRouter(cfg, &api.Handlers{}, dataStore)
@@ -73,7 +72,6 @@ func TestRouterServesStaticFilesAndAPINotFound(t *testing.T) {
 	}
 	cfg := &config.Config{
 		MountedWiki: config.MountedWikiConfig{Name: "fixture-wiki"},
-		Auth:        config.AuthConfig{SessionCookieName: "wikios_admin_session"},
 		Web:         config.WebConfig{DistDir: distDir},
 	}
 	router := app.NewRouter(cfg, &api.Handlers{}, dataStore)
@@ -86,7 +84,7 @@ func TestRouterServesStaticFilesAndAPINotFound(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/chat", nil)
+	req = httptest.NewRequest(http.MethodGet, "/dashboard", nil)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "workbench") {
 		t.Fatalf("expected spa fallback, got %d %s", rec.Code, rec.Body.String())
@@ -107,7 +105,6 @@ func TestRouterCORSAllowsModelManagementMethods(t *testing.T) {
 	}
 	cfg := &config.Config{
 		MountedWiki: config.MountedWikiConfig{Name: "fixture-wiki"},
-		Auth:        config.AuthConfig{SessionCookieName: "wikios_admin_session"},
 		Web:         config.WebConfig{DistDir: filepath.Join(t.TempDir(), "dist")},
 	}
 	router := app.NewRouter(cfg, &api.Handlers{}, dataStore)

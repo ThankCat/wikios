@@ -18,6 +18,7 @@ import (
 const noActiveLLMModelMessage = "当前未启用 LLM 模型，请先在管理员端模型模块配置并启用模型"
 const unavailableLLMModelMessage = "当前启用模型服务不可用，请在管理员端模型模块检查账号余额、API Key 或服务状态"
 const publicLLMUnavailableMessage = "当前在线回复暂时不可用，请稍后再试。"
+const llmModelIDPrefix = "model-id:"
 
 type DynamicLLMClient struct {
 	store      *store.Store
@@ -66,7 +67,28 @@ func NewDynamicLLMClient(dataStore *store.Store, defaults config.LLMConfig) *Dyn
 	return &DynamicLLMClient{store: dataStore, defaults: defaults, clientByID: map[string]llm.Client{}}
 }
 
-func (c *DynamicLLMClient) Chat(ctx context.Context, _ string, messages []llm.Message) (string, error) {
+func (c *DynamicLLMClient) Chat(ctx context.Context, model string, messages []llm.Message) (string, error) {
+	return c.chat(ctx, model, messages)
+}
+
+func (c *DynamicLLMClient) chat(ctx context.Context, modelToken string, messages []llm.Message) (string, error) {
+	if requestedID := requestedLLMModelID(modelToken); requestedID != "" {
+		if model, err := c.modelByID(ctx, requestedID); err == nil {
+			text, err := c.clientForModel(model).Chat(ctx, model.ModelName, messages)
+			if err == nil {
+				return text, nil
+			}
+			if doneErr := llmModelContextError(ctx, err); doneErr != nil {
+				return "", doneErr
+			}
+			log.Printf("specific llm model failed id=%s model=%s err=%v; falling back to active model", model.ID, model.ModelName, err)
+		} else {
+			if doneErr := llmModelContextError(ctx, err); doneErr != nil {
+				return "", doneErr
+			}
+			log.Printf("specific llm model unavailable id=%s err=%v; falling back to active model", requestedID, err)
+		}
+	}
 	models, err := c.availableModels(ctx)
 	if err != nil {
 		return "", err
@@ -86,15 +108,57 @@ func (c *DynamicLLMClient) Chat(ctx context.Context, _ string, messages []llm.Me
 	return "", allLLMModelsUnavailableError{failures: failures}
 }
 
-func (c *DynamicLLMClient) StreamChat(ctx context.Context, _ string, messages []llm.Message, onDelta func(string)) (string, error) {
-	return c.StreamChatEvents(ctx, "", messages, func(delta llm.StreamDelta) {
+func (c *DynamicLLMClient) StreamChat(ctx context.Context, model string, messages []llm.Message, onDelta func(string)) (string, error) {
+	return c.StreamChatEvents(ctx, model, messages, func(delta llm.StreamDelta) {
 		if delta.Content != "" && onDelta != nil {
 			onDelta(delta.Content)
 		}
 	})
 }
 
-func (c *DynamicLLMClient) StreamChatEvents(ctx context.Context, _ string, messages []llm.Message, onDelta func(llm.StreamDelta)) (string, error) {
+func (c *DynamicLLMClient) StreamChatEvents(ctx context.Context, model string, messages []llm.Message, onDelta func(llm.StreamDelta)) (string, error) {
+	return c.streamChatEvents(ctx, model, messages, onDelta)
+}
+
+func (c *DynamicLLMClient) streamChatEvents(ctx context.Context, modelToken string, messages []llm.Message, onDelta func(llm.StreamDelta)) (string, error) {
+	if requestedID := requestedLLMModelID(modelToken); requestedID != "" {
+		if model, err := c.modelByID(ctx, requestedID); err == nil {
+			emitted := false
+			wrappedDelta := func(delta llm.StreamDelta) {
+				if delta.Content != "" || delta.ReasoningContent != "" {
+					emitted = true
+				}
+				if onDelta != nil {
+					onDelta(delta)
+				}
+			}
+			client := c.clientForModel(model)
+			streamClient, ok := client.(llm.EventStreamClient)
+			var text string
+			if ok {
+				text, err = streamClient.StreamChatEvents(ctx, model.ModelName, messages, wrappedDelta)
+			} else {
+				text, err = client.StreamChat(ctx, model.ModelName, messages, func(delta string) {
+					wrappedDelta(llm.StreamDelta{Content: delta})
+				})
+			}
+			if err == nil {
+				return text, nil
+			}
+			if emitted {
+				return "", err
+			}
+			if doneErr := llmModelContextError(ctx, err); doneErr != nil {
+				return "", doneErr
+			}
+			log.Printf("specific streaming llm model failed id=%s model=%s err=%v; falling back to active model", model.ID, model.ModelName, err)
+		} else {
+			if doneErr := llmModelContextError(ctx, err); doneErr != nil {
+				return "", doneErr
+			}
+			log.Printf("specific streaming llm model unavailable id=%s err=%v; falling back to active model", requestedID, err)
+		}
+	}
 	models, err := c.availableModels(ctx)
 	if err != nil {
 		return "", err
@@ -166,10 +230,34 @@ func (c *DynamicLLMClient) activeModel(ctx context.Context) (*store.LLMModel, er
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errors.New(noActiveLLMModelMessage)
 		}
+		if doneErr := llmModelContextError(ctx, err); doneErr != nil {
+			return nil, doneErr
+		}
 		return nil, fmt.Errorf("读取当前启用 LLM 模型失败: %w", err)
 	}
 	if model.BaseURL == "" || model.ModelName == "" || model.APIKey == "" {
 		return nil, errors.New("当前启用 LLM 模型配置不完整，请在管理员端「模型」模块补齐端点、模型名和 API Key")
+	}
+	return model, nil
+}
+
+func (c *DynamicLLMClient) modelByID(ctx context.Context, id string) (*store.LLMModel, error) {
+	id = strings.TrimSpace(id)
+	if c == nil || c.store == nil {
+		return nil, errors.New(noActiveLLMModelMessage)
+	}
+	if id == "" {
+		return nil, errors.New("model id is empty")
+	}
+	model, err := c.store.GetLLMModel(ctx, id)
+	if err != nil {
+		if doneErr := llmModelContextError(ctx, err); doneErr != nil {
+			return nil, doneErr
+		}
+		return nil, err
+	}
+	if model.BaseURL == "" || model.ModelName == "" || model.APIKey == "" {
+		return nil, errors.New("指定 LLM 模型配置不完整，请在管理员端「模型」模块补齐端点、模型名和 API Key")
 	}
 	return model, nil
 }
@@ -184,6 +272,9 @@ func (c *DynamicLLMClient) availableModels(ctx context.Context) ([]*store.LLMMod
 	}
 	models, err := c.store.ListLLMModels(ctx)
 	if err != nil {
+		if doneErr := llmModelContextError(ctx, err); doneErr != nil {
+			return nil, doneErr
+		}
 		return nil, fmt.Errorf("读取 LLM 模型列表失败: %w", err)
 	}
 	out := make([]*store.LLMModel, 0, len(models)+1)
@@ -238,6 +329,16 @@ func (c *DynamicLLMClient) clientForModel(model *store.LLMModel) llm.Client {
 	})
 	c.clientByID[key] = client
 	return client
+}
+
+func llmModelContextError(ctx context.Context, err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 func isLLMModelConfigurationError(err error) bool {
@@ -334,4 +435,20 @@ func firstPositive(values ...int) int {
 		}
 	}
 	return 0
+}
+
+func llmModelIDToken(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return currentLLMModel
+	}
+	return llmModelIDPrefix + id
+}
+
+func requestedLLMModelID(modelToken string) string {
+	modelToken = strings.TrimSpace(modelToken)
+	if !strings.HasPrefix(modelToken, llmModelIDPrefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(modelToken, llmModelIDPrefix))
 }

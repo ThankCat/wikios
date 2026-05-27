@@ -8,17 +8,8 @@ mounted_wiki:
   qmd_index: ${WIKIOS_QMD_INDEX}
 
 llm:
-  timeout_sec: 90
+  timeout_sec: ${WIKIOS_LLM_TIMEOUT_SEC}
   admin_timeout_sec: ${WIKIOS_LLM_ADMIN_TIMEOUT_SEC}
-
-auth:
-  default_admin_username: ${WIKIOS_DEFAULT_ADMIN_USERNAME}
-  default_admin_password: ${WIKIOS_DEFAULT_ADMIN_PASSWORD}
-  session_cookie_name: wikios_admin_session
-  session_ttl_hours: 168
-  session_cookie_domain: ${WIKIOS_AUTH_COOKIE_DOMAIN}
-  session_cookie_secure: ${WIKIOS_AUTH_COOKIE_SECURE}
-  session_cookie_same_site: ${WIKIOS_AUTH_COOKIE_SAME_SITE}
 
 retrieval:
   top_k: 5
@@ -56,6 +47,7 @@ public_intents:
 public_query:
   candidate_top_k: ${WIKIOS_PUBLIC_CANDIDATE_TOP_K}
   max_evidence_chars: ${WIKIOS_PUBLIC_MAX_EVIDENCE_CHARS}
+  response_timeout_sec: ${WIKIOS_PUBLIC_RESPONSE_TIMEOUT_SEC}
   answer_log:
     enabled: ${WIKIOS_PUBLIC_ANSWER_LOG_ENABLED}
     redact: ${WIKIOS_PUBLIC_ANSWER_LOG_REDACT}

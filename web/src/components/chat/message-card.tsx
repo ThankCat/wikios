@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ArrowDown, BrainCircuit, ChevronDown, TerminalSquare } from "lucide-react";
+import { ArrowDown, BrainCircuit, ChevronDown } from "lucide-react";
 
 import { MarkdownContent } from "@/components/chat/markdown-content";
 import { useScrollFollow } from "@/lib/use-scroll-follow";
@@ -13,41 +13,49 @@ type Props = {
   content: string;
   createdAt?: string;
   details?: unknown;
+  detailMode?: "inline" | "after";
+  detailInitiallyOpen?: boolean;
   pending?: boolean;
   statusText?: string;
   selected?: boolean;
   onInspect?: (payload: { id: string; role: "user" | "assistant"; content: string; details?: unknown }) => void;
 };
 
-export function MessageCard({ id, role, content, createdAt, details, pending, statusText, selected, onInspect }: Props) {
+export function MessageCard({
+  id,
+  role,
+  content,
+  createdAt,
+  details,
+  detailMode = "inline",
+  detailInitiallyOpen,
+  pending,
+  statusText,
+  selected,
+  onInspect,
+}: Props) {
   const displayContent = role === "assistant" && content.trim() === "" && pending ? "正在处理..." : content;
   const detailObject = useMemo(() => asObject(details), [details]);
-  const executionObject = asObject(detailObject.execution);
-  const stepItems: unknown[] = Array.isArray(detailObject.steps)
-    ? detailObject.steps
-    : Array.isArray(executionObject.steps)
-      ? executionObject.steps
-      : [];
   const modelReasoning = typeof detailObject.reasoning === "string" ? detailObject.reasoning.trim() : "";
-  const processSummary = typeof detailObject.process_summary === "string" ? detailObject.process_summary.trim() : "";
+  const hasReasoningDetails = role === "assistant" && modelReasoning;
+  const durationText = role === "assistant" ? responseDurationText(detailObject) : "";
   return (
     <div className={cn("flex w-full", role === "user" ? "justify-end" : "justify-start")}>
       <div className={cn("flex w-full min-w-0 flex-col", role === "user" ? "items-end" : "items-start")}>
         {createdAt ? (
           <div className="mb-1 px-1 text-[10px] leading-4 text-slate-400">
             {formatMessageTime(createdAt)}
+            {durationText ? <span> · 耗时 {durationText}</span> : null}
           </div>
         ) : null}
         <div className={role === "user" ? "chat-bubble-user" : "chat-bubble-assistant"}>
-          {role === "assistant" && (modelReasoning || processSummary || stepItems.length > 0) ? (
-            <div className="mb-3 space-y-2">
-              {modelReasoning ? <InlineTracePanel title="模型思考" icon="reasoning" content={modelReasoning} pending={pending} /> : null}
-              {processSummary ? <InlineTracePanel title="处理摘要" icon="summary" content={processSummary} pending={pending} /> : null}
-              {stepItems.length > 0 ? <InlineTracePanel title="执行过程" icon="tools" steps={stepItems} pending={pending} /> : null}
+          {hasReasoningDetails && detailMode === "inline" ? (
+            <div className="mb-3">
+              <InlineTracePanel title="模型思考" content={modelReasoning} pending={pending} initiallyOpen={false} />
             </div>
           ) : null}
           {role === "assistant" ? (
-            <MarkdownContent className="prose prose-slate prose-sm max-w-none prose-table:my-0 prose-th:p-0 prose-td:p-0">
+            <MarkdownContent className="prose prose-slate prose-sm max-w-none dark:prose-invert prose-table:my-0 prose-th:p-0 prose-td:p-0">
               {displayContent}
             </MarkdownContent>
           ) : (
@@ -62,14 +70,14 @@ export function MessageCard({ id, role, content, createdAt, details, pending, st
                 type="button"
                 onClick={() => onInspect?.({ id, role, content, details })}
                 className={cn(
-                  "rounded-full border px-3 py-1.5 text-[11px] font-medium transition",
+                  "inline-flex h-8 items-center justify-center rounded-full border px-2.5 text-[11px] font-medium transition",
                   role === "user"
                     ? selected
                       ? "border-white/40 bg-white/15 text-white"
                       : "border-white/20 bg-white/5 text-white/85 hover:bg-white/10"
                     : selected
-                      ? "border-slate-900 bg-slate-900 text-white"
-                      : "border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100",
+                      ? "border-slate-900 bg-slate-900 text-white dark:border-white dark:bg-white dark:text-slate-950"
+                      : "border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-border dark:bg-secondary dark:text-muted-foreground dark:hover:bg-secondary/80 dark:hover:text-foreground",
                 )}
               >
                 {selected ? "正在查看详情" : "查看详情"}
@@ -77,6 +85,11 @@ export function MessageCard({ id, role, content, createdAt, details, pending, st
             </div>
           ) : null}
         </div>
+        {hasReasoningDetails && detailMode === "after" ? (
+          <div className="mt-2 w-full">
+            <InlineTracePanel title="模型思考" content={modelReasoning} pending={pending} initiallyOpen={detailInitiallyOpen} />
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -91,71 +104,77 @@ function formatMessageTime(value: string) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
+function responseDurationText(details: Record<string, unknown>) {
+  const source = asObject(details.response);
+  const receivedAt = typeof source.received_at === "string" ? source.received_at : typeof details.received_at === "string" ? details.received_at : "";
+  const answeredAt = typeof source.answered_at === "string" ? source.answered_at : typeof details.answered_at === "string" ? details.answered_at : "";
+  return formatDurationBetween(receivedAt, answeredAt);
+}
+
+function formatDurationBetween(startValue: string, endValue: string) {
+  if (!startValue || !endValue) {
+    return "";
+  }
+  const start = new Date(startValue).getTime();
+  const end = new Date(endValue).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+    return "";
+  }
+  const totalSeconds = Math.round((end - start) / 1000);
+  if (totalSeconds <= 0) {
+    return "";
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
 function InlineTracePanel({
   title,
-  icon,
   content,
-  steps,
   pending,
+  initiallyOpen,
 }: {
   title: string;
-  icon: "reasoning" | "summary" | "tools";
   content?: string;
-  steps?: unknown[];
   pending?: boolean;
+  initiallyOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  const Icon = icon === "tools" ? TerminalSquare : BrainCircuit;
-  const count = steps?.length ?? 0;
+  const [open, setOpen] = useState(() => (initiallyOpen === undefined ? Boolean(pending || content) : initiallyOpen));
   const traceScroll = useScrollFollow<HTMLPreElement>([content, open]);
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white/80 text-left shadow-sm">
+    <section className="rounded-2xl border border-slate-200 bg-white/80 text-left shadow-sm dark:border-border dark:bg-card/80 dark:shadow-none">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-xs font-medium text-slate-700"
+        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-xs font-medium text-slate-700 dark:text-foreground"
         title={open ? `收起${title}` : `展开${title}`}
       >
         <span className="flex min-w-0 items-center gap-2">
-          <Icon className={cn("h-3.5 w-3.5", pending ? "animate-pulse text-slate-500" : "text-slate-500")} />
+          <BrainCircuit className={cn("h-3.5 w-3.5", pending ? "animate-pulse text-slate-500" : "text-slate-500")} />
           <span>{title}</span>
           {pending ? <span className="text-slate-400">生成中</span> : null}
-          {count > 0 ? <span className="text-slate-400">{count} 步</span> : null}
         </span>
         <ChevronDown className={cn("h-4 w-4 shrink-0 text-slate-400 transition", open ? "rotate-180" : "")} />
       </button>
       {open ? (
-        <div className="relative border-t border-slate-200 px-3 py-2">
+        <div className="relative border-t border-slate-200 px-3 py-2 dark:border-border">
           {content ? (
             <pre
               ref={traceScroll.viewportRef}
-              className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-3 text-xs leading-5 text-slate-600"
+              className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-3 text-xs leading-5 text-slate-600 dark:bg-secondary/60 dark:text-foreground/85"
             >
               {content}
             </pre>
-          ) : null}
-          {steps?.length ? (
-            <div className="space-y-2">
-              {steps.slice(-12).map((step, index) => {
-                const item = asObject(step);
-                return (
-                  <div key={index} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                    <div className="truncate text-xs font-semibold text-slate-800">{String(item.name ?? `Step ${index + 1}`)}</div>
-                    <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
-                      <span>{String(item.tool ?? "tool")}</span>
-                      <span>{String(item.status ?? "RUNNING")}</span>
-                      {item.duration_ms ? <span>{String(item.duration_ms)} ms</span> : null}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
           ) : null}
           {content && traceScroll.showControls ? (
             <button
               type="button"
               onClick={() => traceScroll.scrollToBottom()}
-              className="absolute bottom-4 right-5 inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-soft transition hover:bg-slate-50 hover:text-slate-950"
+              className="absolute bottom-4 right-5 inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-soft transition hover:bg-slate-50 hover:text-slate-950 dark:border-border dark:bg-card dark:text-muted-foreground dark:shadow-none dark:hover:bg-secondary dark:hover:text-foreground"
               title={`跳到${title}最新位置`}
             >
               <ArrowDown className="h-4 w-4" />

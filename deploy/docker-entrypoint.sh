@@ -3,6 +3,8 @@ set -eu
 
 wiki_root="${WIKIOS_WIKI_ROOT:-/data/wiki-repo}"
 wiki_url="${WIKIOS_WIKI_GIT_URL:-}"
+wiki_token="${WIKIOS_WIKI_GIT_TOKEN:-}"
+wiki_username="${WIKIOS_WIKI_GIT_USERNAME:-x-access-token}"
 wiki_remote="${WIKIOS_WIKI_GIT_REMOTE:-origin}"
 wiki_branch="${WIKIOS_WIKI_GIT_BRANCH:-main}"
 pull_on_start="${WIKIOS_WIKI_GIT_PULL_ON_START:-true}"
@@ -12,6 +14,46 @@ qmd_index="${WIKIOS_QMD_INDEX:-knowledge-base}"
 
 log() {
   printf '[wikios-entrypoint] %s\n' "$*"
+}
+
+redact_url() {
+  printf '%s' "$1" | sed -E 's#(https?://)[^/@]+@#\1redacted@#'
+}
+
+setup_git_noninteractive() {
+  ssh_cmd="${GIT_SSH_COMMAND:-ssh}"
+  case "$ssh_cmd" in *BatchMode*) ;; *) ssh_cmd="$ssh_cmd -o BatchMode=yes" ;; esac
+  case "$ssh_cmd" in *NumberOfPasswordPrompts*) ;; *) ssh_cmd="$ssh_cmd -o NumberOfPasswordPrompts=0" ;; esac
+  export GIT_TERMINAL_PROMPT=0
+  export GCM_INTERACTIVE=never
+  export SSH_ASKPASS=/bin/false
+  export SSH_ASKPASS_REQUIRE=never
+  export GIT_SSH_COMMAND="$ssh_cmd"
+
+  if [ -z "$wiki_token" ]; then
+    export GIT_ASKPASS=/bin/false
+    return 0
+  fi
+
+  askpass_dir="$(mktemp -d)"
+  askpass_path="$askpass_dir/askpass.sh"
+  cat > "$askpass_path" <<'EOF'
+#!/bin/sh
+case "$1" in
+  *sername*|*Username*) printf '%s\n' "$WIKIOS_GIT_ASKPASS_USERNAME" ;;
+  *) printf '%s\n' "$WIKIOS_GIT_ASKPASS_TOKEN" ;;
+esac
+EOF
+  chmod 700 "$askpass_path"
+  export GIT_ASKPASS="$askpass_path"
+  export WIKIOS_GIT_ASKPASS_USERNAME="$wiki_username"
+  export WIKIOS_GIT_ASKPASS_TOKEN="$wiki_token"
+}
+
+cleanup_git_noninteractive() {
+  if [ -n "${askpass_dir:-}" ] && [ -d "$askpass_dir" ]; then
+    rm -rf "$askpass_dir"
+  fi
 }
 
 is_true() {
@@ -32,7 +74,7 @@ sync_wiki_repo() {
   mkdir -p "$wiki_root"
 
   if dir_is_empty "$wiki_root"; then
-    log "cloning wiki repo into $wiki_root"
+    log "cloning wiki repo $(redact_url "$wiki_url") into $wiki_root"
     if [ -n "$wiki_branch" ]; then
       git clone --branch "$wiki_branch" "$wiki_url" "$wiki_root"
     else
@@ -56,11 +98,11 @@ sync_wiki_repo() {
   if git remote get-url "$wiki_remote" >/dev/null 2>&1; then
     current_url="$(git remote get-url "$wiki_remote")"
     if [ "$current_url" != "$wiki_url" ]; then
-      log "updating git remote $wiki_remote"
+      log "updating git remote $wiki_remote to $(redact_url "$wiki_url")"
       git remote set-url "$wiki_remote" "$wiki_url"
     fi
   else
-    log "adding git remote $wiki_remote"
+    log "adding git remote $wiki_remote as $(redact_url "$wiki_url")"
     git remote add "$wiki_remote" "$wiki_url"
   fi
 
@@ -87,7 +129,10 @@ sync_wiki_repo() {
   fi
 }
 
+setup_git_noninteractive
+trap cleanup_git_noninteractive EXIT
 sync_wiki_repo
+cleanup_git_noninteractive
 
 if is_true "$qmd_auto_collection" && [ -d "$wiki_root/wiki" ]; then
   log "ensuring qmd collection 'wiki' exists"

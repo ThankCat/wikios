@@ -5,17 +5,14 @@ import {
   Activity,
   Bot,
   CheckCircle2,
-  ChevronDown,
   ClipboardCheck,
   Database,
   Download,
   FileText,
   GitBranch,
   GitMerge,
-  LogOut,
   PanelLeft,
   PanelLeftClose,
-  Paperclip,
   Pencil,
   Plus,
   Power,
@@ -23,7 +20,9 @@ import {
   Save,
   SendHorizontal,
   Sparkles,
+  Square,
   Trash2,
+  Upload,
   Wrench,
   X,
   XCircle,
@@ -56,7 +55,6 @@ import type {
   ReviewTarget,
   SyncCommitResponse,
   SyncStatusResponse,
-  UploadStreamEvent,
 } from "@/types/api";
 
 type MessageStatus = "pending" | "streaming" | "done" | "error" | "cancelled";
@@ -90,6 +88,18 @@ type AdminConversation = {
   sessionState: AdminSessionState;
 };
 
+type AdminChatRuntime = {
+  storageKey: string;
+  initialized: boolean;
+  conversations: AdminConversation[];
+  activeId: string;
+  requestLabels: Record<string, string>;
+  controllers: Record<string, AbortController>;
+  locks: Record<string, boolean>;
+  listeners: Set<() => void>;
+  persistTimer?: number;
+};
+
 type LLMModelFormState = {
   id: string;
   display_name: string;
@@ -101,9 +111,105 @@ type LLMModelFormState = {
   admin_timeout_sec: string;
 };
 
-const storageKey = "wikios.admin.chat";
-const sidebarStorageKey = "wikios.admin.sidebar.open";
-const drawerWidthStorageKey = "wikios.admin.detail.width";
+type AdminChatProps = {
+  username: string;
+  embedded?: boolean;
+  title?: string;
+  subtitle?: string;
+  sidebarTitle?: string;
+  sidebarSubtitle?: string;
+  storageKey?: string;
+  sidebarStorageKey?: string;
+  showAdminShortcuts?: boolean;
+  showKnowledgeTasks?: boolean;
+  onKnowledgeChanged?: () => void;
+};
+
+const defaultStorageKey = "wikios.admin.chat";
+const defaultSidebarStorageKey = "wikios.admin.sidebar.open";
+const adminChatRuntimes = new Map<string, AdminChatRuntime>();
+
+type KnowledgeTaskAction = {
+  id: string;
+  label: string;
+  title: string;
+  mode: string;
+  message: string;
+  icon: typeof Activity;
+};
+
+const knowledgeTaskActions: KnowledgeTaskAction[] = [
+  {
+    id: "lint",
+    label: "健康检查",
+    title: "按 Wiki 的 LINT 规则执行健康检查",
+    mode: "lint",
+    message: "执行一次健康检查，并在回答里说明发现的问题、执行过的动作和建议的下一步。",
+    icon: Activity,
+  },
+  {
+    id: "reflect",
+    label: "综合分析",
+    title: "让 LLM 按 Wiki 的 REFLECT 规则做综合分析",
+    mode: "reflect",
+    message: "请做一次综合反思分析，聚焦知识库结构、缺口、重复内容和可维护性。",
+    icon: Sparkles,
+  },
+  {
+    id: "repair",
+    label: "修复问题",
+    title: "让 LLM 按 Wiki 的 REPAIR 规则修复低风险问题",
+    mode: "repair",
+    message: "请尝试自动修复当前知识库中的低风险问题，并列出你实际修改或建议修改的内容。",
+    icon: Wrench,
+  },
+  {
+    id: "merge",
+    label: "合并冲突",
+    title: "让 LLM 按 Wiki 的 MERGE 规则提出合并方案，不自动合并",
+    mode: "merge",
+    message: "请根据 MERGE 操作规范检查当前知识库中的可合并、重复或冲突内容，只给出合并方案，不要自动执行合并。",
+    icon: GitMerge,
+  },
+];
+
+function getAdminChatRuntime(storageKey: string): AdminChatRuntime {
+  const existing = adminChatRuntimes.get(storageKey);
+  if (existing) {
+    return existing;
+  }
+  const runtime: AdminChatRuntime = {
+    storageKey,
+    initialized: false,
+    conversations: [],
+    activeId: "",
+    requestLabels: {},
+    controllers: {},
+    locks: {},
+    listeners: new Set(),
+  };
+  adminChatRuntimes.set(storageKey, runtime);
+  return runtime;
+}
+
+function notifyAdminChatRuntime(runtime: AdminChatRuntime) {
+  for (const listener of runtime.listeners) {
+    listener();
+  }
+}
+
+function scheduleAdminChatPersist(runtime: AdminChatRuntime) {
+  if (typeof window === "undefined" || runtime.conversations.length === 0) {
+    return;
+  }
+  if (runtime.persistTimer) {
+    window.clearTimeout(runtime.persistTimer);
+  }
+  runtime.persistTimer = window.setTimeout(() => {
+    localStorage.setItem(runtime.storageKey, JSON.stringify(runtime.conversations));
+    runtime.persistTimer = undefined;
+  }, 80);
+}
 
 function emptyAdminSessionState(): AdminSessionState {
   return {
@@ -173,7 +279,7 @@ function normalizeAdminConversation(value: unknown): AdminConversation | null {
     : [];
   return {
     id,
-    title: firstNonEmpty(stringValue(conversation, "title"), "管理员会话"),
+    title: firstNonEmpty(stringValue(conversation, "title"), "知识库会话"),
     messages,
     stream:
       typeof conversation.stream === "boolean" ? conversation.stream : true,
@@ -182,19 +288,30 @@ function normalizeAdminConversation(value: unknown): AdminConversation | null {
   };
 }
 
-export function AdminChat({ username }: { username: string }) {
-  const [conversations, setConversations] = useState<AdminConversation[]>([]);
-  const [activeId, setActiveId] = useState("");
+export function AdminChat({
+  username,
+  embedded = false,
+  title = "知识库助手",
+  subtitle = "围绕知识库进行检索、分析、修复和沉淀。",
+  sidebarTitle = "知识库会话",
+  sidebarSubtitle,
+  storageKey = defaultStorageKey,
+  sidebarStorageKey = defaultSidebarStorageKey,
+  showAdminShortcuts = true,
+  showKnowledgeTasks = false,
+  onKnowledgeChanged,
+}: AdminChatProps) {
+  const runtime = getAdminChatRuntime(storageKey);
+  const [conversations, setConversationsSnapshot] = useState<AdminConversation[]>(() => runtime.conversations);
+  const [activeId, setActiveIdSnapshot] = useState(() => runtime.activeId);
   const [composer, setComposer] = useState("");
   const [error, setError] = useState("");
   const [selectedDetailId, setSelectedDetailId] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [drawerWidth, setDrawerWidth] = useState(460);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const typingTimersRef = useRef<Record<string, number>>({});
-  const requestControllersRef = useRef<Record<string, AbortController>>({});
-  const sendLocksRef = useRef<Record<string, boolean>>({});
-  const [requestLabels, setRequestLabels] = useState<Record<string, string>>({});
+  const [requestLabels, setRequestLabelsSnapshot] = useState<Record<string, string>>(() => runtime.requestLabels);
   const [intentEditorOpen, setIntentEditorOpen] = useState(false);
   const [intentSource, setIntentSource] = useState("");
   const [intentStatus, setIntentStatus] = useState<PublicIntentsStatus | null>(
@@ -214,7 +331,6 @@ export function AdminChat({ username }: { username: string }) {
   const [syncMessageRule, setSyncMessageRule] = useState("");
   const [syncResult, setSyncResult] = useState<SyncCommitResponse | null>(null);
   const [syncError, setSyncError] = useState("");
-  const [toolsOpen, setToolsOpen] = useState(false);
   const [reviewCount, setReviewCount] = useState(0);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
@@ -234,7 +350,45 @@ export function AdminChat({ username }: { username: string }) {
   const [modelMessage, setModelMessage] = useState("");
   const [modelForm, setModelForm] = useState<LLMModelFormState>(() => emptyLLMModelForm());
 
+  function syncRuntimeSnapshot() {
+    setConversationsSnapshot(runtime.conversations);
+    setActiveIdSnapshot(runtime.activeId);
+    setRequestLabelsSnapshot({ ...runtime.requestLabels });
+  }
+
+  function setConversations(
+    updater: AdminConversation[] | ((current: AdminConversation[]) => AdminConversation[]),
+  ) {
+    runtime.conversations = typeof updater === "function" ? updater(runtime.conversations) : updater;
+    scheduleAdminChatPersist(runtime);
+    notifyAdminChatRuntime(runtime);
+  }
+
+  function setActiveId(updater: string | ((current: string) => string)) {
+    runtime.activeId = typeof updater === "function" ? updater(runtime.activeId) : updater;
+    notifyAdminChatRuntime(runtime);
+  }
+
+  function setRequestLabels(
+    updater: Record<string, string> | ((current: Record<string, string>) => Record<string, string>),
+  ) {
+    runtime.requestLabels = typeof updater === "function" ? updater(runtime.requestLabels) : updater;
+    notifyAdminChatRuntime(runtime);
+  }
+
   useEffect(() => {
+    runtime.listeners.add(syncRuntimeSnapshot);
+    syncRuntimeSnapshot();
+    return () => {
+      runtime.listeners.delete(syncRuntimeSnapshot);
+    };
+  }, [runtime]);
+
+  useEffect(() => {
+    if (runtime.initialized) {
+      syncRuntimeSnapshot();
+      return;
+    }
     const raw = localStorage.getItem(storageKey);
     if (raw) {
       try {
@@ -245,29 +399,28 @@ export function AdminChat({ username }: { username: string }) {
               .filter((item): item is AdminConversation => item !== null)
           : [];
         if (normalized.length > 0) {
-          setConversations(normalized);
-          setActiveId(normalized[0].id);
+          runtime.conversations = normalized;
+          runtime.activeId = normalized[0].id;
+          runtime.initialized = true;
+          notifyAdminChatRuntime(runtime);
           return;
         }
       } catch {}
     }
-    const initial = createConversation("管理员会话");
-    setConversations([initial]);
-    setActiveId(initial.id);
-  }, []);
+    const initial = createConversation("知识库会话");
+    runtime.conversations = [initial];
+    runtime.activeId = initial.id;
+    runtime.initialized = true;
+    scheduleAdminChatPersist(runtime);
+    notifyAdminChatRuntime(runtime);
+  }, [runtime, storageKey]);
 
   useEffect(() => {
     const raw = localStorage.getItem(sidebarStorageKey);
     if (raw === "0") {
       setSidebarOpen(false);
     }
-    const savedWidth = Number(
-      localStorage.getItem(drawerWidthStorageKey) ?? "",
-    );
-    if (Number.isFinite(savedWidth) && savedWidth >= 320 && savedWidth <= 960) {
-      setDrawerWidth(savedWidth);
-    }
-  }, []);
+  }, [sidebarStorageKey]);
 
   useEffect(() => {
     if (conversations.length === 0) {
@@ -277,15 +430,23 @@ export function AdminChat({ username }: { username: string }) {
       localStorage.setItem(storageKey, JSON.stringify(conversations));
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [conversations]);
+  }, [conversations, storageKey]);
+
+  useEffect(() => {
+    const element = composerRef.current;
+    if (!element) {
+      return;
+    }
+    const maxHeight = embedded ? 136 : 180;
+    element.style.height = "0px";
+    const nextHeight = Math.min(maxHeight, Math.max(embedded ? 38 : 48, element.scrollHeight));
+    element.style.height = `${nextHeight}px`;
+    element.style.overflowY = element.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [composer, embedded]);
 
   useEffect(() => {
     localStorage.setItem(sidebarStorageKey, sidebarOpen ? "1" : "0");
-  }, [sidebarOpen]);
-
-  useEffect(() => {
-    localStorage.setItem(drawerWidthStorageKey, String(drawerWidth));
-  }, [drawerWidth]);
+  }, [sidebarOpen, sidebarStorageKey]);
 
   const activeConversation = useMemo(
     () =>
@@ -298,6 +459,7 @@ export function AdminChat({ username }: { username: string }) {
     () => models.find((model) => model.is_active) ?? null,
     [models],
   );
+  const forceStream = showKnowledgeTasks;
   const selectedDetail = useMemo(
     () =>
       activeConversation?.messages.find(
@@ -373,19 +535,6 @@ export function AdminChat({ username }: { username: string }) {
     };
   }, [activeConversation, busy, composer, contextEstimateKey]);
 
-  useEffect(
-    () => () => {
-      Object.values(requestControllersRef.current).forEach((controller) => controller.abort());
-      requestControllersRef.current = {};
-      sendLocksRef.current = {};
-      Object.values(typingTimersRef.current).forEach((timer) =>
-        window.clearTimeout(timer),
-      );
-      typingTimersRef.current = {};
-    },
-    [],
-  );
-
   useEffect(() => {
     void refreshReviewCount();
     const timer = window.setInterval(() => {
@@ -394,48 +543,16 @@ export function AdminChat({ username }: { username: string }) {
     return () => window.clearInterval(timer);
   }, []);
 
-  function startDrawerResize(clientX?: number) {
-    if (typeof clientX === "number") {
-      setDrawerWidth(
-        Math.min(960, Math.max(320, window.innerWidth - clientX)),
-      );
-    }
-    const handleMove = (event: PointerEvent) => {
-      const nextWidth = Math.min(
-        960,
-        Math.max(320, window.innerWidth - event.clientX),
-      );
-      setDrawerWidth(nextWidth);
-    };
-    const handleUp = () => {
-      window.removeEventListener("pointermove", handleMove);
-      window.removeEventListener("pointerup", handleUp);
-      window.removeEventListener("pointercancel", handleUp);
-    };
-    window.addEventListener("pointermove", handleMove);
-    window.addEventListener("pointerup", handleUp);
-    window.addEventListener("pointercancel", handleUp);
-  }
-
   function startConversationRequest(conversationId: string, controller: AbortController, label: string) {
-    requestControllersRef.current[conversationId] = controller;
+    runtime.controllers[conversationId] = controller;
     setRequestLabels((current) => ({ ...current, [conversationId]: label }));
   }
 
-  function setConversationBusyLabel(conversationId: string, label: string) {
-    setRequestLabels((current) => {
-      if (!current[conversationId]) {
-        return current;
-      }
-      return { ...current, [conversationId]: label };
-    });
-  }
-
   function finishConversationRequest(conversationId: string, controller?: AbortController) {
-    if (controller && requestControllersRef.current[conversationId] !== controller) {
+    if (controller && runtime.controllers[conversationId] !== controller) {
       return;
     }
-    delete requestControllersRef.current[conversationId];
+    delete runtime.controllers[conversationId];
     setRequestLabels((current) => {
       if (!current[conversationId]) {
         return current;
@@ -459,12 +576,12 @@ export function AdminChat({ username }: { username: string }) {
       return;
     }
     const conversationId = activeConversation.id;
-    if (sendLocksRef.current[conversationId]) {
+    if (runtime.locks[conversationId]) {
       return;
     }
-    sendLocksRef.current[conversationId] = true;
+    runtime.locks[conversationId] = true;
     try {
-      const stream = overrides?.stream ?? activeConversation.stream;
+      const stream = forceStream ? true : (overrides?.stream ?? activeConversation.stream);
       const request = buildAdminRequest(activeConversation, text, {
         ...overrides,
         stream,
@@ -479,7 +596,7 @@ export function AdminChat({ username }: { username: string }) {
       setComposer("");
       setError("");
       const controller = new AbortController();
-      startConversationRequest(conversationId, controller, stream ? "正在执行管理员会话..." : "正在处理管理员请求...");
+      startConversationRequest(conversationId, controller, stream ? "正在执行知识库会话..." : "正在处理知识库请求...");
       if (stream) {
         const assistantId = createId();
         appendMessage(conversationId, {
@@ -562,7 +679,99 @@ export function AdminChat({ username }: { username: string }) {
         finishConversationRequest(conversationId, controller);
       }
     } finally {
-      delete sendLocksRef.current[conversationId];
+      delete runtime.locks[conversationId];
+    }
+  }
+
+  async function runKnowledgeTask(action: KnowledgeTaskAction) {
+    if (busy) {
+      return;
+    }
+    await send(action.message, {
+      mode_hint: action.mode,
+      stream: true,
+      context: {
+        task_kind: action.id,
+        task_label: action.label,
+        source: "knowledge_assistant",
+      },
+    });
+  }
+
+  async function uploadKnowledgeFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file || !activeConversation || busy) {
+      return;
+    }
+    const conversationId = activeConversation.id;
+    if (runtime.locks[conversationId]) {
+      return;
+    }
+    runtime.locks[conversationId] = true;
+    const userText = `上传并摄入：${file.name}`;
+    const userMessage: AdminMessage = {
+      id: createId(),
+      role: "user",
+      content: userText,
+      created_at: new Date().toISOString(),
+    };
+    const assistantId = createId();
+    appendMessage(conversationId, userMessage);
+    appendMessage(conversationId, {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      created_at: new Date().toISOString(),
+      status: "streaming",
+      details: {
+        prompts: [],
+        steps: [
+          {
+            name: "准备上传文件",
+            tool: "upload",
+            status: "SUCCESS",
+            input: {
+              file_name: file.name,
+              size: file.size,
+              type: file.type || "unknown",
+            },
+          },
+        ],
+      },
+    });
+    setComposer("");
+    setError("");
+    const controller = new AbortController();
+    startConversationRequest(conversationId, controller, "正在上传并摄入知识库...");
+    try {
+      await api.uploadStream(
+        file,
+        (event) => handleUploadStreamEvent(conversationId, assistantId, event),
+        controller.signal,
+      );
+      renameConversation(conversationId, userText);
+      onKnowledgeChanged?.();
+    } catch (reason) {
+      if (isAbortError(reason)) {
+        patchMessage(conversationId, assistantId, {
+          content: (prev) => prev || "已停止上传摄入任务。",
+          status: "cancelled",
+        });
+      } else {
+        const message = reason instanceof Error ? reason.message : "上传摄入失败";
+        setError(message);
+        patchMessage(conversationId, assistantId, {
+          content: `上传摄入失败：${message}`,
+          status: "error",
+        });
+        mergeDetails(conversationId, assistantId, { error: { message } });
+      }
+    } finally {
+      finishConversationRequest(conversationId, controller);
+      delete runtime.locks[conversationId];
+      if (uploadInputRef.current) {
+        uploadInputRef.current.value = "";
+      }
     }
   }
 
@@ -570,7 +779,7 @@ export function AdminChat({ username }: { username: string }) {
     if (!activeConversation) {
       return;
     }
-    const controller = requestControllersRef.current[activeConversation.id];
+    const controller = runtime.controllers[activeConversation.id];
     controller?.abort();
     finishConversationRequest(activeConversation.id, controller);
   }
@@ -1043,6 +1252,7 @@ export function AdminChat({ username }: { username: string }) {
         status: "done",
       });
       mergeDetails(conversationId, assistantId, {
+        response: data,
         result: data.details,
         execution: data.execution,
         steps: data.execution?.steps ?? [],
@@ -1108,6 +1318,130 @@ export function AdminChat({ username }: { username: string }) {
         status: "done",
       });
       mergeDetails(conversationId, assistantId, { execution: data.execution });
+      onKnowledgeChanged?.();
+      return;
+    }
+  }
+
+  function handleUploadStreamEvent(
+    conversationId: string,
+    assistantId: string,
+    event: AdminStreamEvent,
+  ) {
+    if (event.type === "meta") {
+      const data = (event.data ?? {}) as Record<string, unknown>;
+      updateLastMode(conversationId, String(data.mode ?? "ingest"));
+      mergeDetails(conversationId, assistantId, {
+        execution: {
+          id: data.execution_id,
+          kind: data.mode ?? "ingest",
+          status: "RUNNING",
+          started_at: data.started_at,
+        },
+        upload: {
+          file_name: data.file_name,
+          stored_path: data.stored_path,
+          source_format: data.source_format,
+          media_kind: data.media_kind,
+        },
+      });
+      return;
+    }
+    if (event.type === "prompt") {
+      appendEventDetail(
+        conversationId,
+        assistantId,
+        "prompts",
+        summarizePromptEvent(event.data),
+        8,
+      );
+      return;
+    }
+    if (event.type === "result") {
+      const data = asRecord(event.data);
+      const reply = firstNonEmpty(stringValue(data, "reply"), "上传并摄入完成。");
+      const details = asRecord(data.details);
+      const execution = asRecord(data.execution);
+      applySessionStatePatch(
+        conversationId,
+        "ingest",
+        reply,
+        details,
+        { steps: executionSteps(execution) },
+      );
+      patchMessage(conversationId, assistantId, {
+        content: "",
+        status: "done",
+      });
+      mergeDetails(conversationId, assistantId, {
+        response: data,
+        result: details,
+        execution,
+        steps: executionSteps(execution),
+      });
+      void animateAssistantReply(conversationId, assistantId, reply);
+      return;
+    }
+    if (event.type === "error") {
+      const data = asRecord(event.data);
+      const message = String(data.message ?? "上传摄入失败");
+      patchMessage(conversationId, assistantId, {
+        content: `上传摄入失败：${message}`,
+        status: "error",
+      });
+      mergeDetails(conversationId, assistantId, { error: data });
+      setError(message);
+      return;
+    }
+    if (event.type === "step_start" || event.type === "step_finish") {
+      appendEventDetail(
+        conversationId,
+        assistantId,
+        "steps",
+        summarizeStepEvent(event.data),
+        40,
+      );
+      return;
+    }
+    if (event.type === "llm_delta") {
+      const data = asRecord(event.data);
+      mergeDetails(conversationId, assistantId, {
+        llm_stream_preview: truncateText(String(data.delta ?? ""), 400),
+      });
+      return;
+    }
+    if (event.type === "llm_reasoning_delta") {
+      const data = asRecord(event.data);
+      appendDetailText(conversationId, assistantId, "reasoning", String(data.delta ?? ""), 12000);
+      appendEventDetail(
+        conversationId,
+        assistantId,
+        "reasoning_events",
+        {
+          name: data.name,
+          delta: data.delta,
+          created_at: data.created_at,
+        },
+        80,
+      );
+      return;
+    }
+    if (event.type === "llm_done") {
+      const data = asRecord(event.data);
+      const reasoning = String(data.reasoning ?? "");
+      mergeDetails(conversationId, assistantId, {
+        llm_done: event.data,
+        ...(reasoning.trim() !== "" ? { reasoning } : {}),
+      });
+      return;
+    }
+    if (event.type === "done") {
+      const data = asRecord(event.data);
+      patchMessage(conversationId, assistantId, {
+        status: "done",
+      });
+      mergeDetails(conversationId, assistantId, { execution: data.execution });
+      onKnowledgeChanged?.();
     }
   }
 
@@ -1346,7 +1680,7 @@ export function AdminChat({ username }: { username: string }) {
   }
 
   function createNewConversation() {
-    const next = createConversation("管理员会话");
+    const next = createConversation("知识库会话");
     setConversations((current) => [next, ...current]);
     setActiveId(next.id);
     setSelectedDetailId("");
@@ -1354,13 +1688,13 @@ export function AdminChat({ username }: { username: string }) {
   }
 
   function deleteConversation(id: string) {
-    const controller = requestControllersRef.current[id];
+    const controller = runtime.controllers[id];
     controller?.abort();
     finishConversationRequest(id, controller);
     setConversations((current) => {
       const remaining = current.filter((item) => item.id !== id);
       if (remaining.length === 0) {
-        const fallback = createConversation("管理员会话");
+        const fallback = createConversation("知识库会话");
         setActiveId(fallback.id);
         return [fallback];
       }
@@ -1374,198 +1708,6 @@ export function AdminChat({ username }: { username: string }) {
     });
   }
 
-  async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file || !activeConversation || busy) {
-      return;
-    }
-    setError("");
-    const conversationId = activeConversation.id;
-    appendMessage(conversationId, {
-      id: createId(),
-      role: "user",
-      content: `上传文件：${file.name}`,
-      created_at: new Date().toISOString(),
-    });
-    const assistantId = createId();
-    appendMessage(conversationId, {
-      id: assistantId,
-      role: "assistant",
-      content: "",
-      created_at: new Date().toISOString(),
-      status: "pending",
-      details: {
-        phase: "upload",
-        file_name: file.name,
-      },
-    });
-    const controller = new AbortController();
-    startConversationRequest(conversationId, controller, "正在上传并摄入文件...");
-    try {
-      await api.uploadStream(
-        file,
-        (streamEvent) =>
-          handleUploadStreamEvent(
-            conversationId,
-            assistantId,
-            streamEvent,
-          ),
-        controller.signal,
-      );
-    } catch (reason) {
-      if (isAbortError(reason)) {
-        patchMessage(conversationId, assistantId, {
-          content: "已取消上传和摄入。",
-          status: "cancelled",
-        });
-      } else {
-        const message = reason instanceof Error ? reason.message : "上传失败";
-        setError(message);
-        const errorDetails =
-          reason instanceof APIError &&
-          reason.payload &&
-          typeof reason.payload === "object"
-            ? ((reason.payload as { details?: unknown }).details ?? {
-                error: message,
-                kind: "upload_validation",
-              })
-            : {
-                error: message,
-                kind: "upload_validation",
-              };
-        patchMessage(conversationId, assistantId, {
-          content: message,
-          status: "error",
-          details: errorDetails,
-        });
-      }
-    } finally {
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-      finishConversationRequest(conversationId, controller);
-    }
-  }
-
-  function handleUploadStreamEvent(
-    conversationId: string,
-    assistantId: string,
-    event: UploadStreamEvent,
-  ) {
-    if (event.type === "meta") {
-      const data = asRecord(event.data);
-      mergeDetails(conversationId, assistantId, {
-        execution: {
-          id: data.execution_id,
-          kind: data.mode ?? "ingest",
-          status: "RUNNING",
-          started_at: data.started_at,
-        },
-        file_name: data.file_name,
-        media_kind: data.media_kind,
-        stored_path: data.stored_path,
-        source_format: data.source_format,
-      });
-      patchMessage(conversationId, assistantId, {
-        content: "文档已保存，正在按 AGENT 规则处理...",
-        status: "streaming",
-      });
-      setConversationBusyLabel(conversationId, "正在处理文档...");
-      return;
-    }
-    if (event.type === "prompt") {
-      appendEventDetail(
-        conversationId,
-        assistantId,
-        "prompts",
-        summarizePromptEvent(event.data),
-        16,
-      );
-      return;
-    }
-    if (event.type === "step_start" || event.type === "step_finish") {
-      appendEventDetail(
-        conversationId,
-        assistantId,
-        "steps",
-        summarizeStepEvent(event.data),
-        80,
-      );
-      return;
-    }
-    if (event.type === "llm_delta") {
-      const data = asRecord(event.data);
-      mergeDetails(conversationId, assistantId, {
-        llm_stream_preview: truncateText(String(data.delta ?? ""), 400),
-      });
-      return;
-    }
-    if (event.type === "llm_reasoning_delta") {
-      const data = asRecord(event.data);
-      appendDetailText(conversationId, assistantId, "reasoning", String(data.delta ?? ""), 12000);
-      appendEventDetail(
-        conversationId,
-        assistantId,
-        "reasoning_events",
-        {
-          name: data.name,
-          delta: data.delta,
-          created_at: data.created_at,
-        },
-        80,
-      );
-      return;
-    }
-    if (event.type === "llm_done") {
-      const data = asRecord(event.data);
-      const reasoning = String(data.reasoning ?? "");
-      mergeDetails(conversationId, assistantId, {
-        llm_done: event.data,
-        ...(reasoning.trim() !== "" ? { reasoning } : {}),
-      });
-      return;
-    }
-    if (event.type === "result") {
-      const data = asRecord(event.data);
-      const reply = String(data.reply ?? "");
-      const details = asRecord(data.details);
-      const execution = asRecord(data.execution);
-      applySessionStatePatch(
-        conversationId,
-        "ingest",
-        reply,
-        details,
-        execution as { steps?: Array<{ tool?: string }> },
-      );
-      patchMessage(conversationId, assistantId, {
-        content: reply,
-        status: execution.status === "FAILED" ? "error" : "done",
-      });
-      mergeDetails(conversationId, assistantId, {
-        result: details,
-        execution,
-        steps: Array.isArray(execution.steps) ? execution.steps : [],
-      });
-      updateLastMode(conversationId, "ingest");
-      return;
-    }
-    if (event.type === "error") {
-      const data = asRecord(event.data);
-      const message = String(data.message ?? "上传摄入失败");
-      patchMessage(conversationId, assistantId, {
-        content: `执行失败：${message}`,
-        status: "error",
-      });
-      mergeDetails(conversationId, assistantId, { error: data });
-      setError(message);
-      return;
-    }
-    if (event.type === "done") {
-      const data = asRecord(event.data);
-      mergeDetails(conversationId, assistantId, { execution: data.execution });
-    }
-  }
-
   const sidebarItems: ConversationItem[] = conversations.map((item) => ({
     id: item.id,
     title: item.title,
@@ -1573,11 +1715,18 @@ export function AdminChat({ username }: { username: string }) {
   }));
 
   return (
-    <div className={cn("chat-shell", !sidebarOpen && "chat-shell-collapsed")}>
+	    <div
+	      className={cn(
+	        embedded ? "grid h-full min-h-0 grid-cols-1 gap-2 overflow-hidden p-2" : "chat-shell",
+	        embedded && sidebarOpen && "lg:grid-cols-[232px_minmax(0,1fr)]",
+	        embedded && !sidebarOpen && "lg:grid-cols-1",
+	        !embedded && !sidebarOpen && "chat-shell-collapsed",
+	      )}
+	    >
       {sidebarOpen ? (
         <ConversationSidebar
-          title="管理员后台"
-          subtitle={`已登录：${username}`}
+          title={sidebarTitle}
+          subtitle={sidebarSubtitle ?? `已登录：${username}`}
           variant="admin"
           items={sidebarItems}
           activeId={activeConversation?.id ?? ""}
@@ -1586,126 +1735,133 @@ export function AdminChat({ username }: { username: string }) {
           onDelete={deleteConversation}
         />
       ) : null}
-      <section className="panel-glass relative flex h-full min-h-0 flex-col overflow-hidden">
-        <header className="border-b px-6 py-5">
+      <section className={cn("relative flex h-full min-h-0 flex-col overflow-hidden", embedded ? "rounded-2xl border bg-white shadow-sm dark:bg-card dark:shadow-none" : "panel-glass")}>
+        <header className={cn("relative z-10", embedded ? "px-4 pb-0 pt-3" : "border-b px-6 py-5")}>
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => setSidebarOpen((value) => !value)}
-                title="显示或隐藏左侧会话列表"
-              >
-                {sidebarOpen ? (
-                  <PanelLeftClose className="mr-2 h-4 w-4" />
-                ) : (
-                  <PanelLeft className="mr-2 h-4 w-4" />
-                )}
-                {sidebarOpen ? "隐藏会话" : "显示会话"}
-              </Button>
-              <div>
-                <h1 className="text-lg font-semibold">管理员对话工作台</h1>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  上传摄入、健康检查和修复都在同一会话里完成。
-                </p>
+            <div className="flex min-w-0 items-center gap-2">
+              {embedded ? (
+                <button
+                  type="button"
+                  onClick={() => setSidebarOpen((value) => !value)}
+                  title="显示或隐藏左侧会话列表"
+                  aria-label={sidebarOpen ? "隐藏会话列表" : "显示会话列表"}
+	                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 dark:text-muted-foreground dark:hover:bg-secondary dark:hover:text-foreground dark:focus-visible:ring-ring"
+                >
+                  {sidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeft className="h-4 w-4" />}
+                </button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSidebarOpen((value) => !value)}
+                  title="显示或隐藏左侧会话列表"
+                >
+                  {sidebarOpen ? <PanelLeftClose className="mr-2 h-4 w-4" /> : <PanelLeft className="mr-2 h-4 w-4" />}
+                  {sidebarOpen ? "隐藏会话" : "显示会话"}
+                </Button>
+              )}
+              <div className="min-w-0">
+                <h1 className={cn("truncate font-semibold", embedded ? "text-base" : "text-lg")}>{title}</h1>
+                {!showKnowledgeTasks && subtitle ? (
+                  <p className={cn("mt-0.5 truncate text-muted-foreground", embedded ? "text-xs" : "text-sm")}>
+                    {subtitle}
+                  </p>
+                ) : null}
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void openModelModal()}
-                disabled={modelsLoading}
-                title="管理并切换当前 LLM 模型"
-              >
-                <Bot className="mr-2 h-4 w-4" />
-                模型
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void openIntentEditor()}
-                disabled={intentLoading}
-                title="编辑 server 端前置话术 YAML"
-              >
-                <FileText className="mr-2 h-4 w-4" />
-                前置话术
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void openReviewModal()}
-                disabled={reviewLoading}
-                title="逐条审查 LLM 低置信自答内容"
-                className="relative"
-              >
-                <ClipboardCheck className="mr-2 h-4 w-4" />
-                问题审查
-                {reviewCount > 0 ? (
-                  <span className="absolute -right-2 -top-2 min-w-5 rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
-                    {reviewCount > 99 ? "99+" : reviewCount}
-                  </span>
-                ) : null}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => window.open("/admin/wiki", "_blank")}
-                title="打开 Wiki 资料库浏览器"
-              >
-                <Database className="mr-2 h-4 w-4" />
-                资料库
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void openSyncModal()}
-                disabled={syncBusy}
-                title="查看 Wiki Git 变更，选择文件提交并推送"
-              >
-                <GitBranch className="mr-2 h-4 w-4" />
-                同步
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() =>
-                  activeConversation &&
-                  deleteConversation(activeConversation.id)
-                }
-                title="删除当前本地会话记录"
-              >
-                <Trash2 className="mr-2 h-4 w-4" />
-                删除会话
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={async () => {
-                  await api.logout();
-                  window.location.href = "/admin/login";
-                }}
-                title="退出管理员登录"
-              >
-                <LogOut className="mr-2 h-4 w-4" />
-                退出
-              </Button>
+              {showAdminShortcuts ? (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void openModelModal()}
+                    disabled={modelsLoading}
+                    title="管理并切换当前 LLM 模型"
+                  >
+                    <Bot className="mr-2 h-4 w-4" />
+                    模型
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void openIntentEditor()}
+                    disabled={intentLoading}
+                    title="编辑 server 端前置话术 YAML"
+                  >
+                    <FileText className="mr-2 h-4 w-4" />
+                    前置话术
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void openReviewModal()}
+                    disabled={reviewLoading}
+                    title="逐条审查 LLM 低置信自答内容"
+                    className="relative"
+                  >
+                    <ClipboardCheck className="mr-2 h-4 w-4" />
+                    问题审查
+                    {reviewCount > 0 ? (
+                      <span className="absolute -right-2 -top-2 min-w-5 rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                        {reviewCount > 99 ? "99+" : reviewCount}
+                      </span>
+                    ) : null}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => window.open("/knowledge?view=browse", "_blank")}
+                    title="打开知识库浏览"
+                  >
+                    <Database className="mr-2 h-4 w-4" />
+                    资料库
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void openSyncModal()}
+                    disabled={syncBusy}
+                    title="查看 Wiki Git 变更，选择文件提交并推送"
+                  >
+                    <GitBranch className="mr-2 h-4 w-4" />
+                    同步
+                  </Button>
+                </>
+              ) : null}
+              {showKnowledgeTasks ? (
+                <KnowledgeTaskCommandBar
+                  actions={knowledgeTaskActions}
+                  busy={busy}
+                  onRun={(action) => void runKnowledgeTask(action)}
+                  onUpload={() => uploadInputRef.current?.click()}
+                />
+              ) : null}
+              {!showKnowledgeTasks ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    activeConversation &&
+                    deleteConversation(activeConversation.id)
+                  }
+                  title="删除当前本地会话记录"
+                  className={cn(embedded && "h-8 px-2 text-xs")}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  删除会话
+                </Button>
+              ) : null}
             </div>
           </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            onChange={handleUpload}
-          />
         </header>
         <div className="relative min-h-0 flex-1">
           <ScrollArea
             viewportRef={chatScroll.viewportRef}
-            className="h-full px-6 py-5"
+            className={cn("h-full", embedded ? "px-4 py-3" : "px-6 py-5")}
           >
-            <div className="mx-auto flex max-w-3xl flex-col gap-4 pb-8">
+            <div className={cn("mx-auto flex flex-col gap-4 pb-8", embedded ? "max-w-2xl" : "max-w-3xl")}>
               {activeConversation?.messages.map((message) => (
                 <MessageCard
                   key={message.id}
@@ -1732,9 +1888,17 @@ export function AdminChat({ username }: { username: string }) {
             className="bottom-4 right-6"
           />
         </div>
-        <div className="border-t bg-white/65 px-4 py-3 backdrop-blur">
-          <div className="mx-auto max-w-4xl">
-            <div className="mb-2 flex items-center justify-between gap-3 px-3 text-xs text-muted-foreground">
+        <div className={cn("bg-white/85 backdrop-blur dark:bg-card/85", embedded ? "px-4 py-3" : "border-t px-4 py-3")}>
+          <div className={cn("mx-auto", embedded ? "max-w-3xl" : "max-w-4xl")}>
+            {showKnowledgeTasks ? (
+              <input
+                ref={uploadInputRef}
+                type="file"
+                className="hidden"
+                onChange={(event) => void uploadKnowledgeFile(event)}
+              />
+            ) : null}
+            <div className={cn("mb-2 flex items-center justify-between gap-3 px-1 text-xs text-muted-foreground", embedded && "text-[11px]")}>
               <span className="truncate">
                 {error || busyLabel || "支持多轮上下文，执行过程可在消息内展开。"}
               </span>
@@ -1744,62 +1908,9 @@ export function AdminChat({ username }: { username: string }) {
                 onNewConversation={createNewConversation}
               />
             </div>
-            <div className="rounded-[24px] border bg-white px-3 py-2 shadow-soft">
-              {toolsOpen ? (
-                <div className="mb-2 flex flex-wrap items-center gap-2 border-b border-slate-100 pb-2">
-                  <ComposerToolButton
-                    icon={Paperclip}
-                    label="上传并摄入"
-                    disabled={busy}
-                    title="选择文件并交给 server 摄入到 Wiki"
-                    onClick={() => fileInputRef.current?.click()}
-                  />
-                  <ComposerToolButton
-                    icon={Activity}
-                    label="健康检查"
-                    disabled={busy}
-                    title="按 Wiki 的 LINT 规则执行健康检查"
-                    onClick={() =>
-                      void send("执行一次健康检查", { mode_hint: "lint" })
-                    }
-                  />
-                  <ComposerToolButton
-                    icon={Sparkles}
-                    label="综合分析"
-                    disabled={busy}
-                    title="让 LLM 按 Wiki 的 REFLECT 规则做综合分析"
-                    onClick={() =>
-                      void send("请做一次综合反思分析", {
-                        mode_hint: "reflect",
-                      })
-                    }
-                  />
-                  <ComposerToolButton
-                    icon={Wrench}
-                    label="修复问题"
-                    disabled={busy}
-                    title="让 LLM 按 Wiki 的 REPAIR 规则修复低风险问题"
-                    onClick={() =>
-                      void send("请尝试自动修复当前上下文中的低风险问题", {
-                        mode_hint: "repair",
-                      })
-                    }
-                  />
-                  <ComposerToolButton
-                    icon={GitMerge}
-                    label="合并冲突"
-                    disabled={busy}
-                    title="让 LLM 按 Wiki 的 MERGE 规则提出合并方案，不自动合并"
-                    onClick={() =>
-                      void send(
-                        "请根据 MERGE 操作规范检查当前上下文中的可合并或去重项，只给出合并方案，不要自动执行合并。",
-                        { mode_hint: "merge" },
-                      )
-                    }
-                  />
-                </div>
-              ) : null}
+            <div className={cn("rounded-2xl border bg-white px-3 py-2 dark:bg-background", embedded ? "shadow-sm dark:shadow-none" : "shadow-soft dark:shadow-none")}>
               <Textarea
+                ref={composerRef}
                 value={composer}
                 onChange={(event) => setComposer(event.target.value)}
                 onKeyDown={(event) => {
@@ -1811,90 +1922,91 @@ export function AdminChat({ username }: { username: string }) {
                     void send();
                   }
                 }}
-                className="min-h-[54px] resize-none border-0 bg-transparent px-2 py-2 shadow-none focus-visible:ring-0"
-                placeholder="要求后续变更"
+                rows={1}
+                className={cn("resize-none overflow-hidden border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0", embedded ? "min-h-[38px]" : "min-h-[48px]")}
+                placeholder="输入知识库问题或运维要求"
               />
-              <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100 hover:text-slate-950"
-                    onClick={() => setToolsOpen((value) => !value)}
-                    title={toolsOpen ? "隐藏工具" : "展开工具"}
-                  >
-                    {toolsOpen ? <ChevronDown className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-                  </button>
-                </div>
+              <div className="mt-1 flex flex-wrap items-center justify-end gap-2">
                 <div className="flex items-center gap-2">
-                  <div
-                    className="flex rounded-full border bg-slate-50 p-0.5"
-                    title="选择本次管理员回复方式"
-                  >
-                    <button
-                      type="button"
-                      className={cn(
-                        "rounded-full px-3 py-1 text-xs transition",
-                        activeConversation?.stream
-                          ? "bg-white text-slate-950 shadow-sm"
-                          : "text-muted-foreground hover:text-slate-950",
-                      )}
-                      onClick={() => {
-                        setConversations((current) =>
-                          current.map((item) =>
-                            item.id === activeConversation?.id
-                              ? { ...item, stream: true }
-                              : item,
-                          ),
-                        );
-                      }}
-                      title="开启流式返回，边执行边显示过程"
+                  {!forceStream ? (
+                    <div
+	                      className="flex rounded-full border bg-slate-50 p-0.5 dark:bg-secondary"
+                      title="选择本次管理员回复方式"
                     >
-                      流式
-                    </button>
-                    <button
-                      type="button"
-                      className={cn(
-                        "rounded-full px-3 py-1 text-xs transition",
-                        !activeConversation?.stream
-                          ? "bg-white text-slate-950 shadow-sm"
-                          : "text-muted-foreground hover:text-slate-950",
-                      )}
-                      onClick={() => {
-                        setConversations((current) =>
-                          current.map((item) =>
-                            item.id === activeConversation?.id
-                              ? { ...item, stream: false }
-                              : item,
-                          ),
-                        );
-                      }}
-                      title="关闭流式返回，等待完整结果后一次展示"
-                    >
-                      非流式
-                    </button>
-                  </div>
-                  {busy ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={stopActiveRequest}
-                      title="停止当前正在执行的管理员请求"
-                    >
-                      停止
-                    </Button>
+                      <button
+                        type="button"
+                        className={cn(
+                          "rounded-full px-3 py-1 text-xs transition",
+                          activeConversation?.stream
+	                            ? "bg-white text-slate-950 shadow-sm dark:bg-background dark:text-foreground dark:shadow-none"
+	                            : "text-muted-foreground hover:text-slate-950 dark:hover:text-foreground",
+                        )}
+                        onClick={() => {
+                          setConversations((current) =>
+                            current.map((item) =>
+                              item.id === activeConversation?.id
+                                ? { ...item, stream: true }
+                                : item,
+                            ),
+                          );
+                        }}
+                        title="开启流式返回，边执行边显示过程"
+                      >
+                        流式
+                      </button>
+                      <button
+                        type="button"
+                        className={cn(
+                          "rounded-full px-3 py-1 text-xs transition",
+                          !activeConversation?.stream
+	                            ? "bg-white text-slate-950 shadow-sm dark:bg-background dark:text-foreground dark:shadow-none"
+	                            : "text-muted-foreground hover:text-slate-950 dark:hover:text-foreground",
+                        )}
+                        onClick={() => {
+                          setConversations((current) =>
+                            current.map((item) =>
+                              item.id === activeConversation?.id
+                                ? { ...item, stream: false }
+                                : item,
+                            ),
+                          );
+                        }}
+                        title="关闭流式返回，等待完整结果后一次展示"
+                      >
+                        非流式
+                      </button>
+                    </div>
                   ) : null}
                   <Button
-                    className="h-10 w-10 rounded-full p-0"
-                    onClick={() => void send()}
-                    disabled={busy || Boolean(contextUsage?.blocked)}
+                    type="button"
+                    className={cn(
+                      "rounded-full p-0",
+                      embedded ? "h-8 w-8" : "h-10 w-10",
+                      busy && "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+                    )}
+                    variant={busy ? "secondary" : "default"}
+                    onClick={() => {
+                      if (busy) {
+                        stopActiveRequest();
+                        return;
+                      }
+                      void send();
+                    }}
+                    disabled={!busy && Boolean(contextUsage?.blocked)}
                     title={
-                      contextUsage?.blocked
+                      busy
+                        ? "停止当前正在执行的管理员请求"
+                        : contextUsage?.blocked
                         ? "当前对话已达到上下文上限，请新建会话"
                         : "发送管理员指令"
                     }
                   >
-                    <SendHorizontal className="h-4 w-4" />
-                    <span className="sr-only">{busy ? "处理中" : "发送"}</span>
+                    {busy ? (
+                      <Square className={cn("fill-current", embedded ? "h-3 w-3" : "h-3.5 w-3.5")} />
+                    ) : (
+                      <SendHorizontal className={cn(embedded ? "h-3.5 w-3.5" : "h-4 w-4")} />
+                    )}
+                    <span className="sr-only">{busy ? "停止" : "发送"}</span>
                   </Button>
                 </div>
               </div>
@@ -1904,18 +2016,18 @@ export function AdminChat({ username }: { username: string }) {
         <ChatDetailDrawer
           title="执行详情"
           open={Boolean(selectedDetail)}
-          width={drawerWidth}
           selected={
             selectedDetail
               ? {
                   role: selectedDetail.role,
                   content: selectedDetail.content,
+                  createdAt: selectedDetail.created_at,
                   details: selectedDetail.details,
+                  statusText: messageStatusText(selectedDetail),
                 }
               : null
           }
           onClear={() => setSelectedDetailId("")}
-          onResizeStart={startDrawerResize}
         />
         {modelOpen ? (
           <div
@@ -2555,7 +2667,7 @@ export function AdminChat({ username }: { username: string }) {
                               event.preventDefault();
                               if (!file.deleted) {
                                 window.open(
-                                  `/admin/wiki?path=${encodeURIComponent(file.path)}`,
+                                  `/knowledge?view=browse&path=${encodeURIComponent(file.path)}`,
                                   "_blank",
                                 );
                               }
@@ -2875,33 +2987,6 @@ function positiveNumber(value: string, fallback: number) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function ComposerToolButton({
-  icon: Icon,
-  label,
-  disabled,
-  title,
-  onClick,
-}: {
-  icon: typeof Paperclip;
-  label: string;
-  disabled?: boolean;
-  title: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      title={title}
-      onClick={onClick}
-      className="inline-flex h-8 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-    >
-      <Icon className="h-3.5 w-3.5" />
-      {label}
-    </button>
-  );
-}
-
 function CompactContextUsage({
   usage,
   loading,
@@ -2947,61 +3032,64 @@ function CompactContextUsage({
   );
 }
 
-function ContextUsageBar({
-  usage,
-  loading,
-  onNewConversation,
+function KnowledgeTaskCommandBar({
+  actions,
+  busy,
+  onRun,
+  onUpload,
 }: {
-  usage: ContextUsage | null;
-  loading: boolean;
-  onNewConversation: () => void;
+  actions: KnowledgeTaskAction[];
+  busy: boolean;
+  onRun: (action: KnowledgeTaskAction) => void;
+  onUpload: () => void;
 }) {
-  if (!usage) {
-    return (
-      <div className="mb-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-muted-foreground">
-        {loading ? "正在计算上下文..." : "上下文用量暂不可用"}
-      </div>
-    );
-  }
-  const percent =
-    usage.max_tokens > 0
-      ? Math.min(100, Math.round((usage.used_tokens / usage.max_tokens) * 100))
-      : 0;
   return (
-    <div className="mb-3 rounded-xl border border-slate-200 bg-white px-3 py-2">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-        <span>
-          上下文：已用 {usage.used_tokens.toLocaleString()} /{" "}
-          {usage.max_tokens.toLocaleString()}，剩余{" "}
-          {usage.remaining_tokens.toLocaleString()}
-          {usage.estimated ? "（估算）" : ""}
-        </span>
-        {usage.blocked ? (
-          <button
-            type="button"
-            className="font-semibold text-destructive hover:underline"
-            onClick={onNewConversation}
-            title="创建一个新对话继续"
-          >
-            创建新对话
-          </button>
-        ) : null}
-      </div>
-      <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-        <div
-          className={cn(
-            "h-full rounded-full",
-            usage.blocked ? "bg-destructive" : "bg-slate-900",
-          )}
-          style={{ width: `${percent}%` }}
+    <div className="flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
+      <KnowledgeTaskButton
+        icon={Upload}
+        label="上传并摄入"
+        title="选择文件并交给知识库助手按 INGEST 流程摄入"
+        disabled={busy}
+        onClick={onUpload}
+      />
+      {actions.map((action) => (
+        <KnowledgeTaskButton
+          key={action.id}
+          icon={action.icon}
+          label={action.label}
+          title={action.title}
+          disabled={busy}
+          onClick={() => onRun(action)}
         />
-      </div>
-      {usage.blocked ? (
-        <div className="mt-2 text-xs text-destructive">
-          当前对话已接近上下文上限，请创建新的对话继续。
-        </div>
-      ) : null}
+      ))}
     </div>
+  );
+}
+
+function KnowledgeTaskButton({
+  icon: Icon,
+  label,
+  title,
+  disabled,
+  onClick,
+}: {
+  icon: typeof Activity;
+  label: string;
+  title: string;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="inline-flex h-7 items-center gap-1.5 rounded-md px-1 text-xs font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50 dark:text-muted-foreground dark:hover:bg-secondary dark:hover:text-foreground"
+      title={title}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <Icon className="h-3.5 w-3.5" />
+      {label}
+    </button>
   );
 }
 
@@ -3099,6 +3187,11 @@ function uniqueStrings(values: Array<string | null | undefined>) {
   );
 }
 
+function executionSteps(value: Record<string, unknown>): Array<{ tool?: string }> {
+  const steps = value.steps;
+  return Array.isArray(steps) ? (steps as Array<{ tool?: string }>) : [];
+}
+
 function firstNonEmpty(...values: Array<string | null | undefined>) {
   for (const value of values) {
     if (typeof value === "string" && value.trim() !== "") {
@@ -3113,11 +3206,6 @@ function asRecord(value: unknown): Record<string, unknown> {
     return {};
   }
   return value as Record<string, unknown>;
-}
-
-function numberValue(record: Record<string, unknown>, key: string) {
-  const value = record[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function summarizePromptEvent(value: unknown) {

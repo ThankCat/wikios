@@ -8,26 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
 	_ "modernc.org/sqlite"
 )
 
 type Store struct {
 	db *sql.DB
-}
-
-type AdminUser struct {
-	ID        string    `json:"id"`
-	Username  string    `json:"username"`
-	IsActive  bool      `json:"is_active"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-type AdminSession struct {
-	Token     string
-	UserID    string
-	ExpiresAt time.Time
 }
 
 type Proposal struct {
@@ -55,6 +40,12 @@ type LLMModel struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
+type AdminSetting struct {
+	Key       string
+	ValueJSON string
+	UpdatedAt time.Time
+}
+
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -74,19 +65,6 @@ func (s *Store) Close() error {
 
 func (s *Store) migrate() error {
 	schema := `
-CREATE TABLE IF NOT EXISTS admin_users (
-  id TEXT PRIMARY KEY,
-  username TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,
-  is_active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS admin_sessions (
-  token TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  expires_at TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS repair_proposals (
   id TEXT PRIMARY KEY,
   execution_id TEXT NOT NULL,
@@ -110,6 +88,11 @@ CREATE TABLE IF NOT EXISTS llm_models (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS admin_settings (
+  key TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 DELETE FROM llm_models WHERE id IN ('llm_default_admin', 'llm_default_public');
 UPDATE llm_models
 SET is_active = 0
@@ -128,91 +111,42 @@ WHERE is_active = 1;`
 	return err
 }
 
-func (s *Store) EnsureDefaultAdmin(ctx context.Context, username string, password string) error {
-	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM admin_users`).Scan(&count); err != nil {
-		return err
+func (s *Store) GetAdminSetting(ctx context.Context, key string) (*AdminSetting, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT key, value_json, updated_at
+FROM admin_settings
+WHERE key = ?
+`, strings.TrimSpace(key))
+	var setting AdminSetting
+	var updatedAt string
+	if err := row.Scan(&setting.Key, &setting.ValueJSON, &updatedAt); err != nil {
+		return nil, err
 	}
-	if count > 0 {
-		return nil
+	setting.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+	return &setting, nil
+}
+
+func (s *Store) SetAdminSetting(ctx context.Context, key string, value any) (*AdminSetting, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, fmt.Errorf("setting key is required")
 	}
-	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	encoded, err := json.Marshal(value)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	now := time.Now().Format(time.RFC3339Nano)
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO admin_users (id, username, password_hash, is_active, created_at, updated_at)
-VALUES (?, ?, ?, 1, ?, ?)
-`, "admin_default", username, string(hashed), now, now)
-	return err
-}
-
-func (s *Store) AuthenticateAdmin(ctx context.Context, username string, password string) (*AdminUser, error) {
-	row := s.db.QueryRowContext(ctx, `
-SELECT id, username, password_hash, is_active, created_at, updated_at
-FROM admin_users WHERE username = ?
-`, username)
-	var user AdminUser
-	var passwordHash string
-	var isActive int
-	var createdAt string
-	var updatedAt string
-	if err := row.Scan(&user.ID, &user.Username, &passwordHash, &isActive, &createdAt, &updatedAt); err != nil {
-		return nil, err
-	}
-	if isActive == 0 {
-		return nil, fmt.Errorf("admin account is disabled")
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
-		return nil, fmt.Errorf("invalid username or password")
-	}
-	user.IsActive = true
-	user.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-	user.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
-	return &user, nil
-}
-
-func (s *Store) CreateSession(ctx context.Context, session AdminSession) error {
-	_, err := s.db.ExecContext(ctx, `
-INSERT INTO admin_sessions (token, user_id, expires_at)
+INSERT INTO admin_settings (key, value_json, updated_at)
 VALUES (?, ?, ?)
-`, session.Token, session.UserID, session.ExpiresAt.Format(time.RFC3339Nano))
-	return err
-}
-
-func (s *Store) GetSessionUser(ctx context.Context, token string) (*AdminUser, error) {
-	row := s.db.QueryRowContext(ctx, `
-SELECT u.id, u.username, u.is_active, u.created_at, u.updated_at, s.expires_at
-FROM admin_sessions s
-JOIN admin_users u ON u.id = s.user_id
-WHERE s.token = ?
-`, token)
-	var user AdminUser
-	var isActive int
-	var createdAt string
-	var updatedAt string
-	var expiresAt string
-	if err := row.Scan(&user.ID, &user.Username, &isActive, &createdAt, &updatedAt, &expiresAt); err != nil {
-		return nil, err
-	}
-	expiry, err := time.Parse(time.RFC3339Nano, expiresAt)
+ON CONFLICT(key) DO UPDATE SET
+  value_json=excluded.value_json,
+  updated_at=excluded.updated_at
+`, key, string(encoded), now)
 	if err != nil {
 		return nil, err
 	}
-	if time.Now().After(expiry) {
-		_ = s.DeleteSession(ctx, token)
-		return nil, sql.ErrNoRows
-	}
-	user.IsActive = isActive == 1
-	user.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-	user.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
-	return &user, nil
-}
-
-func (s *Store) DeleteSession(ctx context.Context, token string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE token = ?`, token)
-	return err
+	return s.GetAdminSetting(ctx, key)
 }
 
 func (s *Store) SaveProposal(ctx context.Context, proposal *Proposal) error {
@@ -437,13 +371,6 @@ func defaultLLMDisplayName(provider string, modelName string) string {
 		return modelName
 	}
 	return provider + " / " + modelName
-}
-
-func boolToInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
 }
 
 func firstNonEmpty(values ...string) string {

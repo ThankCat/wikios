@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	wikigit "wikios/internal/git"
 	"wikios/internal/runtime"
 )
 
@@ -25,11 +26,11 @@ func NewGitPushTool(deps Dependencies) runtime.Tool {
 
 func (t *gitStatusTool) Validate(args map[string]any) error { return nil }
 func (t *gitStatusTool) Execute(ctx context.Context, env *runtime.ExecEnv, _ map[string]any) (runtime.ToolResult, error) {
-	stdout, stderr, exitCode, err := runCommand(ctx, env.WikiRoot, "git", []string{"status", "--short", "--branch"}, nil)
+	result, err := t.gitRunner(env, "", "").Run(ctx, "status", "--short", "--branch")
 	if err != nil {
 		return failure(t.risk, "EXEC_FAILED", err), nil
 	}
-	return success(t.risk, map[string]any{"stdout": stdout, "stderr": stderr, "exit_code": exitCode}), nil
+	return success(t.risk, gitResultMap(result)), nil
 }
 
 func (t *gitCommitTool) Validate(args map[string]any) error {
@@ -60,18 +61,28 @@ func (t *gitCommitTool) Execute(ctx context.Context, env *runtime.ExecEnv, args 
 	if len(addPaths) == 0 {
 		return failure(t.risk, "INVALID_ARGS", fmt.Errorf("paths is required")), nil
 	}
-	addArgs := append([]string{"add"}, addPaths...)
-	if _, _, _, err := runCommand(ctx, env.WikiRoot, "git", addArgs, nil); err != nil {
-		return failure(t.risk, "EXEC_FAILED", err), nil
-	}
-	stdout, stderr, exitCode, err := runCommand(ctx, env.WikiRoot, "git", []string{"commit", "-m", message}, nil)
+	runner := t.gitRunner(env, "", "")
+	addArgs := append([]string{"add", "--"}, addPaths...)
+	addResult, err := runner.Run(ctx, addArgs...)
 	if err != nil {
 		return failure(t.risk, "EXEC_FAILED", err), nil
 	}
-	if exitCode != 0 && strings.Contains(stdout+stderr, "nothing to commit") {
-		return success(t.risk, map[string]any{"stdout": stdout, "stderr": stderr, "exit_code": exitCode, "committed": false}), nil
+	if addResult.ExitCode != 0 {
+		data := gitResultMap(addResult)
+		data["committed"] = false
+		return success(t.risk, data), nil
 	}
-	return success(t.risk, map[string]any{"stdout": stdout, "stderr": stderr, "exit_code": exitCode, "committed": true}), nil
+	result, err := runner.Run(ctx, "commit", "-m", message)
+	if err != nil {
+		return failure(t.risk, "EXEC_FAILED", err), nil
+	}
+	data := gitResultMap(result)
+	if result.ExitCode != 0 && strings.Contains(result.Stdout+result.Stderr, "nothing to commit") {
+		data["committed"] = false
+		return success(t.risk, data), nil
+	}
+	data["committed"] = result.ExitCode == 0
+	return success(t.risk, data), nil
 }
 
 func (t *gitPushTool) Validate(args map[string]any) error { return nil }
@@ -84,9 +95,31 @@ func (t *gitPushTool) Execute(ctx context.Context, env *runtime.ExecEnv, args ma
 	if branch == "" {
 		branch = t.deps.Config.Sync.Branch
 	}
-	stdout, stderr, exitCode, err := runCommand(ctx, env.WikiRoot, "git", []string{"push", remote, branch}, nil)
+	result, err := t.gitRunner(env, remote, branch).Run(ctx, "push", remote, branch)
 	if err != nil {
 		return failure(t.risk, "EXEC_FAILED", err), nil
 	}
-	return success(t.risk, map[string]any{"stdout": stdout, "stderr": stderr, "exit_code": exitCode}), nil
+	return success(t.risk, gitResultMap(result)), nil
+}
+
+func (t *baseTool) gitRunner(env *runtime.ExecEnv, remote string, branch string) *wikigit.Runner {
+	if remote == "" && t.deps.Config != nil {
+		remote = t.deps.Config.Sync.Remote
+	}
+	if branch == "" && t.deps.Config != nil {
+		branch = t.deps.Config.Sync.Branch
+	}
+	repoDir := ""
+	if env != nil {
+		repoDir = env.WikiRoot
+	}
+	return wikigit.NewRunner(wikigit.ConfigFromEnv(repoDir, remote, branch))
+}
+
+func gitResultMap(result wikigit.Result) map[string]any {
+	return map[string]any{
+		"stdout":    result.Stdout,
+		"stderr":    result.Stderr,
+		"exit_code": result.ExitCode,
+	}
 }

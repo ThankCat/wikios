@@ -427,6 +427,18 @@ func pickPublicFallback(values []string, seed string) string {
 	return values[int(hash.Sum32())%len(values)]
 }
 
+func genericPublicFallback(question string) string {
+	lower := strings.ToLower(strings.TrimSpace(question))
+	switch {
+	case containsAny(lower, "关机", "重启", "开机", "启动"):
+		return "这项操作要结合设备状态来看。您可以补充设备型号、当前页面提示和想完成的动作，我先帮您判断下一步。"
+	case containsAny(lower, "安装", "下载", "设置", "配置", "登录"):
+		return "这类操作我需要先确认您使用的产品、设备或页面入口。您把当前步骤和遇到的提示发我，我再继续帮您排查。"
+	default:
+		return "这个问题我还需要再确认一点信息。您可以把具体产品、套餐或使用场景发我，我会按当前对话继续帮您判断。"
+	}
+}
+
 func publicIntentRuleMatches(rule PublicIntentRule, normalizedQuestion string) bool {
 	for _, item := range rule.Match.Exact {
 		if normalizePublicIntentText(item) == normalizedQuestion {

@@ -82,6 +82,74 @@ func TestDynamicLLMClientUsesActiveModelWithoutRestart(t *testing.T) {
 	}
 }
 
+func TestDynamicLLMClientUsesSpecificModelIDAndFallsBackToActive(t *testing.T) {
+	ctx := context.Background()
+	dataStore := openServiceTestStore(t)
+	defer dataStore.Close()
+
+	activeCalls := 0
+	activeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		activeCalls++
+		if got := requestModelName(t, r); got != "active-model" {
+			t.Fatalf("unexpected active model %q", got)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"active ok"}}]}`))
+	}))
+	defer activeServer.Close()
+	fastCalls := 0
+	fastServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fastCalls++
+		if got := requestModelName(t, r); got != "fast-model" {
+			t.Fatalf("unexpected fast model %q", got)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"fast ok"}}]}`))
+	}))
+	defer fastServer.Close()
+
+	if err := dataStore.CreateLLMModel(ctx, &store.LLMModel{
+		ID:              "active",
+		DisplayName:     "Active",
+		Provider:        "test",
+		BaseURL:         activeServer.URL,
+		ModelName:       "active-model",
+		APIKey:          "active-key",
+		IsActive:        true,
+		TimeoutSec:      5,
+		AdminTimeoutSec: 5,
+	}); err != nil {
+		t.Fatalf("create active: %v", err)
+	}
+	if err := dataStore.CreateLLMModel(ctx, &store.LLMModel{
+		ID:              "fast",
+		DisplayName:     "Fast",
+		Provider:        "test",
+		BaseURL:         fastServer.URL,
+		ModelName:       "fast-model",
+		APIKey:          "fast-key",
+		TimeoutSec:      5,
+		AdminTimeoutSec: 5,
+	}); err != nil {
+		t.Fatalf("create fast: %v", err)
+	}
+
+	client := NewDynamicLLMClient(dataStore, config.LLMConfig{})
+	text, err := client.Chat(ctx, llmModelIDToken("fast"), []llm.Message{{Role: "user", Content: "hi"}})
+	if err != nil {
+		t.Fatalf("specific chat: %v", err)
+	}
+	if text != "fast ok" || fastCalls != 1 || activeCalls != 0 {
+		t.Fatalf("expected specific model only, text=%q fast=%d active=%d", text, fastCalls, activeCalls)
+	}
+
+	text, err = client.Chat(ctx, llmModelIDToken("missing"), []llm.Message{{Role: "user", Content: "hi"}})
+	if err != nil {
+		t.Fatalf("fallback chat: %v", err)
+	}
+	if text != "active ok" || activeCalls != 1 {
+		t.Fatalf("expected missing specific model to fall back active, text=%q active=%d", text, activeCalls)
+	}
+}
+
 func TestDynamicLLMClientStreamsReasoningContent(t *testing.T) {
 	ctx := context.Background()
 	dataStore := openServiceTestStore(t)

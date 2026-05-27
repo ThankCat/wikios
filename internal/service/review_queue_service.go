@@ -954,10 +954,6 @@ func reviewIDForMessage(req ReviewCreateRequest, question string, answer string,
 	return "review-" + timestamp + "-" + stableShortHash(seed)
 }
 
-func reviewID(question string) string {
-	return "review-" + stableShortHash(normalizeReviewQuestion(question))
-}
-
 func firstNonEmptyStringSlice(values ...[]string) []string {
 	for _, value := range values {
 		if len(trimStringSlice(value, 0)) > 0 {
@@ -1007,19 +1003,6 @@ func stringsFromFrontmatter(frontmatter map[string]any, key string) []string {
 		return out
 	default:
 		return nil
-	}
-}
-
-func intFromFrontmatter(frontmatter map[string]any, key string) int {
-	switch typed := frontmatter[key].(type) {
-	case int:
-		return typed
-	case int64:
-		return int(typed)
-	case float64:
-		return int(typed)
-	default:
-		return 0
 	}
 }
 

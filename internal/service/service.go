@@ -5,14 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"wikios/internal/config"
 	"wikios/internal/llm"
-	"wikios/internal/report"
 	"wikios/internal/retrieval"
 	"wikios/internal/runtime"
 	"wikios/internal/store"
@@ -125,6 +123,14 @@ type llmDeltaHooks struct {
 }
 
 func (s *baseService) executeLLMTraceWithHooks(ctx context.Context, execution *Execution, model string, messages []llm.Message, stepName string, hooks *llmDeltaHooks) (string, LLMTrace, error) {
+	return s.executeLLMTraceWithOptions(ctx, execution, model, messages, stepName, hooks, nil)
+}
+
+func (s *baseService) executeLLMTraceWithOptions(ctx context.Context, execution *Execution, model string, messages []llm.Message, stepName string, hooks *llmDeltaHooks, enableThinking *bool) (string, LLMTrace, error) {
+	return s.executeLLMTraceWithOptionsAndResponseFormat(ctx, execution, model, messages, stepName, hooks, enableThinking, nil)
+}
+
+func (s *baseService) executeLLMTraceWithOptionsAndResponseFormat(ctx context.Context, execution *Execution, model string, messages []llm.Message, stepName string, hooks *llmDeltaHooks, enableThinking *bool, responseFormat *llm.ResponseFormat) (string, LLMTrace, error) {
 	start := time.Now()
 	promptChars, promptTokens := estimatePromptSize(messages)
 	timeout := s.llmRequestTimeout(execution)
@@ -143,8 +149,11 @@ func (s *baseService) executeLLMTraceWithHooks(ctx context.Context, execution *E
 		"prompt_chars":            promptChars,
 		"prompt_estimated_tokens": promptTokens,
 		"timeout_sec":             timeoutSec,
+		"enable_thinking":         enableThinking,
 	})
 	ctx = llm.WithRequestTimeout(ctx, timeout)
+	ctx = llm.WithEnableThinking(ctx, enableThinking)
+	ctx = llm.WithResponseFormat(ctx, responseFormat)
 	var reasoning strings.Builder
 	onDelta := func(delta llm.StreamDelta) {
 		if delta.ReasoningContent != "" {
@@ -195,6 +204,8 @@ func (s *baseService) executeLLMTraceWithHooks(ctx context.Context, execution *E
 				"prompt_chars":            promptChars,
 				"prompt_estimated_tokens": promptTokens,
 				"timeout_sec":             timeoutSec,
+				"enable_thinking":         enableThinking,
+				"response_format":         publicLLMResponseFormatForTrace(responseFormat),
 				"system_preview":          summarizeMessage(messages, "system"),
 				"user_preview":            summarizeMessage(messages, "user"),
 			},
@@ -233,49 +244,61 @@ func (s *baseService) executeLLMTraceWithHooks(ctx context.Context, execution *E
 	return text, trace, nil
 }
 
+func publicLLMResponseFormatForTrace(format *llm.ResponseFormat) any {
+	if format == nil {
+		return nil
+	}
+	out := map[string]any{"type": strings.TrimSpace(format.Type)}
+	if format.JSONSchema != nil {
+		out["schema_name"] = strings.TrimSpace(format.JSONSchema.Name)
+		out["strict"] = format.JSONSchema.Strict
+	}
+	return out
+}
+
 func (s *baseService) llmRequestTimeout(execution *Execution) time.Duration {
 	if s == nil || s.deps.Config == nil {
 		return 90 * time.Second
 	}
+	admin := isAdminLLMExecution(execution)
 	if resolver, ok := s.deps.LLM.(llmRequestTimeoutResolver); ok {
-		return resolver.RequestTimeout(context.Background(), execution != nil)
+		return s.adjustLLMRequestTimeout(resolver.RequestTimeout(context.Background(), admin), admin)
 	}
 	timeoutSec := s.deps.Config.LLM.TimeoutSec
-	if execution != nil {
+	if admin {
 		timeoutSec = s.deps.Config.LLM.AdminTimeoutSec
 	}
 	if timeoutSec <= 0 {
-		if execution != nil {
+		if admin {
 			timeoutSec = 300
 		} else {
 			timeoutSec = 90
 		}
 	}
-	return time.Duration(timeoutSec) * time.Second
+	return s.adjustLLMRequestTimeout(time.Duration(timeoutSec)*time.Second, admin)
+}
+
+func (s *baseService) adjustLLMRequestTimeout(timeout time.Duration, admin bool) time.Duration {
+	if admin || s == nil || s.deps.Config == nil || s.deps.Config.PublicQuery.ResponseTimeoutSec <= 0 {
+		return timeout
+	}
+	publicTimeout := time.Duration(s.deps.Config.PublicQuery.ResponseTimeoutSec) * time.Second
+	if publicTimeout > timeout {
+		return publicTimeout
+	}
+	return timeout
+}
+
+func isAdminLLMExecution(execution *Execution) bool {
+	if execution == nil {
+		return false
+	}
+	kind := strings.ToLower(strings.TrimSpace(execution.Kind))
+	return !strings.HasPrefix(kind, "public-")
 }
 
 func (s *baseService) loadPrompt(name string) (string, error) {
 	return llm.LoadPrompt(filepath.Join(s.deps.PromptDir, name))
-}
-
-func (s *baseService) loadPromptWithWikiQueryGuide(name string) (string, error) {
-	prompt, err := s.loadPrompt(name)
-	if err != nil {
-		return "", err
-	}
-	agentPath := filepath.Join(s.deps.Config.MountedWiki.Root, "AGENT.md")
-	agentRaw, err := os.ReadFile(agentPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return prompt, nil
-		}
-		return "", fmt.Errorf("read mounted wiki AGENT.md: %w", err)
-	}
-	queryGuide := extractPublicMarkdownSection(string(agentRaw), "## QUERY")
-	if strings.TrimSpace(queryGuide) == "" {
-		return prompt, nil
-	}
-	return prompt + "\n\n以下是当前挂载 Wiki 的最高优先级 QUERY 规范（来自 mounted wiki 的 AGENT.md），仅用于证据查询和答案合成。若 public answer prompt 与该 QUERY 规范存在差异，一律以 AGENT.md 的 QUERY 规范为准；public answer prompt 只补充客户可见表达和安全边界：\n\n" + strings.TrimSpace(queryGuide), nil
 }
 
 func estimatePromptSize(messages []llm.Message) (int, int) {
@@ -288,97 +311,6 @@ func estimatePromptSize(messages []llm.Message) (int, int) {
 		tokens = 1
 	}
 	return chars, tokens
-}
-
-func extractPublicMarkdownSection(markdown string, heading string) string {
-	lines := strings.Split(strings.ReplaceAll(markdown, "\r\n", "\n"), "\n")
-	start := -1
-	for i, line := range lines {
-		if strings.TrimSpace(line) == heading {
-			start = i
-			break
-		}
-	}
-	if start < 0 {
-		return ""
-	}
-	end := len(lines)
-	for i := start + 1; i < len(lines); i++ {
-		line := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(line, "## ") {
-			end = i
-			break
-		}
-	}
-	return strings.TrimSpace(strings.Join(lines[start:end], "\n"))
-}
-
-func (s *baseService) normalizeMountedInputPath(input string) (string, error) {
-	path := strings.TrimSpace(input)
-	if path == "" {
-		return "", fmt.Errorf("path is required")
-	}
-	cleanRoot := filepath.Clean(s.deps.Config.MountedWiki.Root)
-	cleanPath := filepath.Clean(path)
-	if filepath.IsAbs(cleanPath) {
-		rel, err := filepath.Rel(cleanRoot, cleanPath)
-		if err != nil {
-			return "", fmt.Errorf("normalize mounted path: %w", err)
-		}
-		rel = filepath.ToSlash(rel)
-		if rel == ".." || strings.HasPrefix(rel, "../") {
-			return "", fmt.Errorf("path must stay within mounted wiki root")
-		}
-		return rel, nil
-	}
-	rel := filepath.ToSlash(cleanPath)
-	rel = strings.TrimPrefix(rel, "./")
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
-		return "", fmt.Errorf("invalid path")
-	}
-	return rel, nil
-}
-
-func sourceConfidence(path string) string {
-	path = filepath.ToSlash(path)
-	switch {
-	case strings.Contains(path, "/knowledge/"),
-		strings.Contains(path, "/policies/"),
-		strings.Contains(path, "/procedures/"),
-		strings.Contains(path, "/comparisons/"),
-		strings.Contains(path, "/synthesis/"):
-		return "high"
-	case strings.Contains(path, "/sources/"):
-		return "medium"
-	case strings.Contains(path, "/concepts/"),
-		strings.Contains(path, "/entities/"):
-		return "medium"
-	case strings.Contains(path, "/intents/"):
-		return "low"
-	default:
-		return "low"
-	}
-}
-
-func reportResult(executionID string, taskType string, summary string, outputFiles []string, timeline []Step) report.Report {
-	events := make([]report.Event, 0, len(timeline))
-	for _, step := range timeline {
-		events = append(events, report.Event{
-			Step:       step.Name,
-			Tool:       step.Tool,
-			Status:     step.Status,
-			DurationMs: step.DurationMs,
-			Message:    summarizeStepOutput(step),
-		})
-	}
-	return report.Report{
-		TaskID:      executionID,
-		TaskType:    taskType,
-		Title:       strings.Title(taskType) + " Report",
-		Summary:     summary,
-		Timeline:    events,
-		OutputFiles: outputFiles,
-	}
 }
 
 func nowDate() string {
@@ -465,60 +397,6 @@ func slugFromText(text string) string {
 	return text
 }
 
-func buildOutputDocument(title string, body string, sourceCount int) string {
-	return fmt.Sprintf(`---
-type: synthesis
-title: %q
-date: %s
-tags: []
-source_count: %d
-confidence: low
-graph-excluded: true
----
-
-%s
-`, title, nowDate(), sourceCount, body)
-}
-
-func buildReportDocument(title string, taskType string, taskID string, body string) string {
-	return fmt.Sprintf(`---
-type: system-report
-title: %q
-date: %s
-graph-excluded: true
-task_type: %s
-task_id: %s
----
-
-%s
-`, title, nowDate(), taskType, taskID, body)
-}
-
-func summarizeStepOutput(step Step) string {
-	if step.Output == nil {
-		return ""
-	}
-	for _, key := range []string{"path", "report_path", "error", "stdout"} {
-		if value, ok := step.Output[key]; ok {
-			text := fmt.Sprintf("%v", value)
-			if key == "stdout" && len(text) > 80 {
-				text = text[:80] + "..."
-			}
-			if strings.TrimSpace(text) != "" {
-				return text
-			}
-		}
-	}
-	return ""
-}
-
-func joinOrNone(items []string) string {
-	if len(items) == 0 {
-		return "暂无"
-	}
-	return strings.Join(items, ", ")
-}
-
 func truncateForPrompt(text string, maxRunes int) string {
 	trimmed := strings.TrimSpace(text)
 	if maxRunes <= 0 {
@@ -538,19 +416,4 @@ func summarizeMessage(messages []llm.Message, role string) string {
 		}
 	}
 	return ""
-}
-
-func bulletListOrPlaceholder(items []string, placeholder string) string {
-	filtered := make([]string, 0, len(items))
-	for _, item := range items {
-		item = strings.TrimSpace(item)
-		if item == "" {
-			continue
-		}
-		filtered = append(filtered, "- "+item)
-	}
-	if len(filtered) == 0 {
-		return "- " + placeholder
-	}
-	return strings.Join(filtered, "\n")
 }

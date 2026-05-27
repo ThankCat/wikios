@@ -7,14 +7,9 @@ mounted_wiki:
   name: default-wiki
   qmd_index: knowledge-base
 
-auth:
-  default_admin_username: admin
-  default_admin_password: admin123
-  session_cookie_name: wikios_admin_session
-  session_ttl_hours: 168
-  session_cookie_domain: ""
-  session_cookie_secure: false
-  session_cookie_same_site: lax
+llm:
+  timeout_sec: 300
+  admin_timeout_sec: 300
 
 retrieval:
   top_k: 5
@@ -52,6 +47,7 @@ public_intents:
 public_query:
   candidate_top_k: 6
   max_evidence_chars: 2400
+  response_timeout_sec: 300
   answer_log:
     enabled: true
     redact: true

@@ -14,19 +14,19 @@ export const ScrollArea = React.forwardRef<
     <ScrollAreaPrimitive.Viewport ref={viewportRef} className="h-full w-full rounded-[inherit]">
       {children}
     </ScrollAreaPrimitive.Viewport>
-    <ScrollAreaPrimitive.Scrollbar
-      orientation="vertical"
-      forceMount
-      className="flex w-3 touch-none select-none border-l border-slate-200/80 bg-slate-100/80 p-[3px] transition-colors"
-    >
-      <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-slate-400/90" />
-    </ScrollAreaPrimitive.Scrollbar>
+	    <ScrollAreaPrimitive.Scrollbar
+	      orientation="vertical"
+	      forceMount
+	      className="flex w-3 touch-none select-none border-l border-slate-200/80 bg-slate-100/80 p-[3px] transition-colors dark:border-border dark:bg-secondary/70"
+	    >
+	      <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-slate-400/90 dark:bg-slate-600" />
+	    </ScrollAreaPrimitive.Scrollbar>
     <ScrollAreaPrimitive.Scrollbar
       orientation="horizontal"
       forceMount
-      className="flex h-3 touch-none select-none border-t border-slate-200/80 bg-slate-100/80 p-[3px] transition-colors"
-    >
-      <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-slate-400/90" />
+	      className="flex h-3 touch-none select-none border-t border-slate-200/80 bg-slate-100/80 p-[3px] transition-colors dark:border-border dark:bg-secondary/70"
+	    >
+	      <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-slate-400/90 dark:bg-slate-600" />
     </ScrollAreaPrimitive.Scrollbar>
     <ScrollAreaPrimitive.Corner />
   </ScrollAreaPrimitive.Root>
