@@ -125,7 +125,7 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-func TestPublicEvidencePriorityUsesFormalKnowledgeDirs(t *testing.T) {
+func TestCustomerEvidencePriorityUsesFormalKnowledgeDirs(t *testing.T) {
 	pages := []retrieval.RetrievedPage{
 		{Path: "wiki/sources/raw-note.md", Score: 120},
 		{Path: "wiki/intents/customer-router.md", Score: 100},
@@ -134,7 +134,7 @@ func TestPublicEvidencePriorityUsesFormalKnowledgeDirs(t *testing.T) {
 		{Path: "wiki/knowledge/network-setup.md", Score: 0.1},
 		{Path: "wiki/synthesis/summary.md", Score: 50},
 	}
-	got := prioritizePublicRetrievedPages(pages)
+	got := prioritizeCustomerRetrievedPages(pages)
 	if got[0].Path != "wiki/knowledge/network-setup.md" {
 		t.Fatalf("expected knowledge page first, got %#v", got)
 	}
@@ -142,10 +142,13 @@ func TestPublicEvidencePriorityUsesFormalKnowledgeDirs(t *testing.T) {
 		t.Fatalf("expected policy page second, got %#v", got)
 	}
 	if got[len(got)-2].Path != "wiki/intents/customer-router.md" || got[len(got)-1].Path != "wiki/sources/raw-note.md" {
-		t.Fatalf("expected intents then sources after formal evidence dirs, got %#v", got)
+		t.Fatalf("expected intents then non-customer source after formal evidence dirs, got %#v", got)
 	}
-	if isPublicReadableEvidence("wiki/unconfirmed/draft.md") {
-		t.Fatal("unconfirmed path must not be public readable evidence")
+	if isCustomerReadableEvidence("wiki/unconfirmed/draft.md") {
+		t.Fatal("unconfirmed path must not be customer-readable evidence")
+	}
+	if isCustomerReadableEvidence("wiki/sources/raw-note.md") {
+		t.Fatal("source archive path must not be customer-readable evidence")
 	}
 }
 

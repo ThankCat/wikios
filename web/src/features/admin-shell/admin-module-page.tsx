@@ -68,10 +68,6 @@ export function AdminModulePage({
         router.push("/settings?tab=models");
         return;
       }
-      if (module === "public-config") {
-        router.push("/settings?tab=intents");
-        return;
-      }
       router.push(adminModulePath(module));
     },
     [router],

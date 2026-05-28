@@ -14,7 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type publicConversationSummary struct {
+type customerConversationSummary struct {
 	ID             string `json:"id"`
 	SessionID      string `json:"session_id"`
 	UserID         string `json:"user_id,omitempty"`
@@ -29,7 +29,7 @@ type publicConversationSummary struct {
 	UpdatedAt      string `json:"updated_at"`
 }
 
-type publicConversationMessage struct {
+type customerConversationMessage struct {
 	ID             string         `json:"id"`
 	Role           string         `json:"role"`
 	Content        string         `json:"content"`
@@ -41,22 +41,22 @@ type publicConversationMessage struct {
 	Details        map[string]any `json:"details,omitempty"`
 }
 
-type publicConversationsResponse struct {
-	Conversations []publicConversationSummary `json:"conversations"`
-	Total         int                         `json:"total"`
-	Page          int                         `json:"page"`
-	PageSize      int                         `json:"page_size"`
-	HasMore       bool                        `json:"has_more"`
-	Log           adminDashboardLogSummary    `json:"log"`
+type customerConversationsResponse struct {
+	Conversations []customerConversationSummary `json:"conversations"`
+	Total         int                           `json:"total"`
+	Page          int                           `json:"page"`
+	PageSize      int                           `json:"page_size"`
+	HasMore       bool                          `json:"has_more"`
+	Log           adminDashboardLogSummary      `json:"log"`
 }
 
-type publicConversationDetailResponse struct {
-	Conversation publicConversationSummary   `json:"conversation"`
-	Messages     []publicConversationMessage `json:"messages"`
-	Log          adminDashboardLogSummary    `json:"log"`
+type customerConversationDetailResponse struct {
+	Conversation customerConversationSummary   `json:"conversation"`
+	Messages     []customerConversationMessage `json:"messages"`
+	Log          adminDashboardLogSummary      `json:"log"`
 }
 
-type publicAnswerLogRecord struct {
+type customerChatLogRecord struct {
 	ID                  string
 	SessionKey          string
 	SessionID           string
@@ -77,17 +77,17 @@ type publicAnswerLogRecord struct {
 	ConversationSortKey time.Time
 }
 
-func (h *Handlers) AdminPublicConversations(c *gin.Context) {
-	records, err := h.readPublicAnswerLogRecords()
+func (h *Handlers) AdminCustomerConversations(c *gin.Context) {
+	records, err := h.readCustomerChatLogRecords()
 	if err != nil {
 		internalError(c, err)
 		return
 	}
-	query := publicConversationQueryFromRequest(c)
-	groups := groupPublicConversationRecords(filterPublicAnswerLogRecords(records, query))
-	summaries := make([]publicConversationSummary, 0, len(groups))
+	query := customerConversationQueryFromRequest(c)
+	groups := groupCustomerConversationRecords(filterCustomerChatLogRecords(records, query))
+	summaries := make([]customerConversationSummary, 0, len(groups))
 	for _, records := range groups {
-		summaries = append(summaries, summarizePublicConversation(records))
+		summaries = append(summaries, summarizeCustomerConversation(records))
 	}
 	sort.SliceStable(summaries, func(i, j int) bool {
 		return summaries[i].UpdatedAt > summaries[j].UpdatedAt
@@ -101,38 +101,56 @@ func (h *Handlers) AdminPublicConversations(c *gin.Context) {
 	if end > total {
 		end = total
 	}
-	c.JSON(http.StatusOK, publicConversationsResponse{
+	c.JSON(http.StatusOK, customerConversationsResponse{
 		Conversations: summaries[start:end],
 		Total:         total,
 		Page:          query.Page,
 		PageSize:      query.PageSize,
 		HasMore:       end < total,
-		Log:           h.dashboardPublicAnswerLog(),
+		Log:           h.dashboardCustomerChatLog(),
 	})
 }
 
-func (h *Handlers) AdminPublicConversationDetail(c *gin.Context) {
+func (h *Handlers) AdminCustomerConversationDetail(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("session_id"))
-	records, err := h.readPublicAnswerLogRecords()
+	records, err := h.readCustomerChatLogRecords()
 	if err != nil {
 		internalError(c, err)
 		return
 	}
-	groups := groupPublicConversationRecords(records)
+	groups := groupCustomerConversationRecords(records)
 	records = groups[id]
 	if len(records) == 0 {
-		notFound(c, "public conversation not found")
+		notFound(c, "customer conversation not found")
 		return
 	}
-	sortPublicConversationRecords(records)
-	c.JSON(http.StatusOK, publicConversationDetailResponse{
-		Conversation: summarizePublicConversation(records),
-		Messages:     publicConversationMessages(records),
-		Log:          h.dashboardPublicAnswerLog(),
+	sortCustomerConversationRecords(records)
+	c.JSON(http.StatusOK, customerConversationDetailResponse{
+		Conversation: summarizeCustomerConversation(records),
+		Messages:     customerConversationMessages(records),
+		Log:          h.dashboardCustomerChatLog(),
 	})
 }
 
-type publicConversationQuery struct {
+func (h *Handlers) AdminCustomerChatTrace(c *gin.Context) {
+	traceID := strings.TrimSpace(c.Param("trace_id"))
+	if traceID == "" {
+		badRequest(c, fmt.Errorf("trace_id is required"))
+		return
+	}
+	entry, err := h.readCustomerChatTraceEntry(traceID)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	if entry == nil {
+		notFound(c, "customer chat trace not found")
+		return
+	}
+	c.JSON(http.StatusOK, entry)
+}
+
+type customerConversationQuery struct {
 	Search   string
 	Page     int
 	PageSize int
@@ -140,19 +158,19 @@ type publicConversationQuery struct {
 	To       time.Time
 }
 
-func publicConversationQueryFromRequest(c *gin.Context) publicConversationQuery {
+func customerConversationQueryFromRequest(c *gin.Context) customerConversationQuery {
 	page := parsePositiveQueryInt(c.Query("page"), 1)
 	pageSize := parsePositiveQueryInt(c.Query("page_size"), 20)
 	if pageSize > 100 {
 		pageSize = 100
 	}
-	query := publicConversationQuery{
+	query := customerConversationQuery{
 		Search:   strings.ToLower(strings.TrimSpace(c.Query("q"))),
 		Page:     page,
 		PageSize: pageSize,
 	}
-	query.From = parsePublicConversationTime(firstNonEmpty(c.Query("from"), c.Query("start")))
-	if to := parsePublicConversationTime(firstNonEmpty(c.Query("to"), c.Query("end"))); !to.IsZero() {
+	query.From = parseCustomerConversationTime(firstNonEmpty(c.Query("from"), c.Query("start")))
+	if to := parseCustomerConversationTime(firstNonEmpty(c.Query("to"), c.Query("end"))); !to.IsZero() {
 		if len(strings.TrimSpace(firstNonEmpty(c.Query("to"), c.Query("end")))) == len("2006-01-02") {
 			to = to.Add(24 * time.Hour)
 		}
@@ -169,8 +187,8 @@ func parsePositiveQueryInt(value string, fallback int) int {
 	return parsed
 }
 
-func filterPublicAnswerLogRecords(records []publicAnswerLogRecord, query publicConversationQuery) []publicAnswerLogRecord {
-	filtered := make([]publicAnswerLogRecord, 0, len(records))
+func filterCustomerChatLogRecords(records []customerChatLogRecord, query customerConversationQuery) []customerChatLogRecord {
+	filtered := make([]customerChatLogRecord, 0, len(records))
 	for _, record := range records {
 		if query.Search != "" && !strings.Contains(record.SearchText, query.Search) {
 			continue
@@ -186,14 +204,14 @@ func filterPublicAnswerLogRecords(records []publicAnswerLogRecord, query publicC
 	return filtered
 }
 
-func (h *Handlers) readPublicAnswerLogRecords() ([]publicAnswerLogRecord, error) {
-	logDir := h.publicAnswerLogDir()
+func (h *Handlers) readCustomerChatLogRecords() ([]customerChatLogRecord, error) {
+	logDir := h.customerChatLogDir()
 	matches, err := filepath.Glob(filepath.Join(logDir, "*.jsonl"))
 	if err != nil {
 		return nil, err
 	}
 	sort.Strings(matches)
-	records := []publicAnswerLogRecord{}
+	records := []customerChatLogRecord{}
 	for _, path := range matches {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -206,51 +224,84 @@ func (h *Handlers) readPublicAnswerLogRecords() ([]publicAnswerLogRecord, error)
 			}
 			var entry map[string]any
 			if err := json.Unmarshal([]byte(line), &entry); err != nil {
-				return nil, fmt.Errorf("decode public answer log %s:%d: %w", path, lineIndex+1, err)
+				return nil, fmt.Errorf("decode customer chat log %s:%d: %w", path, lineIndex+1, err)
 			}
-			records = append(records, publicAnswerLogRecordFromMap(entry, fmt.Sprintf("%s:%d", filepath.Base(path), lineIndex+1)))
+			records = append(records, customerChatLogRecordFromMap(entry, fmt.Sprintf("%s:%d", filepath.Base(path), lineIndex+1)))
 		}
 	}
 	return records, nil
 }
 
-func (h *Handlers) publicAnswerLogDir() string {
+func (h *Handlers) readCustomerChatTraceEntry(traceID string) (map[string]any, error) {
+	logDir := h.customerChatLogDir()
+	matches, err := filepath.Glob(filepath.Join(logDir, "*.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(matches)))
+	for _, path := range matches {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			var entry map[string]any
+			if err := json.Unmarshal([]byte(line), &entry); err != nil {
+				continue
+			}
+			if stringMapValue(entry, "trace_id") == traceID {
+				return entry, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (h *Handlers) customerChatLogDir() string {
 	workspaceDir := ".workspace"
 	if h.Config != nil && strings.TrimSpace(h.Config.Workspace.BaseDir) != "" {
 		workspaceDir = strings.TrimSpace(h.Config.Workspace.BaseDir)
 	}
-	return filepath.Join(workspaceDir, "public_answer_logs")
+	return filepath.Join(workspaceDir, "customer_chat_logs")
 }
 
-func publicAnswerLogRecordFromMap(entry map[string]any, fallbackID string) publicAnswerLogRecord {
+func customerChatLogRecordFromMap(entry map[string]any, fallbackID string) customerChatLogRecord {
+	timeInfo := mapValue(entry["time"])
+	requestInfo := mapValue(entry["request"])
+	finalInfo := mapValue(entry["final"])
+	specialistOutput := mapValue(mapValue(entry["specialist"])["output"])
 	sessionID := stringMapValue(entry, "session_id")
 	traceID := stringMapValue(entry, "trace_id")
-	questionMessageID := stringMapValue(entry, "question_message_id")
-	answerMessageID := stringMapValue(entry, "answer_message_id")
-	loggedAt := stringMapValue(entry, "logged_at")
-	receivedAt := stringMapValue(entry, "received_at")
-	answeredAt := stringMapValue(entry, "answered_at")
-	questionCreatedAt := stringMapValue(entry, "question_created_at")
-	answerMode := firstNonEmpty(stringMapValue(entry, "answer_mode"), stringMapValue(mapValue(entry["details"]), "answer_mode"))
-	processSummary := firstNonEmpty(stringMapValue(entry, "process_summary"), stringMapValue(mapValue(entry["details"]), "process_summary"))
-	details := publicConversationSafeDetails(entry)
+	questionMessageID := ""
+	answerMessageID := ""
+	loggedAt := stringMapValue(timeInfo, "logged_at")
+	receivedAt := stringMapValue(timeInfo, "received_at")
+	answeredAt := stringMapValue(timeInfo, "answered_at")
+	questionCreatedAt := receivedAt
+	answerMode := firstNonEmpty(stringMapValue(finalInfo, "answer_mode"), stringMapValue(specialistOutput, "answer_mode"))
+	processSummary := customerConversationProcessSummaryFromStandardTrace(entry)
+	details := customerConversationSafeDetails(entry)
 	sessionKey := strings.TrimSpace(sessionID)
 	if sessionKey == "" {
 		sessionKey = "anonymous:" + firstNonEmpty(questionMessageID, answerMessageID, traceID, loggedAt, fallbackID)
 	}
-	sortTime := firstParsedPublicConversationTime(answeredAt, receivedAt, loggedAt, questionCreatedAt)
-	record := publicAnswerLogRecord{
+	sortTime := firstParsedCustomerConversationTime(answeredAt, receivedAt, loggedAt, questionCreatedAt)
+	record := customerChatLogRecord{
 		ID:                  fallbackID,
 		SessionKey:          sessionKey,
 		SessionID:           sessionID,
-		UserID:              stringMapValue(entry, "user_id"),
+		UserID:              "",
 		TraceID:             traceID,
 		LoggedAt:            loggedAt,
 		QuestionCreatedAt:   questionCreatedAt,
 		ReceivedAt:          receivedAt,
 		AnsweredAt:          answeredAt,
-		Question:            stringMapValue(entry, "question"),
-		Answer:              stringMapValue(entry, "answer"),
+		Question:            stringMapValue(requestInfo, "message"),
+		Answer:              stringMapValue(finalInfo, "answer"),
 		AnswerMode:          answerMode,
 		ProcessSummary:      processSummary,
 		Details:             details,
@@ -271,35 +322,35 @@ func publicAnswerLogRecordFromMap(entry map[string]any, fallbackID string) publi
 	return record
 }
 
-func groupPublicConversationRecords(records []publicAnswerLogRecord) map[string][]publicAnswerLogRecord {
-	groups := map[string][]publicAnswerLogRecord{}
+func groupCustomerConversationRecords(records []customerChatLogRecord) map[string][]customerChatLogRecord {
+	groups := map[string][]customerChatLogRecord{}
 	for _, record := range records {
 		groups[record.SessionKey] = append(groups[record.SessionKey], record)
 	}
 	for _, records := range groups {
-		sortPublicConversationRecords(records)
+		sortCustomerConversationRecords(records)
 	}
 	return groups
 }
 
-func sortPublicConversationRecords(records []publicAnswerLogRecord) {
+func sortCustomerConversationRecords(records []customerChatLogRecord) {
 	sort.SliceStable(records, func(i, j int) bool {
 		return records[i].ConversationSortKey.Before(records[j].ConversationSortKey)
 	})
 }
 
-func summarizePublicConversation(records []publicAnswerLogRecord) publicConversationSummary {
-	sortPublicConversationRecords(records)
+func summarizeCustomerConversation(records []customerChatLogRecord) customerConversationSummary {
+	sortCustomerConversationRecords(records)
 	first := records[0]
 	last := records[len(records)-1]
-	return publicConversationSummary{
+	return customerConversationSummary{
 		ID:             first.SessionKey,
 		SessionID:      firstNonEmpty(first.SessionID, "未指定"),
 		UserID:         firstNonEmpty(last.UserID, first.UserID),
-		Title:          truncatePublicConversationText(firstNonEmpty(first.Question, last.Question, first.SessionKey), 36),
-		FirstQuestion:  truncatePublicConversationText(first.Question, 120),
-		LastQuestion:   truncatePublicConversationText(last.Question, 120),
-		LastAnswer:     truncatePublicConversationText(last.Answer, 160),
+		Title:          truncateCustomerConversationText(firstNonEmpty(first.Question, last.Question, first.SessionKey), 36),
+		FirstQuestion:  truncateCustomerConversationText(first.Question, 120),
+		LastQuestion:   truncateCustomerConversationText(last.Question, 120),
+		LastAnswer:     truncateCustomerConversationText(last.Answer, 160),
 		LastAnswerMode: last.AnswerMode,
 		MessageCount:   len(records) * 2,
 		TurnCount:      len(records),
@@ -308,12 +359,12 @@ func summarizePublicConversation(records []publicAnswerLogRecord) publicConversa
 	}
 }
 
-func publicConversationMessages(records []publicAnswerLogRecord) []publicConversationMessage {
-	messages := make([]publicConversationMessage, 0, len(records)*2)
+func customerConversationMessages(records []customerChatLogRecord) []customerConversationMessage {
+	messages := make([]customerConversationMessage, 0, len(records)*2)
 	for index, record := range records {
-		questionID := publicConversationMessageID(record.SessionKey, index, "question")
-		answerID := publicConversationMessageID(record.SessionKey, index, "answer")
-		messages = append(messages, publicConversationMessage{
+		questionID := customerConversationMessageID(record.SessionKey, index, "question")
+		answerID := customerConversationMessageID(record.SessionKey, index, "answer")
+		messages = append(messages, customerConversationMessage{
 			ID:        questionID,
 			Role:      "user",
 			Content:   record.Question,
@@ -321,7 +372,7 @@ func publicConversationMessages(records []publicAnswerLogRecord) []publicConvers
 			TraceID:   record.TraceID,
 			MessageID: record.QuestionMessageID,
 		})
-		messages = append(messages, publicConversationMessage{
+		messages = append(messages, customerConversationMessage{
 			ID:             answerID,
 			Role:           "assistant",
 			Content:        record.Answer,
@@ -336,7 +387,7 @@ func publicConversationMessages(records []publicAnswerLogRecord) []publicConvers
 	return messages
 }
 
-func publicConversationSafeDetails(entry map[string]any) map[string]any {
+func customerConversationSafeDetails(entry map[string]any) map[string]any {
 	details := mapValue(entry["details"])
 	jsonData := mapValue(entry["json_data"])
 	if len(details) == 0 {
@@ -363,10 +414,10 @@ func publicConversationSafeDetails(entry map[string]any) map[string]any {
 		result["reasoning"] = thinking
 		result["reasoning_chars"] = len([]rune(thinking))
 	}
-	if summary := firstNonEmpty(stringMapValue(entry, "process_summary"), stringMapValue(details, "process_summary")); summary != "" {
+	if summary := firstNonEmpty(customerConversationProcessSummaryFromStandardTrace(entry), stringMapValue(details, "process_summary")); summary != "" {
 		result["process_summary"] = summary
 	}
-	if mode := firstNonEmpty(stringMapValue(entry, "answer_mode"), stringMapValue(details, "answer_mode")); mode != "" {
+	if mode := firstNonEmpty(stringMapValue(mapValue(entry["final"]), "answer_mode"), stringMapValue(details, "answer_mode")); mode != "" {
 		result["answer_mode"] = mode
 	}
 	if len(result) == 0 {
@@ -375,7 +426,24 @@ func publicConversationSafeDetails(entry map[string]any) map[string]any {
 	return result
 }
 
-func publicConversationMessageID(sessionKey string, index int, role string) string {
+func customerConversationProcessSummaryFromStandardTrace(entry map[string]any) string {
+	routerOutput := mapValue(mapValue(entry["router"])["output"])
+	finalInfo := mapValue(entry["final"])
+	specialist := mapValue(entry["specialist"])
+	parts := []string{}
+	if specialistName := stringMapValue(specialist, "name"); specialistName != "" {
+		parts = append(parts, "Specialist: "+specialistName)
+	}
+	if intent := stringMapValue(routerOutput, "intent"); intent != "" {
+		parts = append(parts, "Intent: "+intent)
+	}
+	if mode := stringMapValue(finalInfo, "answer_mode"); mode != "" {
+		parts = append(parts, "Mode: "+mode)
+	}
+	return strings.Join(parts, " | ")
+}
+
+func customerConversationMessageID(sessionKey string, index int, role string) string {
 	sessionKey = strings.TrimSpace(sessionKey)
 	if sessionKey == "" {
 		sessionKey = "anonymous"
@@ -408,7 +476,7 @@ func mapValue(value any) map[string]any {
 	return nil
 }
 
-func parsePublicConversationTime(value string) time.Time {
+func parseCustomerConversationTime(value string) time.Time {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return time.Time{}
@@ -421,16 +489,16 @@ func parsePublicConversationTime(value string) time.Time {
 	return time.Time{}
 }
 
-func firstParsedPublicConversationTime(values ...string) time.Time {
+func firstParsedCustomerConversationTime(values ...string) time.Time {
 	for _, value := range values {
-		if parsed := parsePublicConversationTime(value); !parsed.IsZero() {
+		if parsed := parseCustomerConversationTime(value); !parsed.IsZero() {
 			return parsed
 		}
 	}
 	return time.Time{}
 }
 
-func truncatePublicConversationText(value string, limit int) string {
+func truncateCustomerConversationText(value string, limit int) string {
 	value = strings.TrimSpace(strings.Join(strings.Fields(value), " "))
 	if limit <= 0 {
 		return value

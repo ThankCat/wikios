@@ -28,22 +28,22 @@ WIKIOS_SUPPORT_PHONE=400-1080-106
 WIKIOS_SUPPORT_WECOM=企业微信
 WIKIOS_LLM_TIMEOUT_SEC=300
 WIKIOS_LLM_ADMIN_TIMEOUT_SEC=300
-WIKIOS_PUBLIC_RESPONSE_TIMEOUT_SEC=300
-WIKIOS_PUBLIC_ANSWER_LOG_ENABLED=true
-WIKIOS_PUBLIC_ANSWER_LOG_REDACT=true
-WIKIOS_PUBLIC_ANSWER_LOG_RETENTION_DAYS=14
+WIKIOS_CUSTOMER_RESPONSE_TIMEOUT_SEC=300
+WIKIOS_CUSTOMER_CHAT_LOG_ENABLED=true
+WIKIOS_CUSTOMER_CHAT_LOG_REDACT=true
+WIKIOS_CUSTOMER_CHAT_LOG_RETENTION_DAYS=14
 ```
 
 重点检查：
 
-- LLM 模型不再通过 `.env` 或 YAML 配置 API Key。服务启动后请进入管理后台，在“模型”模块新增并启用 OpenAI-compatible 模型；未启用模型时 public 问答和知识库助手会明确提示先配置模型。
-- public 问答日志默认写入 `.workspace/public_answer_logs/*.jsonl`，并开启密钥、Token、手机号、邮箱脱敏与 14 天保留策略。
+- LLM 模型不再通过 `.env` 或 YAML 配置 API Key。服务启动后请进入管理后台，在“模型”模块新增并启用 OpenAI-compatible 模型；未启用模型时 客户问答和知识库助手会明确提示先配置模型。
+- 客户问答日志默认写入 `.workspace/customer_chat_logs/*.jsonl`，并开启密钥、Token、手机号、邮箱脱敏与 14 天保留策略。
 - WikiOS 当前不内置后台登录；如果对公网开放，请在反向代理或上游网关增加访问控制。
 - `WIKIOS_WIKI_GIT_URL` 推荐使用 HTTPS 地址，例如 `https://github.com/<owner>/<repo>.git`。
 - `WIKIOS_WIKI_GIT_TOKEN` 使用 GitHub fine-grained token，至少给 Wiki 仓库 `Contents: Read and write` 权限；Token 只放环境变量，不写入 remote、数据库或前端。
 - `WIKIOS_WIKI_GIT_USERNAME` 默认 `x-access-token`，通常不用改。
 - `WIKIOS_WIKI_GIT_RESET_ON_START=false` 是安全默认值；改成 `true` 会在启动时丢弃 Wiki 仓库内未提交改动。
-- `WIKIOS_SUPPORT_PHONE` 和 `WIKIOS_SUPPORT_WECOM` 是 public query 注入给 LLM 的公开客服联系方式。
+- `WIKIOS_SUPPORT_PHONE` 和 `WIKIOS_SUPPORT_WECOM` 是 customer chat 注入给 LLM 的公开客服联系方式。
 
 ## 2. 配置 Wiki 仓库 Token 权限
 
@@ -248,7 +248,7 @@ docker compose --env-file deploy/.env.prod -f docker-compose.yml up -d --build
 
 不要只运行 `docker compose up` 后依赖根目录 `.env`，因为根目录 `.env` 可能是本地开发配置。
 
-### public routed prompt 找不到
+### customer routed prompt 找不到
 
 这通常是镜像太旧或构建上下文不对。当前 Dockerfile 会复制：
 
@@ -256,7 +256,7 @@ docker compose --env-file deploy/.env.prod -f docker-compose.yml up -d --build
 COPY internal/llm/prompts /app/internal/llm/prompts
 ```
 
-公开问答当前使用 `public_router_system.md` 和 `public_specialist_*.md`。
+公开问答当前使用 `customer_router_system.md` 和 `customer_specialist_*.md`。
 
 重新执行：
 

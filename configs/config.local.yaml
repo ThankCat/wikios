@@ -40,11 +40,11 @@ web:
 upload:
   max_text_file_kb: 500
 
-public_intents:
+customer_intents:
   enabled: true
-  path: configs/public_intents.yaml
+  path: configs/customer_intents.yaml
 
-public_query:
+customer_query:
   candidate_top_k: 6
   max_evidence_chars: 2400
   response_timeout_sec: 300

@@ -265,7 +265,7 @@ func TestWikiSearchPagesMatchesMixedLatinTypo(t *testing.T) {
 	env := &runtime.ExecEnv{
 		WikiRoot:     root,
 		WorkspaceDir: cfg.Workspace.BaseDir,
-		Mode:         "public",
+		Mode:         "customer",
 		QMDIndex:     cfg.MountedWiki.QMDIndex,
 	}
 	result, err := rt.Execute(context.Background(), env, runtime.ToolCall{

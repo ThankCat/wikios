@@ -16,7 +16,7 @@ import (
 	"wikios/internal/runtime"
 )
 
-type publicRoutedPipelineTestLLM struct {
+type customerRoutedPipelineTestLLM struct {
 	routerText               string
 	routerErr                error
 	specialistText           string
@@ -27,11 +27,11 @@ type publicRoutedPipelineTestLLM struct {
 	models                   []string
 }
 
-func (m *publicRoutedPipelineTestLLM) Chat(ctx context.Context, model string, messages []llm.Message) (string, error) {
+func (m *customerRoutedPipelineTestLLM) Chat(ctx context.Context, model string, messages []llm.Message) (string, error) {
 	return m.StreamChat(ctx, model, messages, nil)
 }
 
-func (m *publicRoutedPipelineTestLLM) StreamChat(ctx context.Context, model string, messages []llm.Message, onDelta func(string)) (string, error) {
+func (m *customerRoutedPipelineTestLLM) StreamChat(ctx context.Context, model string, messages []llm.Message, onDelta func(string)) (string, error) {
 	system := ""
 	if len(messages) > 0 {
 		system = messages[0].Content
@@ -63,12 +63,12 @@ func (m *publicRoutedPipelineTestLLM) StreamChat(ctx context.Context, model stri
 }
 
 func TestAnswerRoutedPricingUsesSpecialistAnswer(t *testing.T) {
-	llmClient := &publicRoutedPipelineTestLLM{
-		routerText:     `{"specialist":"pricing","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"product":"static_ip"},"missing_info":["static_type","bandwidth","quantity"],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"answer_policy":"普通问价，只回答公开基础价或起步价。"}`,
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["static_type","bandwidth","quantity"],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户是普通静态 IP 问价，未指定共享/独享、带宽和数量。"}`,
 		specialistText: `{"answer_mode":"evidence","answer":"我们静态 IP 分共享型和独享型，按月计费。共享型 25 元/个/月起，独享型 300 元/个/月起。您更偏长期固定账号，还是批量业务使用？","review_question":"","confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
 	}
-	svc := newPublicRoutedPipelineTestService(t, llmClient, "")
-	resp, err := svc.answerRouted(context.Background(), "trace-routed-pricing", PublicAnswerRequest{
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	resp, err := svc.answerRouted(context.Background(), "trace-routed-pricing", CustomerChatRequest{
 		Question:   "静态IP 怎么卖的?",
 		PersistLog: boolPtr(false),
 	}, nil, DefaultRuntimeSettings(svc.deps.Config))
@@ -87,15 +87,15 @@ func TestAnswerRoutedPricingUsesSpecialistAnswer(t *testing.T) {
 }
 
 func TestAnswerRoutedUsesConfiguredRouterAndSpecialistModels(t *testing.T) {
-	llmClient := &publicRoutedPipelineTestLLM{
-		routerText:     `{"specialist":"pricing","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"product":"static_ip"},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"answer_policy":"普通问价。"}`,
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户是普通静态 IP 问价。"}`,
 		specialistText: `{"answer_mode":"evidence","answer":"共享型 25 元/个/月起。","review_question":"","confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
 	}
-	svc := newPublicRoutedPipelineTestService(t, llmClient, "")
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
 	settings := DefaultRuntimeSettings(svc.deps.Config)
-	settings.PublicQuery.RouterModelID = "router-fast"
-	settings.PublicQuery.SpecialistModelID = "specialist-main"
-	resp, err := svc.answerRouted(context.Background(), "trace-routed-models", PublicAnswerRequest{
+	settings.CustomerChat.RouterModelID = "router-fast"
+	settings.CustomerChat.SpecialistModelID = "specialist-main"
+	resp, err := svc.answerRouted(context.Background(), "trace-routed-models", CustomerChatRequest{
 		Question:   "静态IP 怎么卖的?",
 		PersistLog: boolPtr(false),
 	}, nil, settings)
@@ -111,7 +111,7 @@ func TestAnswerRoutedUsesConfiguredRouterAndSpecialistModels(t *testing.T) {
 }
 
 func TestPricingSpecialistPromptDefinesGenericStartingPrice(t *testing.T) {
-	content, err := os.ReadFile(filepath.Join("..", "llm", "prompts", "public_specialist_pricing.md"))
+	content, err := os.ReadFile(filepath.Join("..", "llm", "prompts", "customer_specialist_pricing.md"))
 	if err != nil {
 		t.Fatalf("read pricing prompt: %v", err)
 	}
@@ -125,12 +125,12 @@ func TestPricingSpecialistPromptDefinesGenericStartingPrice(t *testing.T) {
 }
 
 func TestAnswerRoutedKeepsSpecialistAnswerUnchanged(t *testing.T) {
-	llmClient := &publicRoutedPipelineTestLLM{
-		routerText:     `{"specialist":"product","intent":"static_ip_type_compare","rewritten_question":"客户想比较共享型和独享型静态 IP。","history_summary":"客户前面询问静态 IP 价格。","slots":{"product":"static_ip"},"missing_info":[],"risk_flags":[],"needs_retrieval":true,"retrieval_queries":["共享型 独享型 静态 IP 区别"],"answer_policy":"解释产品差异，不改写为价格兜底。"}`,
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"product","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_type_compare","rewritten_question":"客户想比较共享型和独享型静态 IP。","history_summary":"客户前面询问静态 IP 价格。","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":[],"needs_retrieval":true,"retrieval_queries":["共享型 独享型 静态 IP 区别"],"handoff_notes":"用户询问共享型和独享型静态 IP 的产品差异。"}`,
 		specialistText: `{"answer_mode":"evidence","answer":"共享型静态 IP 是多人共享带宽，起步价更低，适合预算敏感或数量较多的场景，也支持按数量享受折扣；独享型是独立带宽，稳定性更好，适合长期固定账号。您更看重成本还是稳定性？","review_question":"","confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-proxy-ip-products.md","confidence":"high"}],"notes":""}`,
 	}
-	svc := newPublicRoutedPipelineTestService(t, llmClient, "")
-	resp, err := svc.answerRouted(context.Background(), "trace-routed-product", PublicAnswerRequest{
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	resp, err := svc.answerRouted(context.Background(), "trace-routed-product", CustomerChatRequest{
 		Question:   "共享型和独享型有什么区别吗?",
 		PersistLog: boolPtr(false),
 		History: []ChatMessage{
@@ -150,12 +150,12 @@ func TestAnswerRoutedKeepsSpecialistAnswerUnchanged(t *testing.T) {
 }
 
 func TestAnswerRoutedPurchaseUsesSpecialistAnswer(t *testing.T) {
-	llmClient := &publicRoutedPipelineTestLLM{
-		routerText:     `{"specialist":"purchase","intent":"trial_download","rewritten_question":"客户想知道测试 IP 在哪里领取。","history_summary":"","slots":{"product":"proxy_ip"},"missing_info":[],"risk_flags":[],"needs_retrieval":true,"retrieval_queries":["测试 IP 领取 试用"],"answer_policy":"说明测试领取入口和下一步。"}`,
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"purchase","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"trial_download","rewritten_question":"客户想知道测试 IP 在哪里领取。","history_summary":"","slots":{"primary_product":"unknown","products":[],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":[],"needs_retrieval":true,"retrieval_queries":["测试 IP 领取 试用"],"handoff_notes":"用户询问测试 IP 领取位置。"}`,
 		specialistText: `{"answer_mode":"evidence","answer":"我们测试 IP 一般按页面流程申请或在官方入口领取，先登录后台选择对应产品，再按提示提交测试需求。您要测试动态还是静态 IP？","review_question":"","confidence":0.88,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/procedures/si-ye-tian-test-trial-procedure.md","confidence":"high"}],"notes":""}`,
 	}
-	svc := newPublicRoutedPipelineTestService(t, llmClient, "")
-	resp, err := svc.answerRouted(context.Background(), "trace-routed-purchase", PublicAnswerRequest{
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	resp, err := svc.answerRouted(context.Background(), "trace-routed-purchase", CustomerChatRequest{
 		Question:   "测试 IP 在哪里领取？",
 		PersistLog: boolPtr(false),
 	}, nil, DefaultRuntimeSettings(svc.deps.Config))
@@ -174,12 +174,12 @@ func TestAnswerRoutedPurchaseUsesSpecialistAnswer(t *testing.T) {
 }
 
 func TestAnswerRoutedTechnicalUsesSpecialistAnswer(t *testing.T) {
-	llmClient := &publicRoutedPipelineTestLLM{
-		routerText:     `{"specialist":"technical","intent":"api_whitelist_setup","rewritten_question":"客户想知道怎么添加白名单。","history_summary":"","slots":{"product":"dynamic_ip"},"missing_info":[],"risk_flags":["technical"],"needs_retrieval":true,"retrieval_queries":["添加白名单 API 配置"],"answer_policy":"给出简短配置步骤。"}`,
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"technical","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"api_whitelist_setup","rewritten_question":"客户想知道怎么添加白名单。","history_summary":"","slots":{"primary_product":"dynamic_ip","products":["dynamic_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["technical"],"needs_retrieval":true,"retrieval_queries":["添加白名单 API 配置"],"handoff_notes":"用户询问 API 白名单配置。"}`,
 		specialistText: `{"answer_mode":"evidence","answer":"我们白名单通常先在后台获取当前出口 IP，再添加到授权白名单并保存，随后重新连接代理测试。您现在用的是动态 IP 还是静态 IP？","review_question":"","confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/procedures/si-ye-tian-api-whitelist-setup.md","confidence":"high"}],"notes":""}`,
 	}
-	svc := newPublicRoutedPipelineTestService(t, llmClient, "")
-	resp, err := svc.answerRouted(context.Background(), "trace-routed-technical", PublicAnswerRequest{
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	resp, err := svc.answerRouted(context.Background(), "trace-routed-technical", CustomerChatRequest{
 		Question:   "怎么添加白名单？",
 		PersistLog: boolPtr(false),
 	}, nil, DefaultRuntimeSettings(svc.deps.Config))
@@ -198,12 +198,12 @@ func TestAnswerRoutedTechnicalUsesSpecialistAnswer(t *testing.T) {
 }
 
 func TestAnswerRoutedTroubleshootingUsesSpecialistAnswer(t *testing.T) {
-	llmClient := &publicRoutedPipelineTestLLM{
-		routerText:     `{"specialist":"troubleshooting","intent":"ip_not_changed","rewritten_question":"客户连接静态 IP 后发现出口 IP 没变。","history_summary":"","slots":{"product":"static_ip"},"missing_info":["tool"],"risk_flags":["troubleshooting"],"needs_retrieval":true,"retrieval_queries":["静态 IP 连接后 IP 没变 排查"],"answer_policy":"先给可执行排查步骤。"}`,
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"troubleshooting","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"ip_not_changed","rewritten_question":"客户连接静态 IP 后发现出口 IP 没变。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["device"],"risk_flags":["troubleshooting"],"needs_retrieval":true,"retrieval_queries":["静态 IP 连接后 IP 没变 排查"],"handoff_notes":"用户反馈连接后 IP 没变，未说明使用设备或工具。"}`,
 		specialistText: `{"answer_mode":"evidence","answer":"我们可以先按这几步查：确认代理已连接成功，关闭本地直连或分流规则，再用浏览器无痕窗口重新测 IP。您现在用的是什么工具？","review_question":"","confidence":0.86,"evidence_confidence":0.88,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/procedures/si-ye-tian-connection-troubleshooting.md","confidence":"high"}],"notes":""}`,
 	}
-	svc := newPublicRoutedPipelineTestService(t, llmClient, "")
-	resp, err := svc.answerRouted(context.Background(), "trace-routed-troubleshooting", PublicAnswerRequest{
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	resp, err := svc.answerRouted(context.Background(), "trace-routed-troubleshooting", CustomerChatRequest{
 		Question:   "静态 IP 连接了但是 IP 没变？",
 		PersistLog: boolPtr(false),
 	}, nil, DefaultRuntimeSettings(svc.deps.Config))
@@ -222,12 +222,12 @@ func TestAnswerRoutedTroubleshootingUsesSpecialistAnswer(t *testing.T) {
 }
 
 func TestAnswerRoutedReceptionUsesSpecialistAnswer(t *testing.T) {
-	llmClient := &publicRoutedPipelineTestLLM{
-		routerText:     `{"specialist":"reception","intent":"explicit_contact_question","rewritten_question":"客户想了解四叶天客服联系方式。","history_summary":"","slots":{},"missing_info":[],"risk_flags":[],"needs_retrieval":false,"retrieval_queries":[],"answer_policy":"客户明确问联系方式，可以使用公开联系方式。"}`,
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"reception","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"explicit_contact_question","rewritten_question":"客户想了解四叶天客服联系方式。","history_summary":"","slots":{"primary_product":"unknown","products":[],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":[],"needs_retrieval":false,"retrieval_queries":[],"handoff_notes":"用户明确询问公开联系方式。"}`,
 		specialistText: `{"answer_mode":"self_answer","answer":"我们客服电话是 400-1080-106，也可以通过企业微信联系。您这边是想咨询购买、配置还是售后问题？","review_question":"","confidence":0.9,"evidence_confidence":0,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[],"notes":""}`,
 	}
-	svc := newPublicRoutedPipelineTestService(t, llmClient, "")
-	resp, err := svc.answerRouted(context.Background(), "trace-routed-reception", PublicAnswerRequest{
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	resp, err := svc.answerRouted(context.Background(), "trace-routed-reception", CustomerChatRequest{
 		Question:   "客服电话是多少？",
 		PersistLog: boolPtr(false),
 	}, nil, DefaultRuntimeSettings(svc.deps.Config))
@@ -246,12 +246,12 @@ func TestAnswerRoutedReceptionUsesSpecialistAnswer(t *testing.T) {
 }
 
 func TestAnswerRoutedBillingAfterSalesUsesSpecialistAnswer(t *testing.T) {
-	llmClient := &publicRoutedPipelineTestLLM{
-		routerText:     `{"specialist":"billing_after_sales","intent":"invoice_request","rewritten_question":"客户想了解能不能开发票。","history_summary":"","slots":{},"missing_info":[],"risk_flags":["billing"],"needs_retrieval":true,"retrieval_queries":["发票 开票 售后 政策"],"answer_policy":"说明发票处理方式，不承诺固定时效。"}`,
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"billing_after_sales","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"invoice_request","rewritten_question":"客户想了解能不能开发票。","history_summary":"","slots":{"primary_product":"unknown","products":[],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["billing"],"needs_retrieval":true,"retrieval_queries":["发票 开票 售后 政策"],"handoff_notes":"用户询问发票相关售后问题。"}`,
 		specialistText: `{"answer_mode":"evidence","answer":"我们支持按规则处理发票需求，通常需要您先确认订单和开票信息，再按页面提示提交。具体类型和时效以当前页面规则为准。","review_question":"","confidence":0.82,"evidence_confidence":0.8,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/policies/si-ye-tian-after-sales-policy.md","confidence":"medium"}],"notes":""}`,
 	}
-	svc := newPublicRoutedPipelineTestService(t, llmClient, "")
-	resp, err := svc.answerRouted(context.Background(), "trace-routed-billing", PublicAnswerRequest{
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	resp, err := svc.answerRouted(context.Background(), "trace-routed-billing", CustomerChatRequest{
 		Question:   "能开发票吗？",
 		PersistLog: boolPtr(false),
 	}, nil, DefaultRuntimeSettings(svc.deps.Config))
@@ -269,19 +269,24 @@ func TestAnswerRoutedBillingAfterSalesUsesSpecialistAnswer(t *testing.T) {
 	}
 }
 
-func TestPublicSpecialistDecisionPromptDoesNotIncludeDerivedEvidence(t *testing.T) {
-	svc := newPublicRoutedPipelineTestService(t, &publicRoutedPipelineTestLLM{}, "")
-	prompt := svc.publicSpecialistDecisionPrompt(
-		PublicAnswerRequest{Question: "静态 IP 怎么卖？"},
+func TestCustomerSpecialistDecisionPromptDoesNotIncludeDerivedEvidence(t *testing.T) {
+	svc := newCustomerRoutedPipelineTestService(t, &customerRoutedPipelineTestLLM{}, "")
+	prompt := svc.customerSpecialistDecisionPrompt(
+		CustomerChatRequest{Question: "静态 IP 怎么卖？"},
 		"2026-05-27T10:00:00+08:00",
-		&PublicRouterOutput{
+		&CustomerRouterOutput{
+			ContractVersion:   customerRouterContractVersion,
 			Specialist:        "pricing",
+			RoutingConfidence: 0.91,
+			RoutingReason:     "用户明确询问静态 IP 怎么收费，属于价格咨询。",
 			Intent:            "static_ip_price_inquiry",
 			RewrittenQuestion: "客户想了解静态 IP 怎么收费。",
-			Slots:             PublicRouterSlots{Product: "static_ip"},
+			Slots:             CustomerRouterSlots{PrimaryProduct: "static_ip", Products: []string{"static_ip"}},
+			Ambiguity:         CustomerRouterAmbiguity{IsAmbiguous: false},
+			HandoffNotes:      "用户是普通静态 IP 问价。",
 		},
-		publicSpecialistEvidenceResult{
-			Profile: publicSpecialistProfile("pricing"),
+		customerSpecialistEvidenceResult{
+			Profile: customerSpecialistProfile("pricing"),
 			ContentBlocks: []string{
 				"- path: wiki/knowledge/current-static-pricing.md\n  title: 静态 IP 价格\n  confidence: high\n  content: |\n    | IP 类型 | 共享/独享 | 带宽 | 官网原价 |\n    | 数据中心 IP | 独享 | 5M | 300 |",
 			},
@@ -294,16 +299,26 @@ func TestPublicSpecialistDecisionPromptDoesNotIncludeDerivedEvidence(t *testing.
 	if !strings.Contains(prompt, "candidate_pages:") {
 		t.Fatalf("expected specialist prompt to include candidate pages, got:\n%s", prompt)
 	}
+	for _, want := range []string{"contract_version: customer_router.v1", "routing_reason:", "primary_product: static_ip", "ambiguity:", "handoff_notes:"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected specialist prompt to include Router V1 field %q, got:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{"answer_" + "policy:", "product_" + "resolution:", "  product:"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("specialist prompt must not include legacy router field %q, got:\n%s", forbidden, prompt)
+		}
+	}
 }
 
 func TestAnswerRoutedReturnsSpecialistAnswerWithoutSanitizeReplacement(t *testing.T) {
 	rawAnswer := "请看 wiki/knowledge/internal.md 这条路径。"
-	llmClient := &publicRoutedPipelineTestLLM{
-		routerText:     `{"specialist":"pricing","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"product":"static_ip"},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"answer_policy":"普通问价。"}`,
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户是普通静态 IP 问价。"}`,
 		specialistText: `{"answer_mode":"evidence","answer":"` + rawAnswer + `","review_question":"","confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
 	}
-	svc := newPublicRoutedPipelineTestService(t, llmClient, "")
-	resp, err := svc.answerRouted(context.Background(), "trace-routed-no-sanitize", PublicAnswerRequest{
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	resp, err := svc.answerRouted(context.Background(), "trace-routed-no-sanitize", CustomerChatRequest{
 		Question:   "静态IP 怎么卖的?",
 		PersistLog: boolPtr(false),
 	}, nil, DefaultRuntimeSettings(svc.deps.Config))
@@ -319,12 +334,12 @@ func TestAnswerRoutedReturnsSpecialistAnswerWithoutSanitizeReplacement(t *testin
 }
 
 func TestAnswerRoutedSpecialistFailureReturnsErrorWithoutFallback(t *testing.T) {
-	llmClient := &publicRoutedPipelineTestLLM{
-		routerText:    `{"specialist":"pricing","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"product":"static_ip"},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"answer_policy":"普通问价。"}`,
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:    `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户是普通静态 IP 问价。"}`,
 		specialistErr: errors.New("specialist unavailable"),
 	}
-	svc := newPublicRoutedPipelineTestService(t, llmClient, "")
-	resp, err := svc.answerRouted(context.Background(), "trace-routed-fallback", PublicAnswerRequest{
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	resp, err := svc.answerRouted(context.Background(), "trace-routed-fallback", CustomerChatRequest{
 		Question:   "静态IP 怎么卖的?",
 		PersistLog: boolPtr(false),
 	}, nil, DefaultRuntimeSettings(svc.deps.Config))
@@ -337,12 +352,12 @@ func TestAnswerRoutedSpecialistFailureReturnsErrorWithoutFallback(t *testing.T) 
 }
 
 func TestAnswerRoutedSpecialistEmptyAnswerReturnsErrorWithoutFallback(t *testing.T) {
-	llmClient := &publicRoutedPipelineTestLLM{
-		routerText:     `{"specialist":"pricing","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"product":"static_ip"},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"answer_policy":"普通问价。"}`,
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户是普通静态 IP 问价。"}`,
 		specialistText: `{"answer_mode":"evidence","answer":"","review_question":"","confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
 	}
-	svc := newPublicRoutedPipelineTestService(t, llmClient, "")
-	resp, err := svc.answerRouted(context.Background(), "trace-routed-empty-answer", PublicAnswerRequest{
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	resp, err := svc.answerRouted(context.Background(), "trace-routed-empty-answer", CustomerChatRequest{
 		Question:   "静态IP 怎么卖的?",
 		PersistLog: boolPtr(false),
 	}, nil, DefaultRuntimeSettings(svc.deps.Config))
@@ -355,12 +370,12 @@ func TestAnswerRoutedSpecialistEmptyAnswerReturnsErrorWithoutFallback(t *testing
 }
 
 func TestAnswerRoutedSpecialistInvalidJSONReturnsErrorWithoutRepairOrFallback(t *testing.T) {
-	llmClient := &publicRoutedPipelineTestLLM{
-		routerText:     `{"specialist":"pricing","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"product":"static_ip"},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"answer_policy":"普通问价。"}`,
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户是普通静态 IP 问价。"}`,
 		specialistText: `不是 JSON，但也不要被服务端当答案发出去`,
 	}
-	svc := newPublicRoutedPipelineTestService(t, llmClient, "")
-	resp, err := svc.answerRouted(context.Background(), "trace-routed-invalid-json", PublicAnswerRequest{
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	resp, err := svc.answerRouted(context.Background(), "trace-routed-invalid-json", CustomerChatRequest{
 		Question:   "静态IP 怎么卖的?",
 		PersistLog: boolPtr(false),
 	}, nil, DefaultRuntimeSettings(svc.deps.Config))
@@ -373,11 +388,11 @@ func TestAnswerRoutedSpecialistInvalidJSONReturnsErrorWithoutRepairOrFallback(t 
 }
 
 func TestAnswerRoutedRouterFailureReturnsErrorWithoutFallback(t *testing.T) {
-	llmClient := &publicRoutedPipelineTestLLM{
+	llmClient := &customerRoutedPipelineTestLLM{
 		routerErr: errors.New("router unavailable"),
 	}
-	svc := newPublicRoutedPipelineTestService(t, llmClient, "")
-	resp, err := svc.answerRouted(context.Background(), "trace-router-failed", PublicAnswerRequest{
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	resp, err := svc.answerRouted(context.Background(), "trace-router-failed", CustomerChatRequest{
 		Question:   "静态IP 怎么卖的?",
 		PersistLog: boolPtr(false),
 	}, nil, DefaultRuntimeSettings(svc.deps.Config))
@@ -390,15 +405,15 @@ func TestAnswerRoutedRouterFailureReturnsErrorWithoutFallback(t *testing.T) {
 }
 
 func TestAnswerRoutedContextDeadlineDoesNotStartFallback(t *testing.T) {
-	llmClient := &publicRoutedPipelineTestLLM{
-		routerText:               `{"specialist":"technical","intent":"api_whitelist_setup","rewritten_question":"客户想知道怎么添加白名单。","history_summary":"","slots":{"product":"dynamic_ip"},"missing_info":[],"risk_flags":["technical"],"needs_retrieval":true,"retrieval_queries":["添加白名单 API 配置"],"answer_policy":"给出简短配置步骤。"}`,
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:               `{"contract_version":"customer_router.v1","specialist":"technical","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"api_whitelist_setup","rewritten_question":"客户想知道怎么添加白名单。","history_summary":"","slots":{"primary_product":"dynamic_ip","products":["dynamic_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["technical"],"needs_retrieval":true,"retrieval_queries":["添加白名单 API 配置"],"handoff_notes":"用户询问 API 白名单配置。"}`,
 		specialistWaitForContext: true,
 	}
-	svc := newPublicRoutedPipelineTestService(t, llmClient, "")
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	resp, err := svc.answerRouted(ctx, "trace-routed-timeout", PublicAnswerRequest{
+	resp, err := svc.answerRouted(ctx, "trace-routed-timeout", CustomerChatRequest{
 		Question:   "API 白名单怎么加？",
 		PersistLog: boolPtr(false),
 	}, nil, DefaultRuntimeSettings(svc.deps.Config))
@@ -411,10 +426,10 @@ func TestAnswerRoutedContextDeadlineDoesNotStartFallback(t *testing.T) {
 	}
 }
 
-func newPublicRoutedPipelineTestService(t *testing.T, llmClient llm.Client, promptDir string) *PublicQueryService {
+func newCustomerRoutedPipelineTestService(t *testing.T, llmClient llm.Client, promptDir string) *CustomerChatService {
 	t.Helper()
 	root := t.TempDir()
-	writePublicRoutedTestPrompts(t, root, promptDir)
+	writeCustomerRoutedTestPrompts(t, root, promptDir)
 	rt := testRuntime(
 		testRuntimeTool{name: "exec.qmd", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
 			raw, err := json.Marshal([]map[string]any{
@@ -459,10 +474,10 @@ func newPublicRoutedPipelineTestService(t *testing.T, llmClient llm.Client, prom
 		}},
 	)
 	cfg := &config.Config{
-		MountedWiki: config.MountedWikiConfig{Root: root, QMDIndex: "test"},
-		PublicQuery: config.PublicQueryConfig{CandidateTopK: 4, MaxEvidenceChars: 1800},
+		MountedWiki:  config.MountedWikiConfig{Root: root, QMDIndex: "test"},
+		CustomerChat: config.CustomerQueryConfig{CandidateTopK: 4, MaxEvidenceChars: 1800},
 	}
-	return NewPublicQueryService(Deps{
+	return NewCustomerChatService(Deps{
 		Config:    cfg,
 		Runtime:   rt,
 		LLM:       llmClient,
@@ -471,22 +486,22 @@ func newPublicRoutedPipelineTestService(t *testing.T, llmClient llm.Client, prom
 	})
 }
 
-func writePublicRoutedTestPrompts(t *testing.T, root string, promptDir string) {
+func writeCustomerRoutedTestPrompts(t *testing.T, root string, promptDir string) {
 	t.Helper()
 	dir := firstNonEmpty(promptDir, root)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir prompt dir: %v", err)
 	}
 	prompts := map[string]string{
-		publicRouterPromptFile:                     "你是四叶天 public answer 的“客服经理 Router”。",
-		"public_specialist_pricing.md":             "你是四叶天代理 IP 的价格套餐客服。",
-		"public_specialist_product.md":             "你是四叶天代理 IP 的产品选型客服。",
-		"public_specialist_safety.md":              "你是四叶天代理 IP 的安全边界客服。",
-		"public_specialist_purchase.md":            "你是四叶天代理 IP 的购买开通客服。",
-		"public_specialist_technical.md":           "你是四叶天代理 IP 的技术配置客服。",
-		"public_specialist_troubleshooting.md":     "你是四叶天代理 IP 的故障排查客服。",
-		"public_specialist_reception.md":           "你是四叶天代理 IP 的前台接待客服。",
-		"public_specialist_billing_after_sales.md": "你是四叶天代理 IP 的账号财务售后客服。",
+		customerRouterPromptFile:                     "你是四叶天 customer chat 的“客服经理 Router”。",
+		"customer_specialist_pricing.md":             "你是四叶天代理 IP 的价格套餐客服。",
+		"customer_specialist_product.md":             "你是四叶天代理 IP 的产品选型客服。",
+		"customer_specialist_safety.md":              "你是四叶天代理 IP 的安全边界客服。",
+		"customer_specialist_purchase.md":            "你是四叶天代理 IP 的购买开通客服。",
+		"customer_specialist_technical.md":           "你是四叶天代理 IP 的技术配置客服。",
+		"customer_specialist_troubleshooting.md":     "你是四叶天代理 IP 的故障排查客服。",
+		"customer_specialist_reception.md":           "你是四叶天代理 IP 的前台接待客服。",
+		"customer_specialist_billing_after_sales.md": "你是四叶天代理 IP 的账号财务售后客服。",
 	}
 	for name, content := range prompts {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {

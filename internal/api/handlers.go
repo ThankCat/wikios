@@ -31,62 +31,62 @@ import (
 )
 
 type Handlers struct {
-	PublicQuery    *service.PublicQueryService
-	ReviewQueue    *service.ReviewQueueService
-	DirectAdmin    *service.DirectAdminService
-	Upload         *service.UploadService
-	Sync           *service.SyncService
-	Store          *store.Store
-	Config         *config.Config
-	PublicIntents  *service.PublicIntentManager
-	ContextCounter *service.ContextCounter
+	CustomerChatService *service.CustomerChatService
+	ReviewQueue         *service.ReviewQueueService
+	DirectAdmin         *service.DirectAdminService
+	Upload              *service.UploadService
+	Sync                *service.SyncService
+	Store               *store.Store
+	Config              *config.Config
+	CustomerIntents     *service.CustomerIntentManager
+	ContextCounter      *service.ContextCounter
 }
 
 func NewHandlers(
-	publicQuery *service.PublicQueryService,
+	customerQuery *service.CustomerChatService,
 	reviewQueue *service.ReviewQueueService,
 	directAdmin *service.DirectAdminService,
 	uploadSvc *service.UploadService,
 	syncSvc *service.SyncService,
 	dataStore *store.Store,
 	cfg *config.Config,
-	publicIntents *service.PublicIntentManager,
+	customerIntents *service.CustomerIntentManager,
 	contextCounter *service.ContextCounter,
 ) *Handlers {
 	return &Handlers{
-		PublicQuery:    publicQuery,
-		ReviewQueue:    reviewQueue,
-		DirectAdmin:    directAdmin,
-		Upload:         uploadSvc,
-		Sync:           syncSvc,
-		Store:          dataStore,
-		Config:         cfg,
-		PublicIntents:  publicIntents,
-		ContextCounter: contextCounter,
+		CustomerChatService: customerQuery,
+		ReviewQueue:         reviewQueue,
+		DirectAdmin:         directAdmin,
+		Upload:              uploadSvc,
+		Sync:                syncSvc,
+		Store:               dataStore,
+		Config:              cfg,
+		CustomerIntents:     customerIntents,
+		ContextCounter:      contextCounter,
 	}
 }
 
 type adminChatRequest struct {
 	Message     string         `json:"message"`
-	Stream      bool           `json:"stream"`
+	Stream      *bool          `json:"stream,omitempty"`
 	ModeHint    string         `json:"mode_hint"`
 	Context     map[string]any `json:"context"`
 	Attachments []attachment   `json:"attachments"`
 	History     []chatMessage  `json:"history"`
 }
 
-type publicAnswerRequest struct {
-	Question          string         `json:"question"`
-	Stream            bool           `json:"stream,omitempty"`
-	PersistLog        *bool          `json:"persist_log,omitempty"`
-	Simulation        bool           `json:"simulation,omitempty"`
-	UserID            string         `json:"user_id"`
-	SessionID         string         `json:"session_id"`
-	QuestionMessageID string         `json:"question_message_id"`
-	AnswerMessageID   string         `json:"answer_message_id"`
-	QuestionCreatedAt string         `json:"question_created_at"`
-	Context           map[string]any `json:"context"`
-	History           []chatMessage  `json:"history"`
+type customerChatRequest struct {
+	Message          string         `json:"message"`
+	Stream           bool           `json:"stream,omitempty"`
+	Simulation       bool           `json:"simulation,omitempty"`
+	Entrypoint       string         `json:"entrypoint,omitempty"`
+	UserID           string         `json:"user_id"`
+	SessionID        string         `json:"session_id"`
+	MessageID        string         `json:"message_id"`
+	AnswerMessageID  string         `json:"answer_message_id"`
+	MessageCreatedAt string         `json:"message_created_at"`
+	Context          map[string]any `json:"context"`
+	History          []chatMessage  `json:"history"`
 }
 
 type adminWikiSaveFileRequest struct {
@@ -141,10 +141,10 @@ type attachment struct {
 }
 
 const chatHistoryLimit = 8
-const defaultPublicAnswerResponseTimeoutSec = 300
-const publicAnswerTimeoutFallbackMessage = "当前在线回复暂时不可用，请稍后再试。"
+const defaultCustomerChatResponseTimeoutSec = 300
+const customerChatTimeoutFallbackMessage = "当前在线回复暂时不可用，请稍后再试。"
 
-type publicIntentsUpdateRequest struct {
+type customerIntentsUpdateRequest struct {
 	Source string `json:"source"`
 }
 
@@ -191,90 +191,78 @@ func (e *sseEmitter) Emit(event service.StreamEvent) {
 	writeSSEWithLock(e.c, event.Type, event.Data, e.mu)
 }
 
-func (h *Handlers) PublicAnswer(c *gin.Context) {
-	var req publicAnswerRequest
+func (h *Handlers) CustomerChat(c *gin.Context) {
+	var req customerChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	if err := normalizeCustomerChatAPIRequest(&req); err != nil {
 		badRequest(c, err)
 		return
 	}
 	if req.Stream {
-		streamNotSupported(c)
+		h.handleCustomerChatStream(c, req)
 		return
 	}
-	req.Stream = false
-	req.PersistLog = nil
-	req.Simulation = false
 	receivedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	answerCtx, cancel := context.WithTimeout(c.Request.Context(), h.publicAnswerResponseTimeout())
+	answerCtx, cancel := context.WithTimeout(c.Request.Context(), h.customerChatResponseTimeout())
 	defer cancel()
-	resp, err := h.PublicQuery.Answer(answerCtx, traceID(c), publicAnswerServiceRequest(req, false, receivedAt))
+	resp, err := h.CustomerChatService.Answer(answerCtx, traceID(c), customerChatServiceRequest(req, false, receivedAt))
 	if err != nil {
-		if publicAnswerResponseTimedOut(answerCtx, c.Request.Context(), err) {
-			log.Printf("public answer timed out trace=%s timeout=%s question=%q err=%v", traceID(c), h.publicAnswerResponseTimeout(), truncateAPIText(req.Question, 80), err)
-			c.JSON(http.StatusOK, publicAnswerClientPayload(&service.PublicAnswerResponse{
-				Answer:     publicAnswerTimeoutFallbackMessage,
+		if customerChatResponseTimedOut(answerCtx, c.Request.Context(), err) {
+			log.Printf("customer chat timed out trace=%s timeout=%s message=%q err=%v", traceID(c), h.customerChatResponseTimeout(), truncateAPIText(req.Message, 80), err)
+			c.JSON(http.StatusOK, customerChatClientPayload(&service.CustomerChatResponse{
+				Answer:     customerChatTimeoutFallbackMessage,
 				ReceivedAt: receivedAt,
 				AnsweredAt: time.Now().UTC().Format(time.RFC3339Nano),
-			}, false))
+			}))
 			return
 		}
 		if requestContextCanceled(c.Request.Context(), err) {
 			return
 		}
-		publicAnswerFailure(c, err)
+		customerChatFailure(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, publicAnswerClientPayload(resp, false))
+	c.JSON(http.StatusOK, customerChatClientPayload(resp))
 }
 
-func (h *Handlers) AdminPublicAnswerAudit(c *gin.Context) {
-	var req publicAnswerRequest
+func normalizeCustomerChatAPIRequest(req *customerChatRequest) error {
+	if req == nil {
+		return fmt.Errorf("request is required")
+	}
+	req.Message = strings.TrimSpace(req.Message)
+	if req.Message == "" {
+		return fmt.Errorf("message is required")
+	}
+	req.Entrypoint = strings.TrimSpace(strings.ToLower(req.Entrypoint))
+	if req.Entrypoint == "" {
+		req.Entrypoint = "external"
+	}
+	if req.Entrypoint != "external" && req.Entrypoint != "internal" {
+		return fmt.Errorf("entrypoint must be external or internal")
+	}
+	return nil
+}
+
+func (h *Handlers) CustomerContextEstimate(c *gin.Context) {
+	var req customerChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		badRequest(c, err)
 		return
 	}
-	persistLog := false
-	req.PersistLog = &persistLog
-	req.Simulation = true
-	req.Stream = false
-	receivedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	resp, err := h.PublicQuery.Answer(c.Request.Context(), traceID(c), publicAnswerServiceRequest(req, false, receivedAt))
-	if err != nil {
-		if requestContextCanceled(c.Request.Context(), err) {
-			return
-		}
-		internalError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, publicAnswerClientPayload(resp, true))
-}
-
-func (h *Handlers) AdminPublicAnswerAuditStream(c *gin.Context) {
-	var req publicAnswerRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		badRequest(c, err)
-		return
-	}
-	persistLog := false
-	req.PersistLog = &persistLog
-	req.Simulation = true
-	req.Stream = true
-	h.handlePublicAnswerStream(c, req, true)
-}
-
-func (h *Handlers) PublicContextEstimate(c *gin.Context) {
-	var req publicAnswerRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := normalizeCustomerChatAPIRequest(&req); err != nil {
 		badRequest(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"mode":          "public",
-		"context_usage": h.estimatePublicContext(req),
+		"mode":          "customer",
+		"context_usage": h.estimateCustomerContext(req),
 	})
 }
 
-func (h *Handlers) handlePublicAnswerStream(c *gin.Context, req publicAnswerRequest, includeDetails bool) {
+func (h *Handlers) handleCustomerChatStream(c *gin.Context, req customerChatRequest) {
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
@@ -283,23 +271,8 @@ func (h *Handlers) handlePublicAnswerStream(c *gin.Context, req publicAnswerRequ
 	stopKeepalive := startSSEKeepalive(c, mu, 8*time.Second)
 	defer stopKeepalive()
 	receivedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	writeSSEWithLock(c, "meta", gin.H{"stream": true, "received_at": receivedAt}, mu)
-	serviceReq := publicAnswerServiceRequest(req, true, receivedAt)
-	if includeDetails {
-		resp, err := h.PublicQuery.AnswerDebugStream(c.Request.Context(), traceID(c), serviceReq, &sseEmitter{c: c, mu: mu})
-		if err != nil {
-			if requestContextCanceled(c.Request.Context(), err) {
-				return
-			}
-			writeSSEWithLock(c, "error", gin.H{"message": err.Error()}, mu)
-			writeSSEWithLock(c, "done", gin.H{"ok": false}, mu)
-			return
-		}
-		writeSSEWithLock(c, "result", publicAnswerClientPayload(resp, includeDetails), mu)
-		writeSSEWithLock(c, "done", gin.H{"ok": true}, mu)
-		return
-	}
-	resp, err := h.PublicQuery.AnswerStream(c.Request.Context(), traceID(c), serviceReq, &sseEmitter{c: c, mu: mu})
+	serviceReq := customerChatServiceRequest(req, true, receivedAt)
+	resp, err := h.CustomerChatService.AnswerStream(c.Request.Context(), traceID(c), serviceReq, &sseEmitter{c: c, mu: mu})
 	if err != nil {
 		if requestContextCanceled(c.Request.Context(), err) {
 			return
@@ -308,67 +281,64 @@ func (h *Handlers) handlePublicAnswerStream(c *gin.Context, req publicAnswerRequ
 		writeSSEWithLock(c, "done", gin.H{"ok": false}, mu)
 		return
 	}
-	writeSSEWithLock(c, "result", publicAnswerClientPayload(resp, includeDetails), mu)
+	writeSSEWithLock(c, "result", customerChatClientPayload(resp), mu)
 	writeSSEWithLock(c, "done", gin.H{"ok": true}, mu)
 }
 
-func publicAnswerServiceRequest(req publicAnswerRequest, stream bool, receivedAt string) service.PublicAnswerRequest {
-	return service.PublicAnswerRequest{
-		Question:          req.Question,
+func customerChatServiceRequest(req customerChatRequest, stream bool, receivedAt string) service.CustomerChatRequest {
+	return service.CustomerChatRequest{
+		Question:          req.Message,
 		Stream:            stream,
-		PersistLog:        req.PersistLog,
+		PersistLog:        nil,
 		Simulation:        req.Simulation,
+		Entrypoint:        req.Entrypoint,
 		UserID:            req.UserID,
 		SessionID:         req.SessionID,
-		QuestionMessageID: req.QuestionMessageID,
+		QuestionMessageID: req.MessageID,
 		AnswerMessageID:   req.AnswerMessageID,
-		QuestionCreatedAt: req.QuestionCreatedAt,
+		QuestionCreatedAt: req.MessageCreatedAt,
 		ReceivedAt:        receivedAt,
 		Context:           req.Context,
 		History:           toServiceHistory(req.History),
 	}
 }
 
-func publicAnswerClientPayload(resp *service.PublicAnswerResponse, includeDetails bool) gin.H {
+func customerChatClientPayload(resp *service.CustomerChatResponse) gin.H {
 	if resp == nil {
 		return gin.H{}
 	}
-	payload := gin.H{
+	return gin.H{
 		"answer":      resp.Answer,
 		"received_at": resp.ReceivedAt,
 		"answered_at": resp.AnsweredAt,
 	}
-	if includeDetails && len(resp.Details) > 0 {
-		payload["details"] = resp.Details
-	}
-	return payload
 }
 
 func requestContextCanceled(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled)
 }
 
-func publicAnswerResponseTimedOut(answerCtx context.Context, requestCtx context.Context, err error) bool {
+func customerChatResponseTimedOut(answerCtx context.Context, requestCtx context.Context, err error) bool {
 	if requestCtx != nil && errors.Is(requestCtx.Err(), context.Canceled) {
 		return false
 	}
 	return errors.Is(answerCtx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded)
 }
 
-func publicAnswerFailure(c *gin.Context, err error) {
-	log.Printf("public answer generation failed trace=%s err=%v", traceID(c), err)
+func customerChatFailure(c *gin.Context, err error) {
+	log.Printf("customer chat generation failed trace=%s err=%v", traceID(c), err)
 	c.JSON(http.StatusInternalServerError, gin.H{
 		"error": gin.H{
-			"code":    "PUBLIC_ANSWER_FAILED",
+			"code":    "CUSTOMER_CHAT_FAILED",
 			"message": "当前回复服务暂时不可用，请稍后再试。",
 		},
 	})
 }
 
-func (h *Handlers) publicAnswerResponseTimeout() time.Duration {
-	seconds := defaultPublicAnswerResponseTimeoutSec
-	if h != nil && h.Config != nil && h.Config.PublicQuery.ResponseTimeoutSec > 0 {
-		seconds = h.Config.PublicQuery.ResponseTimeoutSec
+func (h *Handlers) customerChatResponseTimeout() time.Duration {
+	seconds := defaultCustomerChatResponseTimeoutSec
+	if h != nil && h.Config != nil && h.Config.CustomerChat.ResponseTimeoutSec > 0 {
+		seconds = h.Config.CustomerChat.ResponseTimeoutSec
 	}
 	return time.Duration(seconds) * time.Second
 }
@@ -385,36 +355,36 @@ func truncateAPIText(text string, limit int) string {
 	return string(runes[:limit]) + "..."
 }
 
-func (h *Handlers) AdminGetPublicIntents(c *gin.Context) {
-	if h.PublicIntents == nil {
+func (h *Handlers) AdminGetCustomerIntents(c *gin.Context) {
+	if h.CustomerIntents == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": gin.H{"code": "PUBLIC_INTENTS_UNAVAILABLE", "message": "public intents are not configured"},
+			"error": gin.H{"code": "CUSTOMER_INTENTS_UNAVAILABLE", "message": "customer intents are not configured"},
 		})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"source": h.PublicIntents.SourceOrDefault(),
-		"status": h.PublicIntents.Status(),
+		"source": h.CustomerIntents.SourceOrDefault(),
+		"status": h.CustomerIntents.Status(),
 	})
 }
 
-func (h *Handlers) AdminUpdatePublicIntents(c *gin.Context) {
-	if h.PublicIntents == nil {
+func (h *Handlers) AdminUpdateCustomerIntents(c *gin.Context) {
+	if h.CustomerIntents == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": gin.H{"code": "PUBLIC_INTENTS_UNAVAILABLE", "message": "public intents are not configured"},
+			"error": gin.H{"code": "CUSTOMER_INTENTS_UNAVAILABLE", "message": "customer intents are not configured"},
 		})
 		return
 	}
-	var req publicIntentsUpdateRequest
+	var req customerIntentsUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		badRequest(c, err)
 		return
 	}
-	status, err := h.PublicIntents.Save(req.Source)
+	status, err := h.CustomerIntents.Save(req.Source)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": gin.H{
-				"code":    "INVALID_PUBLIC_INTENTS",
+				"code":    "INVALID_CUSTOMER_INTENTS",
 				"message": err.Error(),
 			},
 			"status": status,
@@ -422,7 +392,7 @@ func (h *Handlers) AdminUpdatePublicIntents(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"source": h.PublicIntents.SourceOrDefault(),
+		"source": h.CustomerIntents.SourceOrDefault(),
 		"status": status,
 	})
 }
@@ -644,12 +614,24 @@ func readUploadRequest(c *gin.Context) (service.UploadRequest, error) {
 	}, nil
 }
 
-func (h *Handlers) AdminChat(c *gin.Context) {
+func (h *Handlers) AdminKnowledgeAssistantChat(c *gin.Context) {
 	var req adminChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		badRequest(c, err)
 		return
 	}
+	stream := true
+	if req.Stream != nil {
+		stream = *req.Stream
+	}
+	if stream {
+		h.handleAdminKnowledgeAssistantStream(c, req)
+		return
+	}
+	h.handleAdminKnowledgeAssistantPlain(c, req)
+}
+
+func (h *Handlers) handleAdminKnowledgeAssistantPlain(c *gin.Context, req adminChatRequest) {
 	mode := firstNonEmpty(strings.TrimSpace(req.ModeHint), detectAdminMode(req.Message, req.Context, req.Attachments))
 	directReq := h.buildDirectAdminRequest(req, mode)
 	contextUsage := h.estimateAdminContext(directReq)
@@ -677,12 +659,7 @@ func (h *Handlers) AdminChat(c *gin.Context) {
 	})
 }
 
-func (h *Handlers) AdminChatStream(c *gin.Context) {
-	var req adminChatRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		badRequest(c, err)
-		return
-	}
+func (h *Handlers) handleAdminKnowledgeAssistantStream(c *gin.Context, req adminChatRequest) {
 	mode := firstNonEmpty(strings.TrimSpace(req.ModeHint), detectAdminMode(req.Message, req.Context, req.Attachments))
 	execution := service.NewExecution(mode)
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
@@ -1454,11 +1431,11 @@ func (h *Handlers) estimateAdminContext(req service.DirectAdminRequest) service.
 	return h.ContextCounter.CountMessages(h.DirectAdmin.InitialMessages(req))
 }
 
-func (h *Handlers) estimatePublicContext(req publicAnswerRequest) service.ContextUsage {
+func (h *Handlers) estimateCustomerContext(req customerChatRequest) service.ContextUsage {
 	if h.ContextCounter == nil {
 		return service.ContextUsage{MaxTokens: 1000000, ReserveTokens: 8192, Estimated: true, Counter: "unavailable"}
 	}
-	messages := []llm.Message{{Role: "system", Content: "WikiOS public answer context"}}
+	messages := []llm.Message{{Role: "system", Content: "WikiOS customer chat context"}}
 	for _, item := range toServiceHistory(req.History) {
 		role := strings.TrimSpace(strings.ToLower(item.Role))
 		if role != "assistant" {
@@ -1473,12 +1450,12 @@ func (h *Handlers) estimatePublicContext(req publicAnswerRequest) service.Contex
 		}
 		messages = append(messages, llm.Message{Role: role, Content: content})
 	}
-	if question := strings.TrimSpace(req.Question); question != "" {
+	if question := strings.TrimSpace(req.Message); question != "" {
 		messages = append(messages, llm.Message{Role: "user", Content: question})
 	}
 	if len(req.Context) > 0 {
 		if raw, err := json.Marshal(req.Context); err == nil {
-			messages = append(messages, llm.Message{Role: "user", Content: "public_context: " + string(raw)})
+			messages = append(messages, llm.Message{Role: "user", Content: "customer_context: " + string(raw)})
 		}
 	}
 	return h.ContextCounter.CountMessages(messages)
@@ -2396,7 +2373,7 @@ func streamNotSupported(c *gin.Context) {
 	c.JSON(http.StatusBadRequest, gin.H{
 		"error": gin.H{
 			"code":    "STREAM_NOT_SUPPORTED",
-			"message": "external public answer only supports non-streaming JSON responses",
+			"message": "external customer chat only supports non-streaming JSON responses",
 		},
 	})
 }

@@ -9,8 +9,8 @@ import (
 	"wikios/internal/config"
 )
 
-func TestPublicIntentConfigMatchesByPriorityAndSkipsDisabled(t *testing.T) {
-	manager := newTestPublicIntentManager(t, `version: 1
+func TestCustomerIntentConfigMatchesByPriorityAndSkipsDisabled(t *testing.T) {
+	manager := newTestCustomerIntentManager(t, `version: 1
 fallbacks:
   generic: fallback
 rules:
@@ -50,8 +50,8 @@ rules:
 	}
 }
 
-func TestPublicIntentSaveKeepsOldSnapshotOnValidationError(t *testing.T) {
-	manager := newTestPublicIntentManager(t, `version: 1
+func TestCustomerIntentSaveKeepsOldSnapshotOnValidationError(t *testing.T) {
+	manager := newTestCustomerIntentManager(t, `version: 1
 fallbacks:
   generic: fallback
 rules:
@@ -81,7 +81,7 @@ rules:
 	}
 }
 
-func TestPublicIntentRejectsBroadInternalResponseWording(t *testing.T) {
+func TestCustomerIntentRejectsBroadInternalResponseWording(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		source string
@@ -130,15 +130,15 @@ rules: []
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, _, err := ParsePublicIntentConfig(tc.source); err == nil {
+			if _, _, err := ParseCustomerIntentConfig(tc.source); err == nil {
 				t.Fatalf("expected internal wording validation error")
 			}
 		})
 	}
 }
 
-func TestPublicIntentModelUnavailableFallbackPoolUsesConfiguredPhrases(t *testing.T) {
-	manager := newTestPublicIntentManager(t, `version: 1
+func TestCustomerIntentModelUnavailableFallbackPoolUsesConfiguredPhrases(t *testing.T) {
+	manager := newTestCustomerIntentManager(t, `version: 1
 fallbacks:
   generic: fallback
   model_unavailable:
@@ -152,8 +152,8 @@ rules: []
 	}
 }
 
-func TestPublicIntentSaveHotSwapsSnapshot(t *testing.T) {
-	manager := newTestPublicIntentManager(t, `version: 1
+func TestCustomerIntentSaveHotSwapsSnapshot(t *testing.T) {
+	manager := newTestCustomerIntentManager(t, `version: 1
 fallbacks:
   generic: fallback
 rules: []
@@ -181,21 +181,21 @@ rules:
 	}
 }
 
-func TestDefaultPublicIntentFileHandlesGoodbye(t *testing.T) {
-	raw, err := os.ReadFile("../../configs/public_intents.yaml")
+func TestDefaultCustomerIntentFileHandlesGoodbye(t *testing.T) {
+	raw, err := os.ReadFile("../../configs/customer_intents.yaml")
 	if err != nil {
 		t.Fatalf("read default intents: %v", err)
 	}
-	parsed, _, err := ParsePublicIntentConfig(string(raw))
+	parsed, _, err := ParseCustomerIntentConfig(string(raw))
 	if err != nil {
 		t.Fatalf("parse default intents: %v", err)
 	}
-	path := filepath.Join(t.TempDir(), "public_intents.yaml")
+	path := filepath.Join(t.TempDir(), "customer_intents.yaml")
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatalf("write intents: %v", err)
 	}
 	enabled := true
-	manager := NewPublicIntentManager(config.PublicIntentsConfig{Enabled: &enabled, Path: path})
+	manager := NewCustomerIntentManager(config.CustomerIntentsConfig{Enabled: &enabled, Path: path})
 	result, ok := manager.Match("再见吧")
 	if !ok || result.Name != "thanks_or_done" {
 		t.Fatalf("expected goodbye to match closing rule, got %+v ok=%v config=%+v", result, ok, parsed)
@@ -205,12 +205,12 @@ func TestDefaultPublicIntentFileHandlesGoodbye(t *testing.T) {
 	}
 }
 
-func newTestPublicIntentManager(t *testing.T, source string) *PublicIntentManager {
+func newTestCustomerIntentManager(t *testing.T, source string) *CustomerIntentManager {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "public_intents.yaml")
+	path := filepath.Join(t.TempDir(), "customer_intents.yaml")
 	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
 		t.Fatalf("write intents: %v", err)
 	}
 	enabled := true
-	return NewPublicIntentManager(config.PublicIntentsConfig{Enabled: &enabled, Path: path})
+	return NewCustomerIntentManager(config.CustomerIntentsConfig{Enabled: &enabled, Path: path})
 }

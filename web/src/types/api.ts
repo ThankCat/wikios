@@ -1,23 +1,24 @@
-export type PublicAnswerResponse = {
+export type CustomerChatResponse = {
   answer: string;
   received_at?: string;
   answered_at?: string;
-  details?: Record<string, unknown>;
 };
 
-export type PublicContextEstimateResponse = {
-  mode: "public" | string;
+export type CustomerContextEstimateResponse = {
+  mode: "customer" | string;
   context_usage: ContextUsage;
 };
 
-export type PublicChatHistoryItem = {
+export type CustomerChatTraceResponse = Record<string, unknown>;
+
+export type CustomerChatHistoryItem = {
   id?: string;
   role: "user" | "assistant";
   content: string;
   created_at?: string;
 };
 
-export type PublicStreamEvent = {
+export type CustomerStreamEvent = {
   type: string;
   data: unknown;
 };
@@ -34,7 +35,7 @@ export type AdminChatRequest = {
   mode_hint?: string;
   context?: Record<string, unknown>;
   attachments?: AdminAttachment[];
-  history?: PublicChatHistoryItem[];
+  history?: CustomerChatHistoryItem[];
 };
 
 export type AdminChatResponse = {
@@ -95,7 +96,7 @@ export type UploadStreamEvent = {
   data: unknown;
 };
 
-export type PublicIntentsStatus = {
+export type CustomerIntentsStatus = {
   path: string;
   loaded_at?: string;
   error?: string;
@@ -103,9 +104,9 @@ export type PublicIntentsStatus = {
   rule_count: number;
 };
 
-export type PublicIntentsResponse = {
+export type CustomerIntentsResponse = {
   source: string;
-  status: PublicIntentsStatus;
+  status: CustomerIntentsStatus;
 };
 
 export type LLMModel = {
@@ -139,7 +140,7 @@ export type LLMModelTestResponse = {
 };
 
 export type AdminRuntimeSettings = {
-  public_query: {
+  customer_query: {
     direct_min: number;
     review_min: number;
     candidate_top_k: number;
@@ -177,7 +178,7 @@ export type AdminRuntimeEnvironment = {
   sqlite_path: string;
   web_dist_dir: string;
   web_enabled: boolean;
-  public_intents_path: string;
+  customer_intents_path: string;
 };
 
 export type AdminRuntimeSettingsResponse = {
@@ -216,7 +217,7 @@ export type AdminDashboardResponse = {
     message?: string;
     error?: string;
   };
-  public_answer_log: {
+  customer_chat_log: {
     enabled: boolean;
     redact: boolean;
     retention_days: number;
@@ -404,7 +405,7 @@ export type SyncPushResponse = {
   exit_code: number;
 };
 
-export type PublicConversationSummary = {
+export type CustomerConversationSummary = {
   id: string;
   session_id: string;
   user_id?: string;
@@ -420,7 +421,7 @@ export type PublicConversationSummary = {
   last_intent_type?: string;
 };
 
-export type PublicConversationMessage = {
+export type CustomerConversationMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
@@ -432,24 +433,24 @@ export type PublicConversationMessage = {
   details?: Record<string, unknown>;
 };
 
-export type PublicConversationLogSummary = {
+export type CustomerConversationLogSummary = {
   enabled: boolean;
   redact: boolean;
   retention_days: number;
   path?: string;
 };
 
-export type PublicConversationsResponse = {
-  conversations: PublicConversationSummary[];
+export type CustomerConversationsResponse = {
+  conversations: CustomerConversationSummary[];
   total: number;
   page: number;
   page_size: number;
   has_more: boolean;
-  log: PublicConversationLogSummary;
+  log: CustomerConversationLogSummary;
 };
 
-export type PublicConversationDetailResponse = {
-  conversation: PublicConversationSummary;
-  messages: PublicConversationMessage[];
-  log: PublicConversationLogSummary;
+export type CustomerConversationDetailResponse = {
+  conversation: CustomerConversationSummary;
+  messages: CustomerConversationMessage[];
+  log: CustomerConversationLogSummary;
 };

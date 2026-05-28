@@ -7,31 +7,31 @@ import (
 	"wikios/internal/retrieval"
 )
 
-const publicAnswerCacheTTL = 5 * time.Minute
+const customerChatCacheTTL = 5 * time.Minute
 
-var defaultPublicAnswerCache = newPublicAnswerCache(publicAnswerCacheTTL)
+var defaultCustomerChatCache = newCustomerChatCache(customerChatCacheTTL)
 
-type publicAnswerCache struct {
+type customerChatCache struct {
 	mu        sync.Mutex
 	ttl       time.Duration
-	retrieval map[string]publicAnswerCacheEntry[[]retrieval.RetrievedPage]
-	pages     map[string]publicAnswerCacheEntry[string]
+	retrieval map[string]customerChatCacheEntry[[]retrieval.RetrievedPage]
+	pages     map[string]customerChatCacheEntry[string]
 }
 
-type publicAnswerCacheEntry[T any] struct {
+type customerChatCacheEntry[T any] struct {
 	value     T
 	expiresAt time.Time
 }
 
-func newPublicAnswerCache(ttl time.Duration) *publicAnswerCache {
-	return &publicAnswerCache{
+func newCustomerChatCache(ttl time.Duration) *customerChatCache {
+	return &customerChatCache{
 		ttl:       ttl,
-		retrieval: map[string]publicAnswerCacheEntry[[]retrieval.RetrievedPage]{},
-		pages:     map[string]publicAnswerCacheEntry[string]{},
+		retrieval: map[string]customerChatCacheEntry[[]retrieval.RetrievedPage]{},
+		pages:     map[string]customerChatCacheEntry[string]{},
 	}
 }
 
-func (cache *publicAnswerCache) getRetrieval(key string) ([]retrieval.RetrievedPage, bool) {
+func (cache *customerChatCache) getRetrieval(key string) ([]retrieval.RetrievedPage, bool) {
 	if cache == nil {
 		return nil, false
 	}
@@ -47,19 +47,19 @@ func (cache *publicAnswerCache) getRetrieval(key string) ([]retrieval.RetrievedP
 	return cloneRetrievedPages(entry.value), true
 }
 
-func (cache *publicAnswerCache) setRetrieval(key string, pages []retrieval.RetrievedPage) {
+func (cache *customerChatCache) setRetrieval(key string, pages []retrieval.RetrievedPage) {
 	if cache == nil || len(pages) == 0 {
 		return
 	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	cache.retrieval[key] = publicAnswerCacheEntry[[]retrieval.RetrievedPage]{
+	cache.retrieval[key] = customerChatCacheEntry[[]retrieval.RetrievedPage]{
 		value:     cloneRetrievedPages(pages),
 		expiresAt: time.Now().Add(cache.ttl),
 	}
 }
 
-func (cache *publicAnswerCache) getPage(key string) (string, bool) {
+func (cache *customerChatCache) getPage(key string) (string, bool) {
 	if cache == nil {
 		return "", false
 	}
@@ -75,13 +75,13 @@ func (cache *publicAnswerCache) getPage(key string) (string, bool) {
 	return entry.value, true
 }
 
-func (cache *publicAnswerCache) setPage(key string, content string) {
+func (cache *customerChatCache) setPage(key string, content string) {
 	if cache == nil || content == "" {
 		return
 	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	cache.pages[key] = publicAnswerCacheEntry[string]{
+	cache.pages[key] = customerChatCacheEntry[string]{
 		value:     content,
 		expiresAt: time.Now().Add(cache.ttl),
 	}

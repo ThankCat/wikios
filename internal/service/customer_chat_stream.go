@@ -6,37 +6,37 @@ import (
 	"time"
 )
 
-type publicAnswerStream struct {
+type customerChatStream struct {
 	emitter   StreamEmitter
 	extractor *jsonStringFieldExtractor
 	emitted   strings.Builder
 	debug     bool
 }
 
-func newPublicAnswerStream(emitter StreamEmitter, debug bool) *publicAnswerStream {
-	stream := &publicAnswerStream{emitter: emitter, debug: debug}
+func newCustomerChatStream(emitter StreamEmitter, debug bool) *customerChatStream {
+	stream := &customerChatStream{emitter: emitter, debug: debug}
 	stream.extractor = newJSONStringFieldExtractor("answer", stream.emitAnswerDelta)
 	return stream
 }
 
-func (s *publicAnswerStream) Emit(event StreamEvent) {
+func (s *customerChatStream) Emit(event StreamEvent) {
 	if s == nil || s.emitter == nil {
 		return
 	}
-	if !s.debug && isInternalPublicStreamEvent(event.Type) {
+	if !s.debug && isInternalCustomerStreamEvent(event.Type) {
 		return
 	}
 	s.emitter.Emit(event)
 }
 
-func (s *publicAnswerStream) emit(eventType string, data any) {
+func (s *customerChatStream) emit(eventType string, data any) {
 	if s == nil {
 		return
 	}
 	s.Emit(StreamEvent{Type: eventType, Data: data})
 }
 
-func isInternalPublicStreamEvent(eventType string) bool {
+func isInternalCustomerStreamEvent(eventType string) bool {
 	switch eventType {
 	case "prompt", "llm_delta", "llm_reasoning_delta", "llm_done", "step_start", "step_finish":
 		return true
@@ -45,14 +45,14 @@ func isInternalPublicStreamEvent(eventType string) bool {
 	}
 }
 
-func (s *publicAnswerStream) feedLLMContent(delta string) {
+func (s *customerChatStream) feedLLMContent(delta string) {
 	if s == nil || s.extractor == nil || delta == "" {
 		return
 	}
 	s.extractor.Feed(delta)
 }
 
-func (s *publicAnswerStream) emitAnswerDelta(delta string) {
+func (s *customerChatStream) emitAnswerDelta(delta string) {
 	if s == nil || delta == "" {
 		return
 	}
@@ -63,7 +63,7 @@ func (s *publicAnswerStream) emitAnswerDelta(delta string) {
 	})
 }
 
-func (s *publicAnswerStream) emitRemainingAnswer(answer string) {
+func (s *customerChatStream) emitRemainingAnswer(answer string) {
 	if s == nil {
 		return
 	}

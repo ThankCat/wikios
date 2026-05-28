@@ -15,20 +15,20 @@ const (
 )
 
 type Config struct {
-	Server        ServerConfig        `yaml:"server"`
-	MountedWiki   MountedWikiConfig   `yaml:"mounted_wiki"`
-	LLM           LLMConfig           `yaml:"llm"`
-	Retrieval     RetrievalConfig     `yaml:"retrieval"`
-	Workspace     WorkspaceConfig     `yaml:"workspace"`
-	Sandbox       SandboxConfig       `yaml:"sandbox"`
-	Storage       StorageConfig       `yaml:"storage"`
-	Sync          SyncConfig          `yaml:"sync"`
-	Web           WebConfig           `yaml:"web"`
-	Upload        UploadConfig        `yaml:"upload"`
-	PublicIntents PublicIntentsConfig `yaml:"public_intents"`
-	PublicQuery   PublicQueryConfig   `yaml:"public_query"`
-	Support       SupportConfig       `yaml:"support"`
-	Context       ContextConfig       `yaml:"context"`
+	Server          ServerConfig          `yaml:"server"`
+	MountedWiki     MountedWikiConfig     `yaml:"mounted_wiki"`
+	LLM             LLMConfig             `yaml:"llm"`
+	Retrieval       RetrievalConfig       `yaml:"retrieval"`
+	Workspace       WorkspaceConfig       `yaml:"workspace"`
+	Sandbox         SandboxConfig         `yaml:"sandbox"`
+	Storage         StorageConfig         `yaml:"storage"`
+	Sync            SyncConfig            `yaml:"sync"`
+	Web             WebConfig             `yaml:"web"`
+	Upload          UploadConfig          `yaml:"upload"`
+	CustomerIntents CustomerIntentsConfig `yaml:"customer_intents"`
+	CustomerChat    CustomerQueryConfig   `yaml:"customer_query"`
+	Support         SupportConfig         `yaml:"support"`
+	Context         ContextConfig         `yaml:"context"`
 }
 
 type ServerConfig struct {
@@ -83,26 +83,26 @@ type UploadConfig struct {
 	MaxTextFileKB int `yaml:"max_text_file_kb"`
 }
 
-type PublicIntentsConfig struct {
+type CustomerIntentsConfig struct {
 	Enabled *bool  `yaml:"enabled"`
 	Path    string `yaml:"path"`
 }
 
-type PublicQueryConfig struct {
-	Confidence         PublicQueryConfidenceConfig `yaml:"confidence"`
-	CandidateTopK      int                         `yaml:"candidate_top_k"`
-	MaxEvidenceChars   int                         `yaml:"max_evidence_chars"`
-	ResponseTimeoutSec int                         `yaml:"response_timeout_sec"`
-	AnswerLog          PublicAnswerLogConfig       `yaml:"answer_log"`
+type CustomerQueryConfig struct {
+	Confidence         CustomerQueryConfidenceConfig `yaml:"confidence"`
+	CandidateTopK      int                           `yaml:"candidate_top_k"`
+	MaxEvidenceChars   int                           `yaml:"max_evidence_chars"`
+	ResponseTimeoutSec int                           `yaml:"response_timeout_sec"`
+	AnswerLog          CustomerChatLogConfig         `yaml:"answer_log"`
 }
 
-type PublicAnswerLogConfig struct {
+type CustomerChatLogConfig struct {
 	Enabled       *bool `yaml:"enabled"`
 	Redact        *bool `yaml:"redact"`
 	RetentionDays int   `yaml:"retention_days"`
 }
 
-type PublicQueryConfidenceConfig struct {
+type CustomerQueryConfidenceConfig struct {
 	DirectMin float64 `yaml:"direct_min"`
 	ReviewMin float64 `yaml:"review_min"`
 }
@@ -204,47 +204,47 @@ func (c *Config) normalizeAndValidate() error {
 	if c.Upload.MaxTextFileKB <= 0 {
 		c.Upload.MaxTextFileKB = 500
 	}
-	if c.PublicIntents.Enabled == nil {
+	if c.CustomerIntents.Enabled == nil {
 		enabled := true
-		c.PublicIntents.Enabled = &enabled
+		c.CustomerIntents.Enabled = &enabled
 	}
-	if strings.TrimSpace(c.PublicIntents.Path) == "" {
-		c.PublicIntents.Path = filepath.Join("configs", "public_intents.yaml")
+	if strings.TrimSpace(c.CustomerIntents.Path) == "" {
+		c.CustomerIntents.Path = filepath.Join("configs", "customer_intents.yaml")
 	}
-	if c.PublicQuery.Confidence.DirectMin <= 0 {
-		c.PublicQuery.Confidence.DirectMin = 0.70
+	if c.CustomerChat.Confidence.DirectMin <= 0 {
+		c.CustomerChat.Confidence.DirectMin = 0.70
 	}
-	if c.PublicQuery.Confidence.ReviewMin <= 0 {
-		c.PublicQuery.Confidence.ReviewMin = 0.25
+	if c.CustomerChat.Confidence.ReviewMin <= 0 {
+		c.CustomerChat.Confidence.ReviewMin = 0.25
 	}
-	if c.PublicQuery.Confidence.DirectMin > 1 {
-		c.PublicQuery.Confidence.DirectMin = 1
+	if c.CustomerChat.Confidence.DirectMin > 1 {
+		c.CustomerChat.Confidence.DirectMin = 1
 	}
-	if c.PublicQuery.Confidence.ReviewMin > 1 {
-		c.PublicQuery.Confidence.ReviewMin = 1
+	if c.CustomerChat.Confidence.ReviewMin > 1 {
+		c.CustomerChat.Confidence.ReviewMin = 1
 	}
-	if c.PublicQuery.Confidence.ReviewMin > c.PublicQuery.Confidence.DirectMin {
-		c.PublicQuery.Confidence.ReviewMin = c.PublicQuery.Confidence.DirectMin
+	if c.CustomerChat.Confidence.ReviewMin > c.CustomerChat.Confidence.DirectMin {
+		c.CustomerChat.Confidence.ReviewMin = c.CustomerChat.Confidence.DirectMin
 	}
-	if c.PublicQuery.CandidateTopK <= 0 {
-		c.PublicQuery.CandidateTopK = 6
+	if c.CustomerChat.CandidateTopK <= 0 {
+		c.CustomerChat.CandidateTopK = 6
 	}
-	if c.PublicQuery.MaxEvidenceChars <= 0 {
-		c.PublicQuery.MaxEvidenceChars = 2400
+	if c.CustomerChat.MaxEvidenceChars <= 0 {
+		c.CustomerChat.MaxEvidenceChars = 2400
 	}
-	if c.PublicQuery.ResponseTimeoutSec <= 0 {
-		c.PublicQuery.ResponseTimeoutSec = envInt("WIKIOS_PUBLIC_RESPONSE_TIMEOUT_SEC", 300)
+	if c.CustomerChat.ResponseTimeoutSec <= 0 {
+		c.CustomerChat.ResponseTimeoutSec = envInt("WIKIOS_CUSTOMER_RESPONSE_TIMEOUT_SEC", 300)
 	}
-	if c.PublicQuery.AnswerLog.Enabled == nil {
-		enabled := parseEnvBool(os.Getenv("WIKIOS_PUBLIC_ANSWER_LOG_ENABLED"), true)
-		c.PublicQuery.AnswerLog.Enabled = &enabled
+	if c.CustomerChat.AnswerLog.Enabled == nil {
+		enabled := parseEnvBool(os.Getenv("WIKIOS_CUSTOMER_CHAT_LOG_ENABLED"), true)
+		c.CustomerChat.AnswerLog.Enabled = &enabled
 	}
-	if c.PublicQuery.AnswerLog.Redact == nil {
-		redact := parseEnvBool(os.Getenv("WIKIOS_PUBLIC_ANSWER_LOG_REDACT"), true)
-		c.PublicQuery.AnswerLog.Redact = &redact
+	if c.CustomerChat.AnswerLog.Redact == nil {
+		redact := parseEnvBool(os.Getenv("WIKIOS_CUSTOMER_CHAT_LOG_REDACT"), true)
+		c.CustomerChat.AnswerLog.Redact = &redact
 	}
-	if c.PublicQuery.AnswerLog.RetentionDays <= 0 {
-		c.PublicQuery.AnswerLog.RetentionDays = envInt("WIKIOS_PUBLIC_ANSWER_LOG_RETENTION_DAYS", 14)
+	if c.CustomerChat.AnswerLog.RetentionDays <= 0 {
+		c.CustomerChat.AnswerLog.RetentionDays = envInt("WIKIOS_CUSTOMER_CHAT_LOG_RETENTION_DAYS", 14)
 	}
 	if strings.TrimSpace(c.Support.Phone) == "" {
 		c.Support.Phone = firstEnv("WIKIOS_SUPPORT_PHONE", "400-1080-106")
@@ -271,7 +271,7 @@ func (c *Config) normalizeAndValidate() error {
 		c.Context.Tokenizer = firstEnv("WIKIOS_CONTEXT_TOKENIZER", "cl100k_base")
 	}
 	c.Web.DistDir = filepath.Clean(c.Web.DistDir)
-	c.PublicIntents.Path = filepath.Clean(c.PublicIntents.Path)
+	c.CustomerIntents.Path = filepath.Clean(c.CustomerIntents.Path)
 	return nil
 }
 

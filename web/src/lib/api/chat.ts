@@ -4,6 +4,6 @@ export const chatAPI = {
   adminChat: api.adminChat,
   adminChatStream: api.adminChatStream,
   estimateAdminContext: api.estimateAdminContext,
-  publicAnswer: api.publicAnswer,
-  estimatePublicContext: api.estimatePublicContext,
+  customerChat: api.customerChat,
+  estimateCustomerContext: api.estimateCustomerContext,
 };

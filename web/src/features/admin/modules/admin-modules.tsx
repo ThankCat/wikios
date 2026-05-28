@@ -77,11 +77,11 @@ import type {
   LLMModel,
   LLMModelsResponse,
   LLMModelTestResponse,
-  PublicChatHistoryItem,
-  PublicConversationDetailResponse,
-  PublicConversationSummary,
-  PublicIntentsStatus,
-  PublicStreamEvent,
+  CustomerChatHistoryItem,
+  CustomerConversationDetailResponse,
+  CustomerConversationSummary,
+  CustomerIntentsStatus,
+  CustomerStreamEvent,
   ReviewItem,
   SyncCommitResponse,
   SyncStatusResponse,
@@ -142,10 +142,10 @@ export function DashboardModule({ dashboard, onDashboardRefresh, openModule }: B
         />
         <MetricCard
           icon={History}
-          label="Public 日志"
-          value={dashboard?.public_answer_log.enabled ? "开启" : "关闭"}
-          detail={dashboard?.public_answer_log.redact ? "已脱敏" : "未脱敏"}
-          tone={dashboard?.public_answer_log.enabled && dashboard.public_answer_log.redact ? "success" : "warning"}
+          label="客户问答日志"
+          value={dashboard?.customer_chat_log.enabled ? "开启" : "关闭"}
+          detail={dashboard?.customer_chat_log.redact ? "已脱敏" : "未脱敏"}
+          tone={dashboard?.customer_chat_log.enabled && dashboard.customer_chat_log.redact ? "success" : "warning"}
           onClick={() => openModule("logs")}
         />
       </div>
@@ -221,9 +221,9 @@ export function DashboardModule({ dashboard, onDashboardRefresh, openModule }: B
 }
 
 export function ConversationsModule(_props: BaseModuleProps) {
-  const [items, setItems] = React.useState<PublicConversationSummary[]>([]);
+  const [items, setItems] = React.useState<CustomerConversationSummary[]>([]);
   const [activeId, setActiveId] = React.useState("");
-  const [detail, setDetail] = React.useState<PublicConversationDetailResponse | null>(null);
+  const [detail, setDetail] = React.useState<CustomerConversationDetailResponse | null>(null);
   const [query, setQuery] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [detailLoading, setDetailLoading] = React.useState(false);
@@ -250,7 +250,7 @@ export function ConversationsModule(_props: BaseModuleProps) {
     setLoading(true);
     setError("");
     try {
-      const response = await api.publicConversations({ q: resolvedQuery.trim(), page_size: 50 });
+      const response = await api.customerConversations({ q: resolvedQuery.trim(), page_size: 50 });
       if (requestSeq !== requestSeqRef.current) {
         return;
       }
@@ -289,7 +289,7 @@ export function ConversationsModule(_props: BaseModuleProps) {
     let cancelled = false;
     setDetailLoading(true);
     setDetail(null);
-    api.publicConversationDetail(activeId)
+    api.customerConversationDetail(activeId)
       .then((response) => {
         if (!cancelled) {
           setDetail(response);
@@ -314,7 +314,7 @@ export function ConversationsModule(_props: BaseModuleProps) {
   return (
     <ModuleFrame
       title="用户会话"
-      description="按 public session 聚合终端用户问答记录，用于运营查看和问题追踪。"
+      description="按 session 聚合客户问答记录，用于运营查看和问题追踪。"
       action={
         <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
           <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />
@@ -342,8 +342,8 @@ export function ConversationsModule(_props: BaseModuleProps) {
           ) : null}
           {!logEnabled ? (
             <Alert className="rounded-lg border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-100">
-              <AlertTitle>Public 日志未开启</AlertTitle>
-              <AlertDescription>当前不会产生新的用户会话记录，请在配置中开启 public answer log。</AlertDescription>
+              <AlertTitle>客户问答日志未开启</AlertTitle>
+              <AlertDescription>当前不会产生新的用户会话记录，请在配置中开启 customer chat log。</AlertDescription>
             </Alert>
           ) : null}
           <div className="grid min-h-[680px] gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
@@ -397,7 +397,7 @@ export function ConversationsModule(_props: BaseModuleProps) {
                   ))}
                   {!items.length && !loading ? (
                     <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-                      {query.trim() ? "没有匹配的用户会话。" : "还没有 public 用户会话记录。"}
+                      {query.trim() ? "没有匹配的用户会话。" : "还没有客户会话记录。"}
                     </div>
                   ) : null}
                 </div>
@@ -479,7 +479,7 @@ type ConversationSimulationSession = {
 
 type ConversationSimulationStore = Record<string, ConversationSimulationSession>;
 
-const conversationSimulationStorageKey = "wikios.admin.public-chat-interface-test.v1";
+const conversationSimulationStorageKey = "wikios.admin.customer-chat-interface-test.v1";
 const chatInterfaceTestSessionId = "external-chat-interface";
 
 function ChatInterfaceTestPanel() {
@@ -596,22 +596,7 @@ function ChatInterfaceTestPanel() {
     });
   }
 
-  function handleStreamEvent(id: string, messageId: string, event: PublicStreamEvent) {
-    if (event.type === "meta") {
-      const data = simulationRecord(event.data);
-      patchMessage(id, messageId, {
-        details: (previous: unknown) => ({
-          ...simulationRecord(previous),
-          execution: {
-            ...simulationRecord(simulationRecord(previous).execution),
-            kind: "public-answer-audit",
-            status: "RUNNING",
-            started_at: data.received_at,
-          },
-        }),
-      });
-      return;
-    }
+  function handleStreamEvent(id: string, messageId: string, event: CustomerStreamEvent) {
     if (event.type === "prompt") {
       appendEventDetail(id, messageId, "prompts", summarizeSimulationPromptEvent(event.data), 8);
       return;
@@ -675,7 +660,7 @@ function ChatInterfaceTestPanel() {
         created_at: String(data.answered_at ?? ""),
         status: "done",
         details: (previous: unknown) => ({
-          ...mergeSimulationDetails(previous, data.details),
+          ...simulationRecord(previous),
           response: data,
         }),
       });
@@ -714,7 +699,7 @@ function ChatInterfaceTestPanel() {
       created_at: questionCreatedAt,
     };
     const assistantId = createId();
-    const history = simulationMessagesToPublicHistory(activeSession.messages);
+    const history = simulationMessagesToCustomerHistory(activeSession.messages);
     appendMessage(id, userMessage);
     appendMessage(id, {
       id: assistantId,
@@ -729,18 +714,38 @@ function ChatInterfaceTestPanel() {
     activeRequestRef.current = { sessionId: id, controller };
     setBusySessionId(id);
     try {
-      await api.publicAnswerAuditStream(
+      const traceID = await api.customerChatAuditStream(
         question,
         history,
         {
           session_id: `test-${id}`,
-          question_message_id: userMessage.id,
+          message_id: userMessage.id,
           answer_message_id: assistantId,
-          question_created_at: questionCreatedAt,
+          message_created_at: questionCreatedAt,
         },
         (event) => handleStreamEvent(id, assistantId, event),
         controller.signal,
       );
+      if (traceID) {
+        try {
+          const trace = await api.customerChatTrace(traceID, controller.signal);
+          patchMessage(id, assistantId, {
+            details: (previous: unknown) => ({
+              ...simulationRecord(previous),
+              trace_id: traceID,
+              audit_trace: trace,
+            }),
+          });
+        } catch (traceError) {
+          patchMessage(id, assistantId, {
+            details: (previous: unknown) => ({
+              ...simulationRecord(previous),
+              trace_id: traceID,
+              trace_error: errorMessage(traceError),
+            }),
+          });
+        }
+      }
     } catch (reason) {
       if (isAbortError(reason)) {
         patchMessage(id, assistantId, {
@@ -785,7 +790,7 @@ function ChatInterfaceTestPanel() {
               <Bot className="h-4 w-4" />
               外部聊天接口审查
             </CardTitle>
-            <CardDescription className="mt-1">用于审查 Public 对外聊天接口，使用独立本地上下文。</CardDescription>
+            <CardDescription className="mt-1">用于审查客户聊天接口，使用独立本地上下文。</CardDescription>
           </div>
           <Button type="button" variant="ghost" size="sm" onClick={clearSimulation} disabled={!sessionId || busy || activeSession.messages.length === 0}>
             清空上下文
@@ -847,7 +852,7 @@ function ChatInterfaceTestPanel() {
           />
           <div className="mt-2 flex items-center justify-between gap-3 px-1">
             <span className="min-w-0 truncate text-xs text-muted-foreground">
-              {busy ? "正在调用接口，可随时停止。" : "使用 Public answer 引擎，审查结果不入库。"}
+              {busy ? "正在调用接口，可随时停止。" : "使用 Customer chat 引擎，审查结果不入库。"}
             </span>
             <Button
               type="button"
@@ -941,7 +946,7 @@ function normalizeConversationSimulationMessages(value: unknown): ConversationSi
   }, []);
 }
 
-function simulationMessagesToPublicHistory(messages: ConversationSimulationMessage[]): PublicChatHistoryItem[] {
+function simulationMessagesToCustomerHistory(messages: ConversationSimulationMessage[]): CustomerChatHistoryItem[] {
   return messages
     .filter((message) => {
       if (!message.content.trim()) {
@@ -2596,7 +2601,7 @@ export function ReviewModule({ setDetail, onDashboardRefresh }: BaseModuleProps)
   return (
     <ModuleFrame
       title="问题审查"
-      description="处理 public 低置信自答和需要人工确认的知识沉淀。"
+      description="处理客户问答低置信自答和需要人工确认的知识沉淀。"
       action={
         <Button variant="outline" size="sm" onClick={() => void loadNext()} disabled={loading}>
           <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />
@@ -2653,7 +2658,7 @@ export function ReviewModule({ setDetail, onDashboardRefresh }: BaseModuleProps)
 
 function IntentSettingsPanel({ setDetail }: Pick<BaseModuleProps, "setDetail">) {
   const [source, setSource] = React.useState("");
-  const [status, setStatus] = React.useState<PublicIntentsStatus | null>(null);
+  const [status, setStatus] = React.useState<CustomerIntentsStatus | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState("");
@@ -2662,7 +2667,7 @@ function IntentSettingsPanel({ setDetail }: Pick<BaseModuleProps, "setDetail">) 
     setLoading(true);
     setError("");
     try {
-      const response = await api.getPublicIntents();
+      const response = await api.getCustomerIntents();
       setSource(response.source);
       setStatus(response.status);
       setDetail("前置话术状态", <pre className="whitespace-pre-wrap text-xs">{formatJSON(response.status)}</pre>);
@@ -2681,7 +2686,7 @@ function IntentSettingsPanel({ setDetail }: Pick<BaseModuleProps, "setDetail">) 
     setSaving(true);
     setError("");
     try {
-      const response = await api.updatePublicIntents(source);
+      const response = await api.updateCustomerIntents(source);
       setStatus(response.status);
       setDetail("前置话术状态", <pre className="whitespace-pre-wrap text-xs">{formatJSON(response.status)}</pre>);
     } catch (err) {
@@ -2696,7 +2701,7 @@ function IntentSettingsPanel({ setDetail }: Pick<BaseModuleProps, "setDetail">) 
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-base font-semibold">意图话术</h3>
-          <p className="mt-1 text-sm text-muted-foreground">编辑 public intents、兜底话术池和模型不可用话术。</p>
+          <p className="mt-1 text-sm text-muted-foreground">编辑 customer intents、兜底话术池和模型不可用话术。</p>
         </div>
         <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
           <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />
@@ -2711,7 +2716,7 @@ function IntentSettingsPanel({ setDetail }: Pick<BaseModuleProps, "setDetail">) 
       ) : null}
       <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
         <CardHeader>
-          <CardTitle className="text-base">configs/public_intents.yaml</CardTitle>
+          <CardTitle className="text-base">configs/customer_intents.yaml</CardTitle>
           <CardDescription>
             当前规则数 {status?.rule_count ?? 0}，状态文件：{status?.path ?? "-"}
           </CardDescription>
@@ -2731,9 +2736,9 @@ function IntentSettingsPanel({ setDetail }: Pick<BaseModuleProps, "setDetail">) 
   );
 }
 
-export function PublicConfigModule({ setDetail }: BaseModuleProps) {
+export function CustomerConfigModule({ setDetail }: BaseModuleProps) {
   return (
-    <ModuleFrame title="Public 配置" description="管理 public intents、兜底话术池、日志开关和脱敏策略。">
+    <ModuleFrame title="客户问答配置" description="管理 customer intents、兜底话术池、日志开关和脱敏策略。">
       <IntentSettingsPanel setDetail={setDetail} />
     </ModuleFrame>
   );
@@ -2744,8 +2749,8 @@ export function PromptsModule(_props: BaseModuleProps) {
     <ReadonlyModule
       icon={FileJson}
       title="提示词"
-      description="第一版先预留 public routed/admin/json 修复/同步提交 prompt 的查看与测试入口。"
-      items={["public_router_system.md", "public_specialist_*.md", "admin_sync_commit_message.md", "json 修复 prompt"]}
+      description="第一版先预留 customer routed/admin/json 修复/同步提交 prompt 的查看与测试入口。"
+      items={["customer_router_system.md", "customer_specialist_*.md", "admin_sync_commit_message.md", "json 修复 prompt"]}
     />
   );
 }
@@ -2757,7 +2762,7 @@ export function LogsModule({ dashboard }: BaseModuleProps) {
       title="日志"
       description="查看 trace、用户会话日志和模型切换记录；日志策略已归入设置页。"
       items={[
-        `用户会话日志读取：${dashboard?.public_answer_log.enabled ? "可用" : "未写入"}`,
+        `用户会话日志读取：${dashboard?.customer_chat_log.enabled ? "可用" : "未写入"}`,
         "trace_id 检索预留",
         "模型自动切换记录预留",
       ]}
@@ -2766,7 +2771,7 @@ export function LogsModule({ dashboard }: BaseModuleProps) {
 }
 
 const defaultRuntimeSettings: AdminRuntimeSettings = {
-  public_query: {
+  customer_query: {
     direct_min: 0.7,
     review_min: 0.25,
     candidate_top_k: 6,
@@ -2804,14 +2809,14 @@ const defaultRuntimeEnvironment: AdminRuntimeEnvironment = {
   sqlite_path: "",
   web_dist_dir: "",
   web_enabled: true,
-  public_intents_path: "",
+  customer_intents_path: "",
 };
 
-type SettingsTab = "models" | "public-query" | "intents" | "logs" | "knowledge" | "environment";
+type SettingsTab = "models" | "customer-query" | "intents" | "logs" | "knowledge" | "environment";
 
 const settingsTabs: Array<{ id: SettingsTab; label: string; icon: typeof Settings }> = [
   { id: "models", label: "模型", icon: Bot },
-  { id: "public-query", label: "公开问答", icon: MessageCircle },
+  { id: "customer-query", label: "客户问答", icon: MessageCircle },
   { id: "intents", label: "意图话术", icon: ListChecks },
   { id: "logs", label: "日志隐私", icon: History },
   { id: "knowledge", label: "知识库同步", icon: Database },
@@ -2906,7 +2911,7 @@ export function SettingsModule({ dashboard, onDashboardRefresh, setDetail }: Bas
     patchSettings((current) => setRuntimeBool(current, path, value));
   }
 
-  const publicQueryModelOptions = React.useMemo(
+  const customerQueryModelOptions = React.useMemo(
     () => [
       { value: "", label: "使用当前模型" },
       ...runtimeModels.map((model) => ({
@@ -2920,7 +2925,7 @@ export function SettingsModule({ dashboard, onDashboardRefresh, setDetail }: Bas
   return (
     <ModuleFrame
       title="系统设置"
-      description="集中管理运行中可修改的模型、公开问答、日志和知识库同步配置。"
+      description="集中管理运行中可修改的模型、客户问答、日志和知识库同步配置。"
       action={
         <Button variant="outline" size="sm" onClick={() => void loadSettings()} disabled={loading}>
           <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />
@@ -2965,16 +2970,16 @@ export function SettingsModule({ dashboard, onDashboardRefresh, setDetail }: Bas
           </TabsContent>
         ) : null}
 
-        {activeTab === "public-query" ? (
+        {activeTab === "customer-query" ? (
           <TabsContent>
             <div className="grid gap-3">
               <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">
                     <MessageCircle className="h-4 w-4" />
-                    公开问答策略
+                    客户问答策略
                   </CardTitle>
-                  <CardDescription>控制 public 问答的检索规模、证据长度、人工审查阈值和联系方式。</CardDescription>
+                  <CardDescription>控制客户问答的检索规模、证据长度、人工审查阈值和联系方式。</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="grid gap-4">
@@ -2982,70 +2987,70 @@ export function SettingsModule({ dashboard, onDashboardRefresh, setDetail }: Bas
                       <RoleModelSetting
                         title="Router"
                         description="理解问题、改写指代并分配专家；建议关闭思考模式降低延迟。"
-                        modelValue={form.public_query.router_model_id ?? ""}
-                        modelError={fieldErrors["public_query.router_model_id"]}
-                        modelOptions={publicQueryModelOptions}
-                        thinkingChecked={Boolean(form.public_query.router_enable_thinking)}
+                        modelValue={form.customer_query.router_model_id ?? ""}
+                        modelError={fieldErrors["customer_query.router_model_id"]}
+                        modelOptions={customerQueryModelOptions}
+                        thinkingChecked={Boolean(form.customer_query.router_enable_thinking)}
                         thinkingDescription="开启后可能更稳，但通常会让路由变慢。"
-                        onModelChange={(value) => updateString("public_query.router_model_id", value)}
-                        onThinkingChange={(checked) => updateBool("public_query.router_enable_thinking", checked)}
+                        onModelChange={(value) => updateString("customer_query.router_model_id", value)}
+                        onThinkingChange={(checked) => updateBool("customer_query.router_enable_thinking", checked)}
                       />
                       <RoleModelSetting
                         title="Specialist"
                         description="读取证据并生成最终回复；可保持当前模型默认行为。"
-                        modelValue={form.public_query.specialist_model_id ?? ""}
-                        modelError={fieldErrors["public_query.specialist_model_id"]}
-                        modelOptions={publicQueryModelOptions}
-                        thinkingChecked={Boolean(form.public_query.specialist_enable_thinking)}
+                        modelValue={form.customer_query.specialist_model_id ?? ""}
+                        modelError={fieldErrors["customer_query.specialist_model_id"]}
+                        modelOptions={customerQueryModelOptions}
+                        thinkingChecked={Boolean(form.customer_query.specialist_enable_thinking)}
                         thinkingDescription="开启后可能更稳但更慢；关闭则强制 no-think。"
-                        onModelChange={(value) => updateString("public_query.specialist_model_id", value)}
-                        onThinkingChange={(checked) => updateBool("public_query.specialist_enable_thinking", checked)}
+                        onModelChange={(value) => updateString("customer_query.specialist_model_id", value)}
+                        onThinkingChange={(checked) => updateBool("customer_query.specialist_enable_thinking", checked)}
                       />
                     </div>
                     <div className="grid gap-4 md:grid-cols-2">
                       <RuntimeNumberInput
                         label="直答置信度"
-                        description={`默认 ${defaults.public_query.direct_min}，达到后不进入审查队列。`}
-                        value={form.public_query.direct_min}
+                        description={`默认 ${defaults.customer_query.direct_min}，达到后不进入审查队列。`}
+                        value={form.customer_query.direct_min}
                         step={0.01}
                         min={0}
                         max={1}
-                        fieldError={fieldErrors["public_query.direct_min"]}
-                        onChange={(value) => updateNumber("public_query.direct_min", value)}
+                        fieldError={fieldErrors["customer_query.direct_min"]}
+                        onChange={(value) => updateNumber("customer_query.direct_min", value)}
                       />
                       <RuntimeNumberInput
                         label="审查最低置信度"
-                        description={`默认 ${defaults.public_query.review_min}，低于该值通常不沉淀审查。`}
-                        value={form.public_query.review_min}
+                        description={`默认 ${defaults.customer_query.review_min}，低于该值通常不沉淀审查。`}
+                        value={form.customer_query.review_min}
                         step={0.01}
                         min={0}
                         max={1}
-                        fieldError={fieldErrors["public_query.review_min"]}
-                        onChange={(value) => updateNumber("public_query.review_min", value)}
+                        fieldError={fieldErrors["customer_query.review_min"]}
+                        onChange={(value) => updateNumber("customer_query.review_min", value)}
                       />
                       <RuntimeNumberInput
                         label="检索候选数"
-                        description={`默认 ${defaults.public_query.candidate_top_k}，影响 qmd 与兜底检索数量。`}
-                        value={form.public_query.candidate_top_k}
+                        description={`默认 ${defaults.customer_query.candidate_top_k}，影响 qmd 与兜底检索数量。`}
+                        value={form.customer_query.candidate_top_k}
                         min={1}
                         max={20}
-                        fieldError={fieldErrors["public_query.candidate_top_k"]}
-                        onChange={(value) => updateNumber("public_query.candidate_top_k", Math.round(value))}
+                        fieldError={fieldErrors["customer_query.candidate_top_k"]}
+                        onChange={(value) => updateNumber("customer_query.candidate_top_k", Math.round(value))}
                       />
                       <RuntimeNumberInput
                         label="证据字符上限"
-                        description={`默认 ${defaults.public_query.max_evidence_chars}，控制每页进入 prompt 的证据长度。`}
-                        value={form.public_query.max_evidence_chars}
+                        description={`默认 ${defaults.customer_query.max_evidence_chars}，控制每页进入 prompt 的证据长度。`}
+                        value={form.customer_query.max_evidence_chars}
                         min={200}
                         max={20000}
-                        fieldError={fieldErrors["public_query.max_evidence_chars"]}
-                        onChange={(value) => updateNumber("public_query.max_evidence_chars", Math.round(value))}
+                        fieldError={fieldErrors["customer_query.max_evidence_chars"]}
+                        onChange={(value) => updateNumber("customer_query.max_evidence_chars", Math.round(value))}
                       />
                     </div>
                     <div className="grid gap-4 md:grid-cols-2">
                       <RuntimeTextInput
                         label="客服电话"
-                        description="会进入 public answer 的客户可见联系方式。"
+                        description="会进入 customer chat 的客户可见联系方式。"
                         value={form.support.phone}
                         fieldError={fieldErrors["support.phone"]}
                         onChange={(value) => updateString("support.phone", value)}
@@ -3228,14 +3233,14 @@ function RuntimeLogSettingsPanel({
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <History className="h-4 w-4" />
-            Public 日志隐私
+            客户问答日志隐私
           </CardTitle>
           <CardDescription>控制用户问答日志是否写入、是否脱敏，以及自动保留周期。</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid gap-3 md:grid-cols-2">
             <ToggleSetting
-              label="写入 public answer log"
+              label="写入 customer chat log"
               description="关闭后后台用户会话页无法读取新的用户问答记录。"
               checked={form.answer_log.enabled}
               onChange={(checked) =>
@@ -3415,7 +3420,7 @@ function RuntimeEnvironmentPanel({
             <ReadonlySetting label="SQLite" value={environment.sqlite_path || "-"} />
             <ReadonlySetting label="Web dist" value={environment.web_dist_dir || "-"} />
             <ReadonlySetting label="Web 静态服务" value={environment.web_enabled ? "开启" : "关闭"} />
-            <ReadonlySetting label="Intents 文件" value={environment.public_intents_path || "-"} />
+            <ReadonlySetting label="Intents 文件" value={environment.customer_intents_path || "-"} />
           </div>
         </CardContent>
       </Card>
@@ -3776,33 +3781,33 @@ function numberFromUnknown(value: unknown) {
 }
 
 type RuntimeNumberPath =
-  | "public_query.direct_min"
-  | "public_query.review_min"
-  | "public_query.candidate_top_k"
-  | "public_query.max_evidence_chars"
+  | "customer_query.direct_min"
+  | "customer_query.review_min"
+  | "customer_query.candidate_top_k"
+  | "customer_query.max_evidence_chars"
   | "answer_log.retention_days"
   | "knowledge.max_text_file_kb";
 
 type RuntimeStringPath =
-  | "public_query.router_model_id"
-  | "public_query.specialist_model_id"
+  | "customer_query.router_model_id"
+  | "customer_query.specialist_model_id"
   | "support.phone"
   | "support.wecom"
   | "sync.remote"
   | "sync.branch";
 
-type RuntimeBoolPath = "public_query.router_enable_thinking" | "public_query.specialist_enable_thinking";
+type RuntimeBoolPath = "customer_query.router_enable_thinking" | "customer_query.specialist_enable_thinking";
 
 function setRuntimeNumber(settings: AdminRuntimeSettings, path: RuntimeNumberPath, value: number): AdminRuntimeSettings {
   switch (path) {
-    case "public_query.direct_min":
-      return { ...settings, public_query: { ...settings.public_query, direct_min: value } };
-    case "public_query.review_min":
-      return { ...settings, public_query: { ...settings.public_query, review_min: value } };
-    case "public_query.candidate_top_k":
-      return { ...settings, public_query: { ...settings.public_query, candidate_top_k: value } };
-    case "public_query.max_evidence_chars":
-      return { ...settings, public_query: { ...settings.public_query, max_evidence_chars: value } };
+    case "customer_query.direct_min":
+      return { ...settings, customer_query: { ...settings.customer_query, direct_min: value } };
+    case "customer_query.review_min":
+      return { ...settings, customer_query: { ...settings.customer_query, review_min: value } };
+    case "customer_query.candidate_top_k":
+      return { ...settings, customer_query: { ...settings.customer_query, candidate_top_k: value } };
+    case "customer_query.max_evidence_chars":
+      return { ...settings, customer_query: { ...settings.customer_query, max_evidence_chars: value } };
     case "answer_log.retention_days":
       return { ...settings, answer_log: { ...settings.answer_log, retention_days: value } };
     case "knowledge.max_text_file_kb":
@@ -3812,10 +3817,10 @@ function setRuntimeNumber(settings: AdminRuntimeSettings, path: RuntimeNumberPat
 
 function setRuntimeString(settings: AdminRuntimeSettings, path: RuntimeStringPath, value: string): AdminRuntimeSettings {
   switch (path) {
-    case "public_query.router_model_id":
-      return { ...settings, public_query: { ...settings.public_query, router_model_id: value } };
-    case "public_query.specialist_model_id":
-      return { ...settings, public_query: { ...settings.public_query, specialist_model_id: value } };
+    case "customer_query.router_model_id":
+      return { ...settings, customer_query: { ...settings.customer_query, router_model_id: value } };
+    case "customer_query.specialist_model_id":
+      return { ...settings, customer_query: { ...settings.customer_query, specialist_model_id: value } };
     case "support.phone":
       return { ...settings, support: { ...settings.support, phone: value } };
     case "support.wecom":
@@ -3829,10 +3834,10 @@ function setRuntimeString(settings: AdminRuntimeSettings, path: RuntimeStringPat
 
 function setRuntimeBool(settings: AdminRuntimeSettings, path: RuntimeBoolPath, value: boolean): AdminRuntimeSettings {
   switch (path) {
-    case "public_query.router_enable_thinking":
-      return { ...settings, public_query: { ...settings.public_query, router_enable_thinking: value } };
-    case "public_query.specialist_enable_thinking":
-      return { ...settings, public_query: { ...settings.public_query, specialist_enable_thinking: value } };
+    case "customer_query.router_enable_thinking":
+      return { ...settings, customer_query: { ...settings.customer_query, router_enable_thinking: value } };
+    case "customer_query.specialist_enable_thinking":
+      return { ...settings, customer_query: { ...settings.customer_query, specialist_enable_thinking: value } };
   }
 }
 
@@ -3858,7 +3863,7 @@ function apiFieldErrors(error: unknown): Record<string, string> {
 function normalizeSettingsTab(value: string | null): SettingsTab {
   if (
     value === "models" ||
-    value === "public-query" ||
+    value === "customer-query" ||
     value === "intents" ||
     value === "logs" ||
     value === "knowledge" ||

@@ -198,7 +198,7 @@ func directAdminSystemPrompt(wikiRoot string) string {
 %s
 
 要求：
-1. 除 public query 外，管理员能力全部默认走直连模式；不要走服务层封装方法，不要假设存在 query/ingest/lint/repair/sync 等内置动作。
+1. 除 customer chat 外，管理员能力全部默认走直连模式；不要走服务层封装方法，不要假设存在 query/ingest/lint/repair/sync 等内置动作。
 2. 你唯一可用的执行能力是 exec.shell，它会在挂载知识库根目录下执行任意 shell 命令。
 3. 你可以根据 mode_hint 和上下文，自行决定检索、读取、写入、修复、反思、同步、qmd、git、脚本等执行流程。
 4. 管理员只关心任务是否成功、做了什么、产物在哪，不需要解释实现细节。

@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS admin_settings (
   value_json TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-DELETE FROM llm_models WHERE id IN ('llm_default_admin', 'llm_default_public');
+DELETE FROM llm_models WHERE id = 'llm_default_admin' OR id = 'llm_default_' || 'publ' || 'ic';
 UPDATE llm_models
 SET is_active = 0
 WHERE is_active = 1

@@ -9,16 +9,17 @@ import type {
   LLMModelResponse,
   LLMModelTestResponse,
   LLMModelsResponse,
-  PublicChatHistoryItem,
-  PublicAnswerResponse,
-  PublicConversationDetailResponse,
-  PublicConversationsResponse,
-  PublicContextEstimateResponse,
-  PublicIntentsResponse,
+  CustomerChatHistoryItem,
+  CustomerChatResponse,
+  CustomerChatTraceResponse,
+  CustomerConversationDetailResponse,
+  CustomerConversationsResponse,
+  CustomerContextEstimateResponse,
+  CustomerIntentsResponse,
   ReviewActionResponse,
   ReviewCountResponse,
   ReviewNextResponse,
-  PublicStreamEvent,
+  CustomerStreamEvent,
   SyncCommitResponse,
   SyncDiagnosticResponse,
   SyncGenerateMessageResponse,
@@ -45,11 +46,13 @@ export class APIError extends Error {
   }
 }
 
-export type PublicAnswerMeta = {
+export type CustomerChatMeta = {
   session_id?: string;
-  question_message_id?: string;
+  message_id?: string;
   answer_message_id?: string;
-  question_created_at?: string;
+  message_created_at?: string;
+  user_id?: string;
+  context?: Record<string, unknown>;
 };
 
 async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -81,42 +84,42 @@ async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  publicAnswer(question: string, history?: PublicChatHistoryItem[], meta?: PublicAnswerMeta, signal?: AbortSignal) {
-    return request<PublicAnswerResponse>(apiURL("/api/v1/public/answer"), {
+  customerChat(message: string, history?: CustomerChatHistoryItem[], meta?: CustomerChatMeta, signal?: AbortSignal) {
+    return request<CustomerChatResponse>(apiURL("/api/v1/customer/chat"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, history, ...meta, stream: false }),
+      body: JSON.stringify({ message, history, ...meta, entrypoint: "external", stream: false }),
       signal,
     });
   },
-  estimatePublicContext(question: string, history?: PublicChatHistoryItem[], signal?: AbortSignal) {
-    return request<PublicContextEstimateResponse>(apiURL("/api/v1/public/context/estimate"), {
+  estimateCustomerContext(message: string, history?: CustomerChatHistoryItem[], signal?: AbortSignal) {
+    return request<CustomerContextEstimateResponse>(apiURL("/api/v1/customer/context/estimate"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, history }),
+      body: JSON.stringify({ message, history, entrypoint: "external" }),
       signal,
     });
   },
-  publicAnswerAudit(question: string, history?: PublicChatHistoryItem[], meta?: PublicAnswerMeta, signal?: AbortSignal) {
-    return request<PublicAnswerResponse>(apiURL("/api/v1/admin/public-answer/audit"), {
+  customerChatAudit(message: string, history?: CustomerChatHistoryItem[], meta?: CustomerChatMeta, signal?: AbortSignal) {
+    return request<CustomerChatResponse>(apiURL("/api/v1/customer/chat"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, history, ...meta, stream: false }),
+      body: JSON.stringify({ message, history, ...meta, entrypoint: "internal", simulation: true, stream: false }),
       signal,
     });
   },
-  async publicAnswerAuditStream(
-    question: string,
-    history: PublicChatHistoryItem[] | undefined,
-    meta: PublicAnswerMeta | undefined,
-    onEvent: (event: PublicStreamEvent) => void,
+  async customerChatAuditStream(
+    message: string,
+    history: CustomerChatHistoryItem[] | undefined,
+    meta: CustomerChatMeta | undefined,
+    onEvent: (event: CustomerStreamEvent) => void,
     signal?: AbortSignal,
-  ) {
-    const response = await fetch(apiURL("/api/v1/admin/public-answer/audit/stream"), {
+  ): Promise<string> {
+    const response = await fetch(apiURL("/api/v1/customer/chat"), {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, history, ...meta }),
+      body: JSON.stringify({ message, history, ...meta, entrypoint: "internal", simulation: true, stream: true }),
       signal,
     });
     if (!response.ok) {
@@ -126,16 +129,21 @@ export const api = {
     if (!response.body) {
       throw new Error("stream body is unavailable");
     }
+    const traceID = response.headers.get("X-Trace-ID") ?? "";
     await consumeSSE(response, onEvent);
+    return traceID;
+  },
+  customerChatTrace(traceID: string, signal?: AbortSignal) {
+    return request<CustomerChatTraceResponse>(apiURL(`/api/v1/admin/customer-chat/traces/${encodeURIComponent(traceID)}`), { signal });
   },
   adminDashboard(signal?: AbortSignal) {
     return request<AdminDashboardResponse>(apiURL("/api/v1/admin/dashboard"), { signal });
   },
-  getPublicIntents() {
-    return request<PublicIntentsResponse>(apiURL("/api/v1/admin/public-intents"));
+  getCustomerIntents() {
+    return request<CustomerIntentsResponse>(apiURL("/api/v1/admin/customer-intents"));
   },
-  updatePublicIntents(source: string, signal?: AbortSignal) {
-    return request<PublicIntentsResponse>(apiURL("/api/v1/admin/public-intents"), {
+  updateCustomerIntents(source: string, signal?: AbortSignal) {
+    return request<CustomerIntentsResponse>(apiURL("/api/v1/admin/customer-intents"), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ source }),
@@ -246,10 +254,10 @@ export const api = {
     });
   },
   adminChat(payload: AdminChatRequest, signal?: AbortSignal) {
-    return request<AdminChatResponse>(apiURL("/api/v1/admin/chat"), {
+    return request<AdminChatResponse>(apiURL("/api/v1/admin/knowledge/assistant/chat"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, stream: false }),
       signal,
     });
   },
@@ -289,7 +297,7 @@ export const api = {
   wikiDownloadURL(path: string) {
     return apiURL(`/api/v1/admin/wiki/download?path=${encodeURIComponent(path)}`);
   },
-  publicConversations(params?: { q?: string; page?: number; page_size?: number; from?: string; to?: string }, signal?: AbortSignal) {
+  customerConversations(params?: { q?: string; page?: number; page_size?: number; from?: string; to?: string }, signal?: AbortSignal) {
     const search = new URLSearchParams();
     if (params?.q) search.set("q", params.q);
     if (params?.page) search.set("page", String(params.page));
@@ -297,10 +305,10 @@ export const api = {
     if (params?.from) search.set("from", params.from);
     if (params?.to) search.set("to", params.to);
     const suffix = search.toString() ? `?${search.toString()}` : "";
-    return request<PublicConversationsResponse>(apiURL(`/api/v1/admin/public-conversations${suffix}`), { signal });
+    return request<CustomerConversationsResponse>(apiURL(`/api/v1/admin/customer-conversations${suffix}`), { signal });
   },
-  publicConversationDetail(id: string, signal?: AbortSignal) {
-    return request<PublicConversationDetailResponse>(apiURL(`/api/v1/admin/public-conversations/${encodeURIComponent(id)}`), { signal });
+  customerConversationDetail(id: string, signal?: AbortSignal) {
+    return request<CustomerConversationDetailResponse>(apiURL(`/api/v1/admin/customer-conversations/${encodeURIComponent(id)}`), { signal });
   },
   syncStatus(signal?: AbortSignal) {
     return request<SyncStatusResponse>(apiURL("/api/v1/admin/sync/status"), { signal });
@@ -346,12 +354,12 @@ export const api = {
     });
   },
   async adminChatStream(payload: AdminChatRequest, onEvent: (event: AdminStreamEvent) => void, signal?: AbortSignal) {
-    const url = apiURL("/api/v1/admin/chat/stream");
+    const url = apiURL("/api/v1/admin/knowledge/assistant/chat");
     const response = await fetch(url, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, stream: true }),
       signal,
     });
     if (!response.ok) {

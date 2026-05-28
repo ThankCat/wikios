@@ -15,7 +15,6 @@ export type AdminModuleId =
   | "models"
   | "knowledge"
   | "review"
-  | "public-config"
   | "prompts"
   | "logs"
   | "settings";
@@ -34,7 +33,6 @@ export const adminModulePaths: Record<AdminModuleId, string> = {
   models: "/models",
   knowledge: "/knowledge",
   review: "/review",
-  "public-config": "/public-config",
   prompts: "/prompts",
   logs: "/logs",
   settings: "/settings",
@@ -42,7 +40,7 @@ export const adminModulePaths: Record<AdminModuleId, string> = {
 
 export const adminNavItems: AdminNavItem[] = [
   { id: "dashboard", label: "总览", description: "系统状态与近期风险", path: adminModulePaths.dashboard, icon: LayoutDashboard },
-  { id: "conversations", label: "用户会话", description: "public 用户问答记录", path: adminModulePaths.conversations, icon: MessagesSquare },
+  { id: "conversations", label: "用户会话", description: "客户问答记录", path: adminModulePaths.conversations, icon: MessagesSquare },
   { id: "knowledge", label: "知识库", description: "浏览、助手、运维与同步", path: adminModulePaths.knowledge, icon: Database },
   { id: "review", label: "审查", description: "低置信回答审查队列", path: adminModulePaths.review, icon: ClipboardCheck },
   { id: "prompts", label: "提示词", description: "Prompt 查看、测试与版本预留", path: adminModulePaths.prompts, icon: FileJson },

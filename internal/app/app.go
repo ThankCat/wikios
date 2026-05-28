@@ -44,27 +44,27 @@ func New(cfg *config.Config) (*App, error) {
 	rt := runtime.NewRuntime(registry, runtime.NewPolicyEngine(), runtime.NewValidator(), runtime.NewAuditLogger())
 	llmClient := service.NewDynamicLLMClient(dataStore, cfg.LLM)
 	retriever := retrieval.NewQMDRetriever(rt)
-	publicIntents := service.NewPublicIntentManager(cfg.PublicIntents)
+	customerIntents := service.NewCustomerIntentManager(cfg.CustomerIntents)
 	contextCounter := service.NewContextCounter(cfg.Context)
 	deps := service.Deps{
-		Config:        cfg,
-		Runtime:       rt,
-		LLM:           llmClient,
-		Retriever:     retriever,
-		Store:         dataStore,
-		PublicIntents: publicIntents,
-		PromptDir:     "internal/llm/prompts",
-		WorkspaceDir:  cfg.Workspace.BaseDir,
+		Config:          cfg,
+		Runtime:         rt,
+		LLM:             llmClient,
+		Retriever:       retriever,
+		Store:           dataStore,
+		CustomerIntents: customerIntents,
+		PromptDir:       "internal/llm/prompts",
+		WorkspaceDir:    cfg.Workspace.BaseDir,
 	}
 	handlers := api.NewHandlers(
-		service.NewPublicQueryService(deps),
+		service.NewCustomerChatService(deps),
 		service.NewReviewQueueService(deps),
 		service.NewDirectAdminService(deps),
 		service.NewUploadService(deps),
 		service.NewSyncService(deps),
 		dataStore,
 		cfg,
-		publicIntents,
+		customerIntents,
 		contextCounter,
 	)
 

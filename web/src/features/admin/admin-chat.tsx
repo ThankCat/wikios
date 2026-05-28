@@ -50,7 +50,7 @@ import type {
   AdminStreamEvent,
   ContextUsage,
   LLMModel,
-  PublicIntentsStatus,
+  CustomerIntentsStatus,
   ReviewItem,
   ReviewTarget,
   SyncCommitResponse,
@@ -314,7 +314,7 @@ export function AdminChat({
   const [requestLabels, setRequestLabelsSnapshot] = useState<Record<string, string>>(() => runtime.requestLabels);
   const [intentEditorOpen, setIntentEditorOpen] = useState(false);
   const [intentSource, setIntentSource] = useState("");
-  const [intentStatus, setIntentStatus] = useState<PublicIntentsStatus | null>(
+  const [intentStatus, setIntentStatus] = useState<CustomerIntentsStatus | null>(
     null,
   );
   const [intentLoading, setIntentLoading] = useState(false);
@@ -1022,7 +1022,7 @@ export function AdminChat({
     setIntentLoading(true);
     setIntentMessage("");
     try {
-      const response = await api.getPublicIntents();
+      const response = await api.getCustomerIntents();
       setIntentSource(response.source);
       setIntentStatus(response.status);
     } catch (reason) {
@@ -1042,7 +1042,7 @@ export function AdminChat({
     setIntentLoading(true);
     setIntentMessage("");
     try {
-      const response = await api.getPublicIntents();
+      const response = await api.getCustomerIntents();
       setIntentSource(response.source);
       setIntentStatus(response.status);
       setIntentMessage("已重新读取当前配置。");
@@ -1059,7 +1059,7 @@ export function AdminChat({
     setIntentSaving(true);
     setIntentMessage("");
     try {
-      const response = await api.updatePublicIntents(intentSource);
+      const response = await api.updateCustomerIntents(intentSource);
       setIntentSource(response.source);
       setIntentStatus(response.status);
       const warningText = response.status.warnings?.length
@@ -2818,7 +2818,7 @@ export function AdminChat({
             className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4"
             role="dialog"
             aria-modal="true"
-            aria-labelledby="public-intents-title"
+            aria-labelledby="customer-intents-title"
             onMouseDown={(event) => {
               if (event.target === event.currentTarget) {
                 closeIntentEditor();
@@ -2829,7 +2829,7 @@ export function AdminChat({
               <header className="flex items-start justify-between gap-4 border-b px-5 py-4">
                 <div>
                   <h2
-                    id="public-intents-title"
+                    id="customer-intents-title"
                     className="text-sm font-semibold"
                   >
                     前置话术策略

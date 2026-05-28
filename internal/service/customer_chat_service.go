@@ -12,16 +12,18 @@ import (
 	"strings"
 	"time"
 
+	"wikios/internal/config"
 	"wikios/internal/retrieval"
 	"wikios/internal/runtime"
 	"wikios/internal/wikiadapter"
 )
 
-type PublicAnswerRequest struct {
+type CustomerChatRequest struct {
 	Question          string         `json:"question"`
 	Stream            bool           `json:"stream,omitempty"`
 	PersistLog        *bool          `json:"persist_log,omitempty"`
 	Simulation        bool           `json:"simulation,omitempty"`
+	Entrypoint        string         `json:"entrypoint,omitempty"`
 	UserID            string         `json:"user_id"`
 	SessionID         string         `json:"session_id"`
 	QuestionMessageID string         `json:"question_message_id"`
@@ -45,19 +47,19 @@ type SourceRef struct {
 	Confidence string `json:"confidence"`
 }
 
-type PublicAnswerResponse struct {
+type CustomerChatResponse struct {
 	Answer     string         `json:"answer"`
 	ReceivedAt string         `json:"received_at,omitempty"`
 	AnsweredAt string         `json:"answered_at,omitempty"`
 	Details    map[string]any `json:"details,omitempty"`
 }
 
-type PublicQueryService struct {
+type CustomerChatService struct {
 	baseService
-	cache *publicAnswerCache
+	cache *customerChatCache
 }
 
-type publicAnswerLLMOutput struct {
+type customerChatLLMOutput struct {
 	AnswerMode          string               `json:"answer_mode"`
 	AnswerType          string               `json:"answer_type"`
 	AnswerText          string               `json:"answer"`
@@ -69,50 +71,50 @@ type publicAnswerLLMOutput struct {
 	ReviewReason        string               `json:"review_reason"`
 	BoundaryReason      string               `json:"boundary_reason"`
 	SuggestedTargetPath string               `json:"suggested_target_path"`
-	Sources             []publicAnswerSource `json:"sources"`
+	Sources             []customerChatSource `json:"sources"`
 	Notes               string               `json:"notes"`
 }
 
-type publicAnswerSource struct {
+type customerChatSource struct {
 	Path       string `json:"path"`
 	Confidence string `json:"confidence"`
 }
 
-func NewPublicQueryService(deps Deps) *PublicQueryService {
-	return &PublicQueryService{
+func NewCustomerChatService(deps Deps) *CustomerChatService {
+	return &CustomerChatService{
 		baseService: newBaseService(deps),
-		cache:       defaultPublicAnswerCache,
+		cache:       defaultCustomerChatCache,
 	}
 }
 
-func (s *PublicQueryService) Answer(ctx context.Context, traceID string, req PublicAnswerRequest) (*PublicAnswerResponse, error) {
+func (s *CustomerChatService) Answer(ctx context.Context, traceID string, req CustomerChatRequest) (*CustomerChatResponse, error) {
 	return s.answer(ctx, traceID, req, nil)
 }
 
-func (s *PublicQueryService) AnswerStream(ctx context.Context, traceID string, req PublicAnswerRequest, emitter StreamEmitter) (*PublicAnswerResponse, error) {
+func (s *CustomerChatService) AnswerStream(ctx context.Context, traceID string, req CustomerChatRequest, emitter StreamEmitter) (*CustomerChatResponse, error) {
 	return s.answerStream(ctx, traceID, req, emitter, false)
 }
 
-func (s *PublicQueryService) AnswerDebugStream(ctx context.Context, traceID string, req PublicAnswerRequest, emitter StreamEmitter) (*PublicAnswerResponse, error) {
+func (s *CustomerChatService) AnswerDebugStream(ctx context.Context, traceID string, req CustomerChatRequest, emitter StreamEmitter) (*CustomerChatResponse, error) {
 	return s.answerStream(ctx, traceID, req, emitter, true)
 }
 
-func (s *PublicQueryService) answerStream(ctx context.Context, traceID string, req PublicAnswerRequest, emitter StreamEmitter, debug bool) (*PublicAnswerResponse, error) {
+func (s *CustomerChatService) answerStream(ctx context.Context, traceID string, req CustomerChatRequest, emitter StreamEmitter, debug bool) (*CustomerChatResponse, error) {
 	req.Stream = true
-	stream := newPublicAnswerStream(emitter, debug)
+	stream := newCustomerChatStream(emitter, debug)
 	return s.answer(WithStreamEmitter(ctx, stream), traceID, req, stream)
 }
 
-func (s *PublicQueryService) answer(ctx context.Context, traceID string, req PublicAnswerRequest, stream *publicAnswerStream) (*PublicAnswerResponse, error) {
+func (s *CustomerChatService) answer(ctx context.Context, traceID string, req CustomerChatRequest, stream *customerChatStream) (*CustomerChatResponse, error) {
 	runtimeSettings := LoadRuntimeSettingsOrDefault(ctx, s.deps.Store, s.deps.Config)
 	return s.answerRouted(ctx, traceID, req, stream, runtimeSettings)
 }
 
-func publicAnswerRequestCanceled(ctx context.Context, err error) bool {
+func customerChatRequestCanceled(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled)
 }
 
-func publicAnswerContextDone(ctx context.Context, err error) bool {
+func customerChatContextDone(ctx context.Context, err error) bool {
 	if ctx == nil {
 		return false
 	}
@@ -122,33 +124,30 @@ func publicAnswerContextDone(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled)
 }
 
-func (s *PublicQueryService) publicTraceDetails(req PublicAnswerRequest, parsed publicAnswerLLMOutput, trace LLMTrace, execution *Execution, sources []SourceRef, retrievedPaths []string, debugTrace map[string]any) map[string]any {
+func (s *CustomerChatService) customerTraceDetails(req CustomerChatRequest, parsed customerChatLLMOutput, trace LLMTrace, execution *Execution, sources []SourceRef, retrievedPaths []string, debugTrace map[string]any) map[string]any {
 	details := map[string]any{
-		"process_summary": publicReasoningSummary(req, parsed, sources, retrievedPaths),
-		"steps":           publicExecutionStepsForDebug(execution.Steps, req.Simulation),
-		"execution":       publicExecutionSummary(execution),
+		"process_summary": customerReasoningSummary(req, parsed, sources, retrievedPaths),
+		"steps":           customerExecutionStepsForDebug(execution.Steps, req.Simulation),
+		"execution":       customerExecutionSummary(execution),
 		"answer_mode":     normalizedAnswerMode(parsed.AnswerMode),
 		"source_count":    len(sources),
 		"retrieved_count": len(retrievedPaths),
-		"sources":         publicSourceSummaries(sources),
+		"sources":         customerSourceSummaries(sources),
 		"retrieved_paths": retrievedPaths,
 	}
 	for key, value := range debugTrace {
-		if !req.Simulation && !publicTraceKeyAllowedInPersistentDetails(key) {
-			continue
-		}
 		if value != nil {
 			details[key] = value
 		}
 	}
-	if strings.TrimSpace(trace.Reasoning) != "" && req.Simulation {
+	if strings.TrimSpace(trace.Reasoning) != "" {
 		details["reasoning"] = trace.Reasoning
 		details["reasoning_chars"] = len([]rune(trace.Reasoning))
 	}
 	return details
 }
 
-func publicTraceKeyAllowedInPersistentDetails(key string) bool {
+func customerTraceKeyAllowedInPersistentDetails(key string) bool {
 	switch key {
 	case "trace_id", "received_at", "simulation", "persist_log", "history_turns", "question_chars",
 		"retrieval_question", "candidate_top_k", "max_evidence_chars", "retrieved_candidates",
@@ -160,24 +159,24 @@ func publicTraceKeyAllowedInPersistentDetails(key string) bool {
 	}
 }
 
-func publicTraceStepStart(ctx context.Context, name string, tool string, input map[string]any) time.Time {
+func customerTraceStepStart(ctx context.Context, name string, tool string, input map[string]any) time.Time {
 	start := time.Now()
 	emitStreamEvent(ctx, "step_start", map[string]any{
 		"name":       name,
 		"tool":       tool,
-		"input":      publicTraceMap(input),
+		"input":      customerTraceMap(input),
 		"started_at": start.Format(time.RFC3339Nano),
 	})
 	return start
 }
 
-func publicTraceStepFinish(ctx context.Context, execution *Execution, name string, tool string, start time.Time, input map[string]any, output map[string]any, err error) {
+func customerTraceStepFinish(ctx context.Context, execution *Execution, name string, tool string, start time.Time, input map[string]any, output map[string]any, err error) {
 	if start.IsZero() {
 		start = time.Now()
 	}
 	end := time.Now()
 	status := "SUCCESS"
-	resolvedOutput := publicTraceMap(output)
+	resolvedOutput := customerTraceMap(output)
 	if err != nil {
 		status = "FAILED"
 		if resolvedOutput == nil {
@@ -189,7 +188,7 @@ func publicTraceStepFinish(ctx context.Context, execution *Execution, name strin
 		Name:       name,
 		Tool:       tool,
 		Status:     status,
-		Input:      publicTraceMap(input),
+		Input:      customerTraceMap(input),
 		Output:     resolvedOutput,
 		DurationMs: end.Sub(start).Milliseconds(),
 		StartedAt:  start,
@@ -201,18 +200,18 @@ func publicTraceStepFinish(ctx context.Context, execution *Execution, name strin
 	emitStreamEvent(ctx, "step_finish", step)
 }
 
-func publicTraceMap(input map[string]any) map[string]any {
+func customerTraceMap(input map[string]any) map[string]any {
 	if len(input) == 0 {
 		return nil
 	}
 	out := make(map[string]any, len(input))
 	for key, value := range input {
-		out[key] = publicTracePayload(value)
+		out[key] = customerTracePayload(value)
 	}
 	return out
 }
 
-func publicTracePayload(value any) any {
+func customerTracePayload(value any) any {
 	switch typed := value.(type) {
 	case nil:
 		return nil
@@ -235,7 +234,7 @@ func publicTracePayload(value any) any {
 		}
 		out := make([]any, 0, limit)
 		for _, item := range typed[:limit] {
-			out = append(out, publicTraceMap(item))
+			out = append(out, customerTraceMap(item))
 		}
 		return out
 	case []any:
@@ -245,34 +244,107 @@ func publicTracePayload(value any) any {
 		}
 		out := make([]any, 0, limit)
 		for _, item := range typed[:limit] {
-			out = append(out, publicTracePayload(item))
+			out = append(out, customerTracePayload(item))
 		}
 		return out
 	case map[string]any:
-		return publicTraceMap(typed)
+		return customerTraceMap(typed)
 	default:
 		return value
 	}
 }
 
-func (s *PublicQueryService) maybeWritePublicAnswerLog(traceID string, req PublicAnswerRequest, resp *PublicAnswerResponse, extra map[string]any) {
-	if !shouldPersistPublicAnswerLog(req) {
-		return
+func customerAuditThinking(enabled *bool, content string) map[string]any {
+	content = strings.TrimSpace(content)
+	enabledValue := false
+	if enabled != nil {
+		enabledValue = *enabled
 	}
-	s.writePublicAnswerLog(traceID, req, resp, extra)
+	result := map[string]any{
+		"enabled": enabledValue,
+		"saved":   false,
+		"content": nil,
+		"chars":   0,
+	}
+	if enabledValue && content != "" {
+		result["saved"] = true
+		result["content"] = content
+		result["chars"] = len([]rune(content))
+	} else if enabledValue {
+		result["unavailable_reason"] = "model_did_not_return_reasoning"
+	}
+	return result
 }
 
-func shouldPersistPublicAnswerLog(req PublicAnswerRequest) bool {
+func customerConversationContextForAudit(history []ChatMessage) []map[string]any {
+	items := make([]map[string]any, 0, len(history)/2)
+	var pendingQuestion string
+	for _, item := range history {
+		role := strings.ToLower(strings.TrimSpace(item.Role))
+		content := strings.TrimSpace(item.Content)
+		if content == "" {
+			continue
+		}
+		switch role {
+		case "user":
+			pendingQuestion = content
+		case "assistant":
+			if pendingQuestion != "" {
+				items = append(items, map[string]any{"question": pendingQuestion, "answer": content})
+				pendingQuestion = ""
+			}
+		}
+	}
+	return items
+}
+
+func (s *CustomerChatService) maybeWriteCustomerChatLog(traceID string, req CustomerChatRequest, resp *CustomerChatResponse, extra map[string]any) {
+	if !shouldPersistCustomerChatLog(req) {
+		return
+	}
+	s.writeCustomerChatAuditLog(traceID, req, resp, extra, nil)
+}
+
+func (s *CustomerChatService) maybeWriteCustomerChatErrorLog(traceID string, req CustomerChatRequest, stage string, err error, extra map[string]any) {
+	if !shouldPersistCustomerChatLog(req) {
+		return
+	}
+	details := map[string]any{}
+	for key, value := range extra {
+		if strings.TrimSpace(key) != "" {
+			details[key] = value
+		}
+	}
+	rawOutput := ""
+	switch normalizeCustomerChatAuditErrorStage(stage) {
+	case "router_parse":
+		rawOutput = auditStringMapValue(details, "router_raw")
+	case "specialist_parse":
+		rawOutput = auditStringMapValue(details, "model_json_raw")
+	}
+	answeredAt := time.Now().UTC().Format(time.RFC3339Nano)
+	resp := &CustomerChatResponse{
+		ReceivedAt: firstNonEmpty(strings.TrimSpace(req.ReceivedAt), answeredAt),
+		AnsweredAt: answeredAt,
+		Details:    details,
+	}
+	s.writeCustomerChatAuditLog(traceID, req, resp, details, newCustomerChatAuditError(stage, err, rawOutput))
+}
+
+func shouldPersistCustomerChatLog(req CustomerChatRequest) bool {
 	return req.PersistLog == nil || *req.PersistLog
 }
 
-func (s *PublicQueryService) writePublicAnswerLog(traceID string, req PublicAnswerRequest, resp *PublicAnswerResponse, extra map[string]any) {
-	if s == nil || resp == nil {
+func (s *CustomerChatService) writeCustomerChatAuditLog(traceID string, req CustomerChatRequest, resp *CustomerChatResponse, extra map[string]any, auditErr *customerChatAuditError) {
+	if s == nil {
 		return
 	}
-	enabled, redact, retentionDays := s.publicAnswerLogSettings()
+	enabled, redact, retentionDays := s.customerChatLogSettings()
 	if !enabled {
 		return
+	}
+	if resp == nil {
+		resp = &CustomerChatResponse{}
 	}
 	workspaceDir := strings.TrimSpace(s.deps.WorkspaceDir)
 	if workspaceDir == "" && s.deps.Config != nil {
@@ -282,94 +354,276 @@ func (s *PublicQueryService) writePublicAnswerLog(traceID string, req PublicAnsw
 		workspaceDir = ".workspace"
 	}
 	loggedAt := time.Now().UTC()
-	jsonData := map[string]any{
-		"response": resp,
-		"details":  resp.Details,
+	entrypoint := strings.TrimSpace(strings.ToLower(req.Entrypoint))
+	if entrypoint == "" {
+		entrypoint = "external"
 	}
-	entry := map[string]any{
-		"logged_at":             loggedAt.Format(time.RFC3339Nano),
-		"trace_id":              strings.TrimSpace(traceID),
-		"user_id":               strings.TrimSpace(req.UserID),
-		"session_id":            strings.TrimSpace(req.SessionID),
-		"question_message_id":   strings.TrimSpace(req.QuestionMessageID),
-		"answer_message_id":     strings.TrimSpace(req.AnswerMessageID),
-		"question_created_at":   strings.TrimSpace(req.QuestionCreatedAt),
-		"received_at":           strings.TrimSpace(req.ReceivedAt),
-		"question":              strings.TrimSpace(req.Question),
-		"history":               req.History,
-		"context":               req.Context,
-		"answer":                resp.Answer,
-		"answered_at":           resp.AnsweredAt,
-		"thinking":              "",
-		"thinking_chars":        0,
-		"process_summary":       "",
-		"answer_mode":           "",
-		"json_data":             jsonData,
-		"public_answer_version": 1,
-	}
+	details := map[string]any{}
 	if resp.Details != nil {
-		if value, ok := resp.Details["process_summary"]; ok {
-			entry["process_summary"] = value
-		}
-		if value, ok := resp.Details["answer_mode"]; ok {
-			entry["answer_mode"] = value
-		}
-		if value, ok := resp.Details["reasoning"]; ok {
-			if reasoning, ok := value.(string); ok && strings.TrimSpace(reasoning) != "" {
-				safeReasoning := publicSafeThinkingForLog(resp, reasoning)
-				entry["thinking"] = safeReasoning
-				entry["thinking_chars"] = len([]rune(safeReasoning))
-			}
+		for key, value := range resp.Details {
+			details[key] = value
 		}
 	}
 	for key, value := range extra {
-		if key == "" {
-			continue
-		}
-		switch key {
-		case "thinking":
-			reasoning := publicSafeThinkingForLog(resp, value)
-			entry["thinking"] = reasoning
-			entry["thinking_chars"] = len([]rune(reasoning))
-		case "model_json_raw":
-			jsonData[key] = publicRawModelOutputLogSummary(value)
-		case "model_json_parsed", "final_json":
-			jsonData[key] = publicSafeModelJSONForLog(value, resp)
-		case "error":
-			entry[key] = publicSafeErrorForLog(value)
-		default:
-			entry[key] = value
+		if strings.TrimSpace(key) != "" {
+			if _, exists := details[key]; !exists {
+				details[key] = value
+			}
 		}
 	}
+	specialistOutput := auditMapValue(details["model_json_parsed"])
+	if len(specialistOutput) == 0 {
+		if parsed, ok := extra["final_json"].(customerChatLLMOutput); ok {
+			specialistOutput = customerSafeLLMOutputForLog(parsed)
+		}
+	}
+	answerMode := firstNonEmpty(auditStringMapValue(specialistOutput, "answer_mode"), auditStringMapValue(details, "answer_mode"))
+	routerThinking := auditMapValue(details["router_thinking"])
+	if len(routerThinking) == 0 {
+		routerThinking = customerAuditThinking(nil, auditStringMapValue(details, "router_thinking"))
+	}
+	specialistThinking := auditMapValue(details["specialist_thinking"])
+	if len(specialistThinking) == 0 {
+		specialistThinking = customerAuditThinking(nil, auditStringMapValue(details, "thinking"))
+	}
+	retrievalCache := auditMapValue(details["retrieval_cache"])
+	routerModelID := firstNonEmpty(auditStringMapValue(details, "router_model_id"), customerConfiguredModelIDForLog(""))
+	specialistModelID := firstNonEmpty(auditStringMapValue(details, "specialist_model_id"), customerConfiguredModelIDForLog(""))
+	routerModelName := auditStringMapValue(details, "router_model_name")
+	if routerModelName == "" {
+		routerModelName = s.customerAuditModelName(context.Background(), strings.TrimSpace(auditStringMapValue(details, "router_model_id")))
+	}
+	specialistModelName := auditStringMapValue(details, "specialist_model_name")
+	if specialistModelName == "" {
+		specialistModelName = s.customerAuditModelName(context.Background(), strings.TrimSpace(auditStringMapValue(details, "specialist_model_id")))
+	}
+	routerThinkingEnabled := resultBoolValue(details, "router_thinking_enabled")
+	specialistThinkingEnabled := resultBoolValue(details, "specialist_thinking_enabled")
+	retrieval := map[string]any{
+		"requested_by":         "router",
+		"executed_by":          "service",
+		"target_specialist":    auditStringMapValue(details, "specialist"),
+		"scope":                auditStringMapValue(details, "specialist"),
+		"duration_ms":          resultInt64Value(retrievalCache, "duration_ms"),
+		"source_count":         auditListLen(details["sources"]),
+		"attempted_queries":    retrievalCache["attempted_retrieval_queries"],
+		"executed_queries":     retrievalCache["executed_retrieval_queries"],
+		"skipped_query_count":  retrievalCache["skipped_retrieval_query_count"],
+		"qmd_cache_hits":       retrievalCache["qmd_cache_hits"],
+		"qmd_cache_misses":     retrievalCache["qmd_cache_misses"],
+		"page_cache_hits":      retrievalCache["read_page_cache_hits"],
+		"page_cache_misses":    retrievalCache["read_page_cache_misses"],
+		"query_timings":        retrievalCache["retrieval_timings"],
+		"page_timings":         retrievalCache["read_page_timings"],
+		"candidates":           details["retrieved_candidates"],
+		"sources":              details["sources"],
+		"candidate_page_paths": details["retrieved_paths"],
+		"evidence_preview":     details["evidence"],
+	}
+	receivedAt := firstNonEmpty(strings.TrimSpace(req.ReceivedAt), strings.TrimSpace(resp.ReceivedAt))
+	answeredAt := strings.TrimSpace(resp.AnsweredAt)
+	entryRecord := customerChatAuditRecord{
+		SchemaVersion: customerChatAuditSchemaVersion,
+		RecordType:    customerChatAuditRecordType,
+		TraceID:       strings.TrimSpace(traceID),
+		SessionID:     strings.TrimSpace(req.SessionID),
+		Time: customerChatAuditTime{
+			LoggedAt:        loggedAt.Format(time.RFC3339Nano),
+			ReceivedAt:      receivedAt,
+			AnsweredAt:      answeredAt,
+			TotalDurationMS: customerTotalDurationMS(receivedAt, answeredAt),
+		},
+		Runtime: customerChatAuditRuntime{
+			Environment:           customerRuntimeEnvironment(s.deps.Config),
+			Entrypoint:            entrypoint,
+			Simulation:            req.Simulation,
+			GitCommit:             customerAuditGitCommit(),
+			CustomerChatMode:      customerChatModeRouted,
+			RouterModelID:         routerModelID,
+			SpecialistModelID:     specialistModelID,
+			RouterContractVersion: customerRouterContractVersion,
+		},
+		Request: customerChatAuditRequest{
+			Message:             strings.TrimSpace(req.Question),
+			HistoryTurns:        len(req.History),
+			HistorySummary:      auditStringMapValue(auditMapValue(auditMapValue(details["router"])["output"]), "history_summary"),
+			ConversationContext: customerConversationContextForAudit(req.History),
+		},
+		Router: customerChatAuditRouter{
+			Model: customerChatAuditModel{
+				ID:              routerModelID,
+				Name:            routerModelName,
+				ThinkingEnabled: routerThinkingEnabled,
+			},
+			DurationMS: resultInt64Value(details, "router_duration_ms"),
+			Thinking:   routerThinking,
+			RawOutput:  auditStringMapValue(details, "router_raw"),
+			Output:     auditMapValue(auditMapValue(details["router"])["output"]),
+		},
+		Retrieval: retrieval,
+		Specialist: customerChatAuditSpecialist{
+			Name: auditStringMapValue(details, "specialist"),
+			Model: customerChatAuditModel{
+				ID:              specialistModelID,
+				Name:            specialistModelName,
+				ThinkingEnabled: specialistThinkingEnabled,
+			},
+			DurationMS: resultInt64Value(details, "specialist_duration_ms"),
+			Thinking:   specialistThinking,
+			Input:      customerSpecialistAuditInput(req, details),
+			RawOutput:  auditStringMapValue(details, "model_json_raw"),
+			Output:     specialistOutput,
+		},
+		Final: customerChatAuditFinal{
+			Answer:         resp.Answer,
+			AnswerMode:     answerMode,
+			SourceCount:    auditListLen(specialistOutput["sources"]),
+			ReviewRequired: resultBoolValue(specialistOutput, "review_required"),
+		},
+		Error:  auditErr,
+		Review: customerChatAuditReviewPlaceholder(),
+	}
+	entry := customerChatAuditRecordToMap(entryRecord)
 	if redact {
-		entry = redactPublicAnswerLogEntry(entry)
+		entry = redactCustomerChatLogEntry(entry)
 	}
-	path := filepath.Join(workspaceDir, "public_answer_logs", loggedAt.Format("2006-01-02")+".jsonl")
+	path := filepath.Join(workspaceDir, "customer_chat_logs", loggedAt.Format("2006-01-02")+".jsonl")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		log.Printf("write public answer log mkdir failed trace=%s err=%v", traceID, err)
+		log.Printf("write customer chat log mkdir failed trace=%s err=%v", traceID, err)
 		return
 	}
-	s.prunePublicAnswerLogs(filepath.Dir(path), loggedAt, retentionDays)
+	s.pruneCustomerChatLogs(filepath.Dir(path), loggedAt, retentionDays)
 	line, err := json.Marshal(entry)
 	if err != nil {
-		log.Printf("write public answer log marshal failed trace=%s err=%v", traceID, err)
+		log.Printf("write customer chat log marshal failed trace=%s err=%v", traceID, err)
 		return
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		log.Printf("write public answer log open failed trace=%s err=%v", traceID, err)
+		log.Printf("write customer chat log open failed trace=%s err=%v", traceID, err)
 		return
 	}
 	defer file.Close()
 	if _, err := file.Write(append(line, '\n')); err != nil {
-		log.Printf("write public answer log failed trace=%s err=%v", traceID, err)
+		log.Printf("write customer chat log failed trace=%s err=%v", traceID, err)
 	}
 }
 
-func publicSafeErrorForLog(value any) map[string]any {
+func auditStringMapValue(record map[string]any, key string) string {
+	if record == nil {
+		return ""
+	}
+	value, ok := record[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case json.Number:
+		return strings.TrimSpace(typed.String())
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
+}
+
+func auditMapValue(value any) map[string]any {
+	if typed, ok := value.(map[string]any); ok {
+		return typed
+	}
+	if value == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func customerSpecialistAuditInput(req CustomerChatRequest, details map[string]any) map[string]any {
+	if input := auditMapValue(details["specialist_input"]); len(input) > 0 {
+		return input
+	}
+	return map[string]any{
+		"user_message":                 strings.TrimSpace(req.Question),
+		"router_output_ref":            "router.output",
+		"candidate_page_paths_ref":     "retrieval.candidate_page_paths",
+		"candidate_page_paths_preview": details["retrieved_paths"],
+	}
+}
+
+func auditListLen(value any) int64 {
+	switch typed := value.(type) {
+	case nil:
+		return 0
+	case []any:
+		return int64(len(typed))
+	case []map[string]any:
+		return int64(len(typed))
+	case []SourceRef:
+		return int64(len(typed))
+	case []customerChatSource:
+		return int64(len(typed))
+	default:
+		raw, err := json.Marshal(typed)
+		if err != nil {
+			return 0
+		}
+		var items []any
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return 0
+		}
+		return int64(len(items))
+	}
+}
+
+func resultInt64Value(result map[string]any, key string) int64 {
+	if result == nil {
+		return 0
+	}
+	switch value := result[key].(type) {
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	case float64:
+		return int64(value)
+	case json.Number:
+		parsed, _ := value.Int64()
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func customerRuntimeEnvironment(cfg *config.Config) string {
+	if cfg == nil || strings.TrimSpace(cfg.Server.Mode) == "" {
+		return "local"
+	}
+	return strings.TrimSpace(cfg.Server.Mode)
+}
+
+func customerTotalDurationMS(receivedAt string, answeredAt string) int64 {
+	start, err1 := time.Parse(time.RFC3339Nano, strings.TrimSpace(receivedAt))
+	end, err2 := time.Parse(time.RFC3339Nano, strings.TrimSpace(answeredAt))
+	if err1 != nil || err2 != nil || end.Before(start) {
+		return 0
+	}
+	return end.Sub(start).Milliseconds()
+}
+
+func customerSafeErrorForLog(value any) map[string]any {
 	raw := strings.TrimSpace(fmt.Sprint(value))
-	code := "public_answer_generation_failed"
-	if isPublicHiddenLLMError(errors.New(raw)) {
+	code := "customer_chat_generation_failed"
+	if isCustomerHiddenLLMError(errors.New(raw)) {
 		code = "model_service_unavailable"
 	}
 	return map[string]any{
@@ -378,7 +632,7 @@ func publicSafeErrorForLog(value any) map[string]any {
 	}
 }
 
-func publicSafeThinkingForLog(resp *PublicAnswerResponse, raw any) string {
+func customerSafeThinkingForLog(resp *CustomerChatResponse, raw any) string {
 	if resp != nil && resp.Details != nil {
 		if value, ok := resp.Details["process_summary"]; ok {
 			if summary := strings.TrimSpace(fmt.Sprint(value)); summary != "" {
@@ -389,21 +643,21 @@ func publicSafeThinkingForLog(resp *PublicAnswerResponse, raw any) string {
 	if strings.TrimSpace(fmt.Sprint(raw)) == "" {
 		return ""
 	}
-	return "已生成模型思考内容；public 日志仅保留安全审计摘要，原始推导不写入。"
+	return "已生成模型思考内容；customer 日志仅保留安全审计摘要，原始推导不写入。"
 }
 
-func publicRawModelOutputLogSummary(value any) map[string]any {
+func customerRawModelOutputLogSummary(value any) map[string]any {
 	text := strings.TrimSpace(fmt.Sprint(value))
 	return map[string]any{
 		"omitted": true,
-		"reason":  "public_raw_model_output_not_persisted",
+		"reason":  "customer_raw_model_output_not_persisted",
 		"chars":   len([]rune(text)),
 	}
 }
 
-func publicSafeModelJSONForLog(value any, resp *PublicAnswerResponse) any {
-	if parsed, ok := value.(publicAnswerLLMOutput); ok {
-		return publicSafeLLMOutputForLog(parsed)
+func customerSafeModelJSONForLog(value any, resp *CustomerChatResponse) any {
+	if parsed, ok := value.(customerChatLLMOutput); ok {
+		return customerSafeLLMOutputForLog(parsed)
 	}
 	raw, err := json.Marshal(value)
 	if err != nil {
@@ -416,11 +670,11 @@ func publicSafeModelJSONForLog(value any, resp *PublicAnswerResponse) any {
 	return decoded
 }
 
-func publicSafeLLMOutputForLog(parsed publicAnswerLLMOutput) map[string]any {
+func customerSafeLLMOutputForLog(parsed customerChatLLMOutput) map[string]any {
 	return map[string]any{
 		"answer_mode":           normalizedAnswerMode(parsed.AnswerMode),
 		"answer_type":           strings.TrimSpace(parsed.AnswerType),
-		"answer":                publicSafeAnswerForLog(parsed.AnswerText),
+		"answer":                customerSafeAnswerForLog(parsed.AnswerText),
 		"can_answer":            parsed.CanAnswer,
 		"review_question":       strings.TrimSpace(parsed.ReviewQuestion),
 		"confidence":            clampConfidence(parsed.Confidence),
@@ -433,7 +687,7 @@ func publicSafeLLMOutputForLog(parsed publicAnswerLLMOutput) map[string]any {
 	}
 }
 
-func publicSafeAnswerForLog(answer string) any {
+func customerSafeAnswerForLog(answer string) any {
 	answer = strings.TrimSpace(answer)
 	if answer == "" {
 		return ""
@@ -441,7 +695,7 @@ func publicSafeAnswerForLog(answer string) any {
 	return answer
 }
 
-func (s *PublicQueryService) publicAnswerLogSettings() (bool, bool, int) {
+func (s *CustomerChatService) customerChatLogSettings() (bool, bool, int) {
 	if s == nil {
 		defaults := DefaultRuntimeSettings(nil).AnswerLog
 		return defaults.Enabled, defaults.Redact, defaults.RetentionDays
@@ -450,7 +704,7 @@ func (s *PublicQueryService) publicAnswerLogSettings() (bool, bool, int) {
 	return settings.Enabled, settings.Redact, settings.RetentionDays
 }
 
-func redactPublicAnswerLogEntry(entry map[string]any) map[string]any {
+func redactCustomerChatLogEntry(entry map[string]any) map[string]any {
 	raw, err := json.Marshal(entry)
 	if err != nil {
 		return entry
@@ -459,19 +713,19 @@ func redactPublicAnswerLogEntry(entry map[string]any) map[string]any {
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return entry
 	}
-	redacted, ok := redactPublicAnswerLogValue(value).(map[string]any)
+	redacted, ok := redactCustomerChatLogValue(value).(map[string]any)
 	if !ok {
 		return entry
 	}
 	return redacted
 }
 
-func redactPublicAnswerLogValue(value any) any {
+func redactCustomerChatLogValue(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		for key, item := range typed {
-			if publicLogSensitiveKey(key) {
+			if customerLogSensitiveKey(key) {
 				if strings.TrimSpace(fmt.Sprint(item)) == "" {
 					out[key] = item
 				} else {
@@ -479,23 +733,23 @@ func redactPublicAnswerLogValue(value any) any {
 				}
 				continue
 			}
-			out[key] = redactPublicAnswerLogValue(item)
+			out[key] = redactCustomerChatLogValue(item)
 		}
 		return out
 	case []any:
 		out := make([]any, 0, len(typed))
 		for _, item := range typed {
-			out = append(out, redactPublicAnswerLogValue(item))
+			out = append(out, redactCustomerChatLogValue(item))
 		}
 		return out
 	case string:
-		return redactPublicAnswerLogString(typed)
+		return redactCustomerChatLogString(typed)
 	default:
 		return value
 	}
 }
 
-func publicLogSensitiveKey(key string) bool {
+func customerLogSensitiveKey(key string) bool {
 	key = strings.ToLower(strings.TrimSpace(key))
 	return strings.Contains(key, "api_key") ||
 		strings.Contains(key, "authorization") ||
@@ -505,15 +759,15 @@ func publicLogSensitiveKey(key string) bool {
 		strings.HasSuffix(key, "_token")
 }
 
-func redactPublicAnswerLogString(value string) string {
+func redactCustomerChatLogString(value string) string {
 	out := value
-	for _, pattern := range publicLogSecretPatterns {
+	for _, pattern := range customerLogSecretPatterns {
 		out = pattern.ReplaceAllString(out, "[redacted]")
 	}
 	return out
 }
 
-func (s *PublicQueryService) prunePublicAnswerLogs(dir string, now time.Time, retentionDays int) {
+func (s *CustomerChatService) pruneCustomerChatLogs(dir string, now time.Time, retentionDays int) {
 	if retentionDays <= 0 {
 		return
 	}
@@ -535,17 +789,17 @@ func (s *PublicQueryService) prunePublicAnswerLogs(dir string, now time.Time, re
 			continue
 		}
 		if err := os.Remove(filepath.Join(dir, name)); err != nil {
-			log.Printf("prune public answer log failed path=%s err=%v", filepath.Join(dir, name), err)
+			log.Printf("prune customer chat log failed path=%s err=%v", filepath.Join(dir, name), err)
 		}
 	}
 }
 
-func publicReasoningSummary(req PublicAnswerRequest, parsed publicAnswerLLMOutput, sources []SourceRef, retrievedPaths []string) string {
+func customerReasoningSummary(req CustomerChatRequest, parsed customerChatLLMOutput, sources []SourceRef, retrievedPaths []string) string {
 	lines := []string{
 		"1. 先做安全边界和禁答检查，确认这个问题能否用正式知识库回答。",
 	}
 	if len(sources) > 0 {
-		lines = append(lines, fmt.Sprintf("2. 检索并读取 %d 个 public-safe 候选知识页，优先使用正式知识、政策、流程、对比和综合页面。", len(sources)))
+		lines = append(lines, fmt.Sprintf("2. 检索并读取 %d 个 customer-safe 候选知识页，优先使用正式知识、政策、流程、对比和综合页面。", len(sources)))
 	} else {
 		lines = append(lines, "2. 未检索到足够的正式候选页面，因此按低置信策略组织回答或进入人工审查。")
 	}
@@ -565,7 +819,7 @@ func publicReasoningSummary(req PublicAnswerRequest, parsed publicAnswerLLMOutpu
 	return strings.Join(lines, "\n")
 }
 
-func publicRetrievedPageSummaries(pages []retrieval.RetrievedPage, limit int) []map[string]any {
+func customerRetrievedPageSummaries(pages []retrieval.RetrievedPage, limit int) []map[string]any {
 	if limit <= 0 || limit > len(pages) {
 		limit = len(pages)
 	}
@@ -579,7 +833,7 @@ func publicRetrievedPageSummaries(pages []retrieval.RetrievedPage, limit int) []
 	return out
 }
 
-func publicSourceSummaries(sources []SourceRef) []map[string]any {
+func customerSourceSummaries(sources []SourceRef) []map[string]any {
 	out := make([]map[string]any, 0, len(sources))
 	for _, source := range sources {
 		out = append(out, map[string]any{
@@ -591,7 +845,7 @@ func publicSourceSummaries(sources []SourceRef) []map[string]any {
 	return out
 }
 
-func publicEvidenceTraceItem(source SourceRef, body string) map[string]any {
+func customerEvidenceTraceItem(source SourceRef, body string) map[string]any {
 	body = strings.TrimSpace(body)
 	return map[string]any{
 		"path":       strings.TrimSpace(source.Path),
@@ -602,11 +856,11 @@ func publicEvidenceTraceItem(source SourceRef, body string) map[string]any {
 	}
 }
 
-func publicExecutionSteps(steps []Step) []map[string]any {
-	return publicExecutionStepsForDebug(steps, false)
+func customerExecutionSteps(steps []Step) []map[string]any {
+	return customerExecutionStepsForDebug(steps, false)
 }
 
-func publicExecutionStepsForDebug(steps []Step, debug bool) []map[string]any {
+func customerExecutionStepsForDebug(steps []Step, debug bool) []map[string]any {
 	out := make([]map[string]any, 0, len(steps))
 	for _, step := range steps {
 		item := map[string]any{
@@ -618,16 +872,16 @@ func publicExecutionStepsForDebug(steps []Step, debug bool) []map[string]any {
 			"ended_at":    step.EndedAt,
 		}
 		if debug && len(step.Input) > 0 {
-			item["input"] = publicTraceMap(step.Input)
+			item["input"] = customerTraceMap(step.Input)
 		}
 		if debug && len(step.Output) > 0 {
-			item["output"] = publicTraceMap(step.Output)
+			item["output"] = customerTraceMap(step.Output)
 		}
 		if !debug {
-			if safeInput := publicSafeStepInput(step); len(safeInput) > 0 {
+			if safeInput := customerSafeStepInput(step); len(safeInput) > 0 {
 				item["input"] = safeInput
 			}
-			if safeOutput := publicSafeStepOutput(step); len(safeOutput) > 0 {
+			if safeOutput := customerSafeStepOutput(step); len(safeOutput) > 0 {
 				item["output"] = safeOutput
 			}
 		}
@@ -636,7 +890,7 @@ func publicExecutionStepsForDebug(steps []Step, debug bool) []map[string]any {
 	return out
 }
 
-func publicSafeStepInput(step Step) map[string]any {
+func customerSafeStepInput(step Step) map[string]any {
 	if len(step.Input) == 0 {
 		return nil
 	}
@@ -649,16 +903,16 @@ func publicSafeStepInput(step Step) map[string]any {
 		}
 		return out
 	}
-	return publicTraceMap(step.Input)
+	return customerTraceMap(step.Input)
 }
 
-func publicSafeStepOutput(step Step) map[string]any {
+func customerSafeStepOutput(step Step) map[string]any {
 	if len(step.Output) == 0 {
 		return nil
 	}
 	out := map[string]any{}
 	if errText := resultStringValue(step.Output, "error"); errText != "" {
-		out["error"] = publicSafeErrorForLog(errText)
+		out["error"] = customerSafeErrorForLog(errText)
 	}
 	if step.Tool == "llm.chat" {
 		if value, ok := step.Output["response_preview"]; ok {
@@ -673,7 +927,7 @@ func publicSafeStepOutput(step Step) map[string]any {
 		if key == "error" {
 			continue
 		}
-		out[key] = publicTracePayload(value)
+		out[key] = customerTracePayload(value)
 	}
 	if len(out) == 0 {
 		return nil
@@ -681,7 +935,7 @@ func publicSafeStepOutput(step Step) map[string]any {
 	return out
 }
 
-func publicExecutionSummary(execution *Execution) map[string]any {
+func customerExecutionSummary(execution *Execution) map[string]any {
 	if execution == nil {
 		return nil
 	}
@@ -695,7 +949,7 @@ func publicExecutionSummary(execution *Execution) map[string]any {
 	}
 }
 
-func normalizePublicAnswerOutput(parsed publicAnswerLLMOutput) publicAnswerLLMOutput {
+func normalizeCustomerChatOutput(parsed customerChatLLMOutput) customerChatLLMOutput {
 	if parsed.CanAnswer != nil && !*parsed.CanAnswer && strings.TrimSpace(parsed.AnswerMode) == "" {
 		parsed.AnswerMode = "refusal"
 	}
@@ -713,7 +967,7 @@ func normalizePublicAnswerOutput(parsed publicAnswerLLMOutput) publicAnswerLLMOu
 	return parsed
 }
 
-func filterPublicAnswerSources(items []publicAnswerSource, candidates []SourceRef) []publicAnswerSource {
+func filterCustomerChatSources(items []customerChatSource, candidates []SourceRef) []customerChatSource {
 	if len(items) == 0 || len(candidates) == 0 {
 		return nil
 	}
@@ -724,7 +978,7 @@ func filterPublicAnswerSources(items []publicAnswerSource, candidates []SourceRe
 			allowed[path] = true
 		}
 	}
-	out := make([]publicAnswerSource, 0, len(items))
+	out := make([]customerChatSource, 0, len(items))
 	seen := map[string]bool{}
 	for _, item := range items {
 		path := filepath.ToSlash(strings.TrimSpace(item.Path))
@@ -735,9 +989,9 @@ func filterPublicAnswerSources(items []publicAnswerSource, candidates []SourceRe
 		switch confidence {
 		case "low", "medium", "high":
 		default:
-			confidence = publicSourceConfidence(path)
+			confidence = customerSourceConfidence(path)
 		}
-		out = append(out, publicAnswerSource{Path: path, Confidence: confidence})
+		out = append(out, customerChatSource{Path: path, Confidence: confidence})
 		seen[path] = true
 	}
 	return out
@@ -762,7 +1016,7 @@ func clampConfidence(value float64) float64 {
 	return value
 }
 
-func (s *PublicQueryService) shouldCreatePublicReview(req PublicAnswerRequest, parsed publicAnswerLLMOutput, settings RuntimePublicQuerySettings) bool {
+func (s *CustomerChatService) shouldCreateCustomerReview(req CustomerChatRequest, parsed customerChatLLMOutput, settings RuntimeCustomerQuerySettings) bool {
 	mode := normalizedAnswerMode(parsed.AnswerMode)
 	if mode == "refusal" || strings.TrimSpace(parsed.AnswerText) == "" {
 		return false
@@ -770,10 +1024,10 @@ func (s *PublicQueryService) shouldCreatePublicReview(req PublicAnswerRequest, p
 	if !parsed.ReviewRequired {
 		return false
 	}
-	if isObviouslyNonReviewablePublicQuestion(req.Question) {
+	if isObviouslyNonReviewableCustomerQuestion(req.Question) {
 		return false
 	}
-	directMin, reviewMin := publicConfidenceThresholds(
+	directMin, reviewMin := customerConfidenceThresholds(
 		settings.DirectMin,
 		settings.ReviewMin,
 	)
@@ -784,8 +1038,8 @@ func (s *PublicQueryService) shouldCreatePublicReview(req PublicAnswerRequest, p
 	return confidence >= reviewMin || strings.TrimSpace(parsed.ReviewReason) != "" || strings.TrimSpace(parsed.ReviewQuestion) != ""
 }
 
-func isObviouslyNonReviewablePublicQuestion(question string) bool {
-	normalized := normalizePublicIntentText(question)
+func isObviouslyNonReviewableCustomerQuestion(question string) bool {
+	normalized := normalizeCustomerIntentText(question)
 	if normalized == "" {
 		return true
 	}
@@ -818,7 +1072,7 @@ func isObviouslyNonReviewablePublicQuestion(question string) bool {
 	return true
 }
 
-func publicConfidenceThresholds(directMin float64, reviewMin float64) (float64, float64) {
+func customerConfidenceThresholds(directMin float64, reviewMin float64) (float64, float64) {
 	if directMin <= 0 {
 		directMin = 0.70
 	}
@@ -833,7 +1087,7 @@ func publicConfidenceThresholds(directMin float64, reviewMin float64) (float64, 
 	return directMin, reviewMin
 }
 
-func formatPublicBeijingTime(value string) string {
+func formatCustomerBeijingTime(value string) string {
 	receivedAt := strings.TrimSpace(value)
 	parsed, err := time.Parse(time.RFC3339Nano, receivedAt)
 	if err != nil {
@@ -846,7 +1100,7 @@ func formatPublicBeijingTime(value string) string {
 	return parsed.In(location).Format("2006-01-02 15:04:05 Asia/Shanghai")
 }
 
-func (s *PublicQueryService) supportContactPrompt(settings RuntimeSupportSettings) string {
+func (s *CustomerChatService) supportContactPrompt(settings RuntimeSupportSettings) string {
 	phone := strings.TrimSpace(settings.Phone)
 	if phone == "" {
 		phone = "400-1080-106"
@@ -902,7 +1156,7 @@ func formatSourceRefList(sources []SourceRef) string {
 	return strings.Join(lines, "\n")
 }
 
-func formatPublicHardBoundary() string {
+func formatCustomerHardBoundary() string {
 	return strings.Join([]string{
 		"- 服务端不生成、改写或替换本轮客户可见答案。",
 		"- 你必须根据角色提示词、router_output 和 candidate_pages 自行判断普通问题、边界问题和拒答场景。",
@@ -910,7 +1164,7 @@ func formatPublicHardBoundary() string {
 	}, "\n")
 }
 
-func appendPublicEvidencePage(
+func appendCustomerEvidencePage(
 	path string,
 	question string,
 	maxChars int,
@@ -936,24 +1190,24 @@ func appendPublicEvidencePage(
 	if maxChars <= 0 {
 		maxChars = 2400
 	}
-	preview := buildPublicEvidencePreview(body, path, question, maxChars)
+	preview := buildCustomerEvidencePreview(body, path, question, maxChars)
 	seenPaths[path] = true
 	source := SourceRef{
 		Path:       path,
 		Title:      displayTitle,
-		Confidence: publicSourceConfidence(path),
+		Confidence: customerSourceConfidence(path),
 	}
 	*contentBlocks = append(*contentBlocks, formatCandidatePageBlock(source, truncateForPrompt(preview, maxChars)))
 	*sources = append(*sources, source)
 	return body, true
 }
 
-func prioritizePublicRetrievedPages(pages []retrieval.RetrievedPage) []retrieval.RetrievedPage {
+func prioritizeCustomerRetrievedPages(pages []retrieval.RetrievedPage) []retrieval.RetrievedPage {
 	out := append([]retrieval.RetrievedPage(nil), pages...)
 	for i := 0; i < len(out)-1; i++ {
 		for j := i + 1; j < len(out); j++ {
-			leftRank := publicEvidenceDirectoryRank(out[i].Path)
-			rightRank := publicEvidenceDirectoryRank(out[j].Path)
+			leftRank := customerEvidenceDirectoryRank(out[i].Path)
+			rightRank := customerEvidenceDirectoryRank(out[j].Path)
 			if rightRank < leftRank || (rightRank == leftRank && out[j].Score > out[i].Score) {
 				out[i], out[j] = out[j], out[i]
 			}
@@ -962,7 +1216,7 @@ func prioritizePublicRetrievedPages(pages []retrieval.RetrievedPage) []retrieval
 	return out
 }
 
-func publicEvidenceDirectoryRank(path string) int {
+func customerEvidenceDirectoryRank(path string) int {
 	path = filepath.ToSlash(strings.TrimSpace(path))
 	switch {
 	case strings.HasPrefix(path, "wiki/knowledge/"):
@@ -981,14 +1235,12 @@ func publicEvidenceDirectoryRank(path string) int {
 		return 6
 	case strings.HasPrefix(path, "wiki/intents/"):
 		return 7
-	case strings.HasPrefix(path, "wiki/sources/"):
-		return 8
 	default:
 		return 99
 	}
 }
 
-func buildPublicEvidencePreview(body string, path string, question string, maxChars int) string {
+func buildCustomerEvidencePreview(body string, path string, question string, maxChars int) string {
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return ""
@@ -996,7 +1248,7 @@ func buildPublicEvidencePreview(body string, path string, question string, maxCh
 	if maxChars <= 0 {
 		maxChars = 2400
 	}
-	terms := publicEvidenceTerms(question)
+	terms := customerEvidenceTerms(question)
 	if len(terms) == 0 {
 		return truncateForPrompt(body, maxChars)
 	}
@@ -1047,7 +1299,7 @@ func relevantTextWindows(body string, terms []string, limit int) string {
 	return strings.Join(windows, "\n\n---\n\n")
 }
 
-func publicEvidenceTerms(question string) []string {
+func customerEvidenceTerms(question string) []string {
 	normalized := strings.ToLower(strings.TrimSpace(question))
 	if normalized == "" {
 		return nil
@@ -1092,7 +1344,7 @@ func splitSearchChunks(text string) []string {
 		lastKind = 0
 	}
 	for _, r := range text {
-		kind := publicSearchRuneKind(r)
+		kind := customerSearchRuneKind(r)
 		if kind == 0 {
 			flush()
 			continue
@@ -1107,7 +1359,7 @@ func splitSearchChunks(text string) []string {
 	return chunks
 }
 
-func publicSearchRuneKind(r rune) int {
+func customerSearchRuneKind(r rune) int {
 	switch {
 	case r >= '\u4e00' && r <= '\u9fff':
 		return 1
@@ -1118,7 +1370,7 @@ func publicSearchRuneKind(r rune) int {
 	}
 }
 
-func publicConversationExcerpt(req PublicAnswerRequest) []string {
+func customerConversationExcerpt(req CustomerChatRequest) []string {
 	lines := make([]string, 0, len(req.History)+1)
 	for _, item := range req.History {
 		content := strings.TrimSpace(item.Content)
@@ -1142,7 +1394,7 @@ func publicConversationExcerpt(req PublicAnswerRequest) []string {
 	return lines
 }
 
-var publicLogSecretPatterns = []*regexp.Regexp{
+var customerLogSecretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)bearer\s+[a-z0-9._~+/=-]+`),
 	regexp.MustCompile(`(?i)sk-[a-z0-9_\-]{8,}`),
 	regexp.MustCompile(`(?i)(api[_-]?key|password|secret|token)\s*[:=]\s*["']?[^"'\s,;]+`),
@@ -1159,20 +1411,21 @@ func containsAny(text string, candidates ...string) bool {
 	return false
 }
 
-func isPublicReadableEvidence(path string) bool {
+func isCustomerReadableEvidence(path string) bool {
 	path = filepath.ToSlash(strings.TrimSpace(path))
 	if !strings.HasPrefix(path, "wiki/") || !strings.HasSuffix(path, ".md") {
 		return false
 	}
 	if strings.HasPrefix(path, "wiki/unconfirmed/") ||
 		strings.HasPrefix(path, "wiki/forbidden/") ||
+		strings.HasPrefix(path, "wiki/sources/") ||
 		strings.HasPrefix(path, "wiki/templates/") {
 		return false
 	}
-	return publicEvidenceDirectoryRank(path) < 99
+	return customerEvidenceDirectoryRank(path) < 99
 }
 
-func publicSourceConfidence(path string) string {
+func customerSourceConfidence(path string) string {
 	path = filepath.ToSlash(path)
 	switch {
 	case strings.HasPrefix(path, "wiki/knowledge/"),
@@ -1182,8 +1435,7 @@ func publicSourceConfidence(path string) string {
 		strings.HasPrefix(path, "wiki/synthesis/"):
 		return "high"
 	case strings.HasPrefix(path, "wiki/concepts/"),
-		strings.HasPrefix(path, "wiki/entities/"),
-		strings.HasPrefix(path, "wiki/sources/"):
+		strings.HasPrefix(path, "wiki/entities/"):
 		return "medium"
 	default:
 		return "low"

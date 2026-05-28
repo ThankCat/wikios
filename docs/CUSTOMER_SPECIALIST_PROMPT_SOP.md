@@ -1,11 +1,11 @@
-# Public Specialist Prompt SOP
+# Customer Specialist Prompt SOP
 
-本文档用于规范 WikiOS public answer routed 链路中各 Specialist Prompt 的编写、测试和问题归因。目标是让专家 prompt 可维护、可测试、可回滚，而不是在出现问题时临时堆规则。
+本文档用于规范 WikiOS customer chat routed 链路中各 Specialist Prompt 的编写、测试和问题归因。目标是让专家 prompt 可维护、可测试、可回滚，而不是在出现问题时临时堆规则。
 
 ## 1. 基本原则
 
 - 顶层专家按客户任务划分，不按产品划分。
-- 产品只作为 Router slots、检索 query 和证据上下文。
+- 产品只作为 Router V1 slots、检索 query 和证据上下文。
 - 服务端只认识稳定目录和通用证据结构，不写死具体知识页路径。
 - Specialist 只基于本轮 Router 输出和候选证据回答，不读取完整历史。
 - Prompt 问题、Router 问题、检索问题、知识库缺失要分层归因。
@@ -46,7 +46,7 @@
 
 ## 输入
 
-说明 user_message、router_output、candidate_pages、current_public_contacts、hard_boundary。
+说明 user_message、router_output、candidate_pages、current_customer_contacts、hard_boundary。
 
 ## 证据规则
 
@@ -56,7 +56,7 @@
 
 ## 回答策略
 
-- 默认字数。
+- 回答详略自适应规则。
 - 最多问 1 个问题。
 - 能先答就先答，不能答才澄清。
 - 该专家的领域特定策略。
@@ -83,22 +83,28 @@
 | 现象 | 优先归因 | 处理方式 |
 | --- | --- | --- |
 | specialist 分错 | Router | 改 Router prompt、few-shot 或 slots 规则 |
-| 产品主语错 | Router product resolution | 检查 `slots.product/products/product_resolution` |
+| 产品主语错 | Router V1 slots / ambiguity | 检查 `slots.primary_product`、`slots.products`、`ambiguity` |
 | 检索页面明显不相关 | Retrieval/Profile | 检查 retrieval queries、目录 scope、知识库标题/别名 |
 | 检索对但事实缺失 | Knowledge Base | 补正式知识页，不要写死服务端 |
 | 证据对但回答错 | Specialist Prompt | 修改该专家 prompt 或增加结构化证据摘要 |
 | 回答越界承诺 | Specialist Prompt / Safety | 加强高风险边界或 safety 路由规则 |
-| 客户可见内容泄露内部信息 | Server Sanitizer | 保留安全兜底，不用业务 sanitizer 代替 prompt |
+| 客户可见内容泄露内部信息 | Specialist Prompt / Safety | 修正专家提示词或安全边界；服务端不做业务答案替换 |
 
 ## 5. 观测字段
 
 后台测试时优先看：
 
 ```text
+router.output.contract_version
 router.specialist
-router.output.slots.product
+router.output.routing_confidence
+router.output.routing_reason
+router.output.slots.primary_product
 router.output.slots.products
-router.output.slots.product_resolution
+router.output.ambiguity
+router.output.missing_info
+router.output.risk_flags
+router.output.handoff_notes
 retrieval_question
 retrieved_candidates
 sources
@@ -106,7 +112,6 @@ model_json_parsed.answer_mode
 model_json_parsed.confidence
 model_json_parsed.evidence_confidence
 review_decision
-sanitizers
 response.answer
 ```
 
@@ -138,6 +143,7 @@ response.answer
 
 ```bash
 go test ./internal/service
+go test ./internal/api
 go test ./...
 ```
 

@@ -13,9 +13,9 @@ func (p *PolicyEngine) Allow(env *ExecEnv, tool Tool, _ map[string]any) error {
 		return fmt.Errorf("exec env is required")
 	}
 	switch env.Mode {
-	case "public":
-		if !publicAllowed(tool.Name()) {
-			return fmt.Errorf("tool %s is not allowed in public mode", tool.Name())
+	case "customer":
+		if !customerAllowed(tool.Name()) {
+			return fmt.Errorf("tool %s is not allowed in customer mode", tool.Name())
 		}
 	case "admin":
 		if !adminAllowed(tool.Name()) {
@@ -40,7 +40,7 @@ func adminDirectAllowed(name string) bool {
 	}
 }
 
-func publicAllowed(name string) bool {
+func customerAllowed(name string) bool {
 	switch name {
 	case "fs.read_file", "fs.list_dir", "fs.file_stat", "fs.glob",
 		"wiki.read_page", "wiki.search_pages", "wiki.find_by_slug", "wiki.find_by_alias",
@@ -52,7 +52,7 @@ func publicAllowed(name string) bool {
 }
 
 func adminAllowed(name string) bool {
-	if publicAllowed(name) {
+	if customerAllowed(name) {
 		return true
 	}
 	switch name {

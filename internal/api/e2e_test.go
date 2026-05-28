@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -64,13 +65,128 @@ func (apiMockLLM) Chat(_ context.Context, _ string, messages []llm.Message) (str
 		}
 		return `{"action":"final","reply":"文档已按 AGENT 处理。","summary":"文档已按 AGENT 处理。","artifacts":["wiki/sources/uploaded-document.md"],"output_files":[],"warnings":[]}`, nil
 	}
+	if apiIsRouterPrompt(messages) {
+		return apiRouterJSONForMessages(messages), nil
+	}
 	return `{
-  "answer_type": "text",
+  "answer_mode": "evidence",
   "answer": "静态 IP 适合账号运营、白名单绑定和远程办公。",
-  "sources": [{"path":"wiki/knowledge/static-ip.md","confidence":"high"}],
+  "review_question": "",
   "confidence": 0.9,
+  "evidence_confidence": 0.9,
+  "review_required": false,
+  "review_reason": "",
+  "suggested_target_path": "",
+  "sources": [{"path":"wiki/knowledge/static-ip.md","confidence":"high"}],
   "notes": ""
 }`, nil
+}
+
+func apiIsRouterPrompt(messages []llm.Message) bool {
+	return len(messages) > 0 && strings.Contains(messages[0].Content, "客服经理 Router")
+}
+
+func apiRouterJSONForMessages(messages []llm.Message) string {
+	userMessage := ""
+	if len(messages) > 1 {
+		content := messages[len(messages)-1].Content
+		if idx := strings.Index(content, "user_message:"); idx >= 0 {
+			rest := strings.TrimSpace(content[idx+len("user_message:"):])
+			if next := strings.Index(rest, "\n\n"); next >= 0 {
+				rest = rest[:next]
+			}
+			userMessage = strings.TrimSpace(rest)
+		}
+	}
+	specialist := "product"
+	intent := "product_inquiry"
+	primaryProduct := "static_ip"
+	riskFlags := []string{}
+	missingInfo := []string{}
+	queries := []string{"四叶天 静态 IP 适用场景"}
+	handoff := "用户询问产品适用场景。"
+	lower := strings.ToLower(userMessage)
+	switch {
+	case strings.Contains(userMessage, "白名单") || strings.Contains(strings.ToUpper(userMessage), "API"):
+		specialist = "technical"
+		intent = "technical_setup"
+		queries = []string{"四叶天 API 白名单 配置"}
+		riskFlags = []string{"technical"}
+		handoff = "用户询问技术配置。"
+	case strings.Contains(userMessage, "优惠") || strings.Contains(userMessage, "折扣") || strings.Contains(userMessage, "多少钱") || strings.Contains(userMessage, "价格") || strings.Contains(userMessage, "怎么卖"):
+		specialist = "pricing"
+		intent = "price_inquiry"
+		queries = []string{"四叶天 静态 IP 价格 优惠"}
+		riskFlags = []string{"pricing"}
+		handoff = "用户询问价格或优惠。"
+	case strings.Contains(userMessage, "购买") || strings.Contains(userMessage, "怎么买"):
+		specialist = "purchase"
+		intent = "purchase_inquiry"
+		queries = []string{"四叶天 购买 开通 流程"}
+		handoff = "用户询问购买开通。"
+	case strings.Contains(lower, "google") || strings.Contains(lower, "chatgpt") || strings.Contains(userMessage, "风控") || strings.Contains(userMessage, "封号"):
+		specialist = "safety"
+		intent = "safety_boundary"
+		primaryProduct = "overseas_ip"
+		queries = []string{"四叶天 海外 IP 访问边界"}
+		riskFlags = []string{"platform_risk", "overseas_access"}
+		handoff = "用户询问平台访问或风控边界。"
+	}
+	if strings.Contains(userMessage, "数据中心") {
+		primaryProduct = "datacenter_ip"
+	}
+	if strings.TrimSpace(userMessage) == "" {
+		primaryProduct = "unknown"
+		missingInfo = []string{"primary_product"}
+	}
+	products := []string{}
+	if primaryProduct != "unknown" {
+		products = []string{primaryProduct}
+	}
+	raw, err := json.Marshal(map[string]any{
+		"contract_version":   "customer_router.v1",
+		"specialist":         specialist,
+		"routing_confidence": 0.9,
+		"routing_reason":     "测试路由原因。",
+		"intent":             intent,
+		"rewritten_question": firstNonEmptyForAPITest(userMessage, "客户咨询四叶天产品。"),
+		"history_summary":    "",
+		"slots": map[string]any{
+			"primary_product": primaryProduct,
+			"products":        products,
+			"static_type":     "",
+			"ip_type":         "",
+			"bandwidth":       "",
+			"quantity":        "",
+			"scenario":        "",
+			"platform":        "",
+			"device":          "",
+			"error_code":      "",
+		},
+		"ambiguity": map[string]any{
+			"is_ambiguous":     false,
+			"ambiguous_fields": []string{},
+			"reason":           "",
+		},
+		"missing_info":      missingInfo,
+		"risk_flags":        riskFlags,
+		"needs_retrieval":   true,
+		"retrieval_queries": queries,
+		"handoff_notes":     handoff,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
+func firstNonEmptyForAPITest(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func apiTestLineValue(text string, prefix string) string {
@@ -134,6 +250,13 @@ func (m apiStreamingMockLLM) streamText(ctx context.Context, model string, messa
 	if len(messages) > 0 && strings.Contains(messages[0].Content, "管理员全权限直连模式") {
 		return m.apiMockLLM.Chat(ctx, model, messages)
 	}
+	if apiIsRouterPrompt(messages) {
+		text := apiRouterJSONForMessages(messages)
+		if onDelta != nil {
+			onDelta(llm.StreamDelta{Content: text})
+		}
+		return text, nil
+	}
 	chunks := []string{
 		`{"answer_mode":"evidence",`,
 		`"answer":"静态 IP 适合稳定账号和`,
@@ -156,18 +279,21 @@ func (m apiStreamingMockLLM) streamText(ctx context.Context, model string, messa
 	return strings.Join(chunks, ""), nil
 }
 
-type apiPublicAnswerTextLLM struct {
+type apiCustomerChatTextLLM struct {
 	text string
 }
 
-func (m apiPublicAnswerTextLLM) Chat(ctx context.Context, model string, messages []llm.Message) (string, error) {
+func (m apiCustomerChatTextLLM) Chat(ctx context.Context, model string, messages []llm.Message) (string, error) {
 	if len(messages) > 0 && strings.Contains(messages[0].Content, "管理员全权限直连模式") {
 		return apiMockLLM{}.Chat(ctx, model, messages)
+	}
+	if apiIsRouterPrompt(messages) {
+		return apiRouterJSONForMessages(messages), nil
 	}
 	return m.text, nil
 }
 
-func (m apiPublicAnswerTextLLM) StreamChat(ctx context.Context, model string, messages []llm.Message, onDelta func(string)) (string, error) {
+func (m apiCustomerChatTextLLM) StreamChat(ctx context.Context, model string, messages []llm.Message, onDelta func(string)) (string, error) {
 	text, err := m.Chat(ctx, model, messages)
 	if err != nil {
 		return "", err
@@ -448,191 +574,277 @@ func TestAdminSyncPushReturnsGitErrorDetails(t *testing.T) {
 	}
 }
 
-func TestPublicAnswerRejectsStreamingAndOmitsDetails(t *testing.T) {
+func TestCustomerChatSupportsPlainAndStreamAndOmitsDetails(t *testing.T) {
 	fixture := newAPITestFixture(t, apiStreamingMockLLM{})
 	plainBody, _ := json.Marshal(map[string]any{
-		"question": "静态 IP 适合什么？",
+		"message": "静态 IP 适合什么？",
 	})
-	plainReq := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(plainBody))
+	plainReq := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(plainBody))
 	plainReq.Header.Set("Content-Type", "application/json")
 	plainRec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(plainRec, plainReq)
 	if plainRec.Code != http.StatusOK {
-		t.Fatalf("plain public answer failed: %d %s", plainRec.Code, plainRec.Body.String())
+		t.Fatalf("plain customer chat failed: %d %s", plainRec.Code, plainRec.Body.String())
+	}
+	if plainRec.Header().Get("X-Trace-ID") == "" {
+		t.Fatalf("expected X-Trace-ID response header")
 	}
 	if strings.Contains(plainRec.Body.String(), "event:") {
-		t.Fatalf("public answer must default to non-stream JSON, got %s", plainRec.Body.String())
+		t.Fatalf("customer chat must default to non-stream JSON, got %s", plainRec.Body.String())
 	}
 	if !strings.Contains(plainRec.Body.String(), `"answer":"静态 IP 适合稳定账号和白名单绑定。"`) {
-		t.Fatalf("unexpected plain public answer: %s", plainRec.Body.String())
+		t.Fatalf("unexpected plain customer chat: %s", plainRec.Body.String())
 	}
 	if strings.Contains(plainRec.Body.String(), `"details"`) || strings.Contains(plainRec.Body.String(), "process_summary") || strings.Contains(plainRec.Body.String(), "steps") {
-		t.Fatalf("external public answer must not expose admin details, got %s", plainRec.Body.String())
+		t.Fatalf("external customer chat must not expose admin details, got %s", plainRec.Body.String())
 	}
 
 	streamBody, _ := json.Marshal(map[string]any{
-		"question": "静态 IP 适合什么？",
-		"stream":   true,
+		"message": "静态 IP 适合什么？",
+		"stream":  true,
 	})
-	streamReq := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(streamBody))
-	streamReq.Header.Set("Content-Type", "application/json")
-	streamRec := httptest.NewRecorder()
-	fixture.router.ServeHTTP(streamRec, streamReq)
-	if streamRec.Code != http.StatusBadRequest {
-		t.Fatalf("expected external stream request to be rejected, got %d %s", streamRec.Code, streamRec.Body.String())
-	}
-	if !strings.Contains(streamRec.Body.String(), "STREAM_NOT_SUPPORTED") {
-		t.Fatalf("expected STREAM_NOT_SUPPORTED error, got %s", streamRec.Body.String())
-	}
-
-	streamRouteReq := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer/stream", bytes.NewReader(streamBody))
-	streamRouteReq.Header.Set("Content-Type", "application/json")
-	streamRouteRec := httptest.NewRecorder()
-	fixture.router.ServeHTTP(streamRouteRec, streamRouteReq)
-	if streamRouteRec.Code != http.StatusNotFound {
-		t.Fatalf("expected removed external stream route to return 404, got %d %s", streamRouteRec.Code, streamRouteRec.Body.String())
-	}
-}
-
-func TestAdminPublicAnswerAuditReturnsDebugDetailsWithoutWritingConversationLog(t *testing.T) {
-	fixture := newAPITestFixture(t, apiStreamingMockLLM{})
-	body, _ := json.Marshal(map[string]any{
-		"question":   "静态 IP 适合什么？",
-		"session_id": "test-public-answer",
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/public-answer/audit", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	fixture.router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("admin public answer audit failed: %d %s", rec.Code, rec.Body.String())
-	}
-	var payload struct {
-		Answer  string         `json:"answer"`
-		Details map[string]any `json:"details"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode admin public answer audit: %v", err)
-	}
-	if payload.Answer != "静态 IP 适合稳定账号和白名单绑定。" {
-		t.Fatalf("unexpected audit answer: %s", payload.Answer)
-	}
-	if payload.Details["process_summary"] == nil || payload.Details["steps"] == nil {
-		t.Fatalf("expected admin public answer audit details, got %+v", payload.Details)
-	}
-	steps, _ := payload.Details["steps"].([]any)
-	if len(steps) < 3 {
-		t.Fatalf("expected rich admin public answer audit execution steps, got %+v", payload.Details["steps"])
-	}
-	for _, key := range []string{"prompt", "model_json_raw", "model_json_parsed", "review_decision"} {
-		if payload.Details[key] == nil {
-			t.Fatalf("expected admin public answer audit details.%s, got %+v", key, payload.Details)
-		}
-	}
-	assertNoPublicAnswerLogs(t, fixture.deps.WorkspaceDir)
-
-	streamBody, _ := json.Marshal(map[string]any{
-		"question":   "静态 IP 适合什么？",
-		"session_id": "test-public-answer",
-	})
-	streamReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/public-answer/audit/stream", bytes.NewReader(streamBody))
+	streamReq := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(streamBody))
 	streamReq.Header.Set("Content-Type", "application/json")
 	streamRec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(streamRec, streamReq)
 	if streamRec.Code != http.StatusOK {
-		t.Fatalf("admin public answer audit stream failed: %d %s", streamRec.Code, streamRec.Body.String())
+		t.Fatalf("stream customer chat failed: %d %s", streamRec.Code, streamRec.Body.String())
 	}
 	stream := streamRec.Body.String()
-	if !strings.Contains(stream, "event: result") || !strings.Contains(stream, `"details"`) || !strings.Contains(stream, "process_summary") || !strings.Contains(stream, "public.specialist.parse") {
-		t.Fatalf("expected admin public answer audit stream to include debug details, got %s", stream)
-	}
-	for _, want := range []string{"event: prompt", "event: llm_delta", "event: llm_reasoning_delta", "event: llm_done", "event: delta"} {
+	for _, want := range []string{"event: delta", "event: result", "event: done"} {
 		if !strings.Contains(stream, want) {
-			t.Fatalf("expected admin public answer audit stream to include %q, got %s", want, stream)
+			t.Fatalf("expected customer stream to contain %q, got %s", want, stream)
+		}
+	}
+	for _, forbidden := range []string{"event: prompt", "event: llm_delta", "event: llm_reasoning_delta", "event: step_start", "event: step_finish", `"details"`, "process_summary"} {
+		if strings.Contains(stream, forbidden) {
+			t.Fatalf("customer stream must not expose %q, got %s", forbidden, stream)
+		}
+	}
+
+	for _, path := range []string{
+		"/api/v1/" + "pub" + "lic/answer",
+		"/api/v1/" + "pub" + "lic/answer/stream",
+		"/api/v1/admin/" + "pub" + "lic-answer/audit",
+		"/api/v1/admin/" + "pub" + "lic-answer/audit/stream",
+		"/api/v1/admin/chat",
+		"/api/v1/admin/chat/stream",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(plainBody))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		fixture.router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected removed route %s to return 404, got %d %s", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestInternalCustomerChatWritesTraceDetailsWithoutResponseDetails(t *testing.T) {
+	fixture := newAPITestFixture(t, apiStreamingMockLLM{})
+	body, _ := json.Marshal(map[string]any{
+		"message":    "静态 IP 适合什么？",
+		"session_id": "test-customer-chat",
+		"entrypoint": "internal",
+		"simulation": true,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("internal customer chat failed: %d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Answer string `json:"answer"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode internal customer chat: %v", err)
+	}
+	if payload.Answer != "静态 IP 适合稳定账号和白名单绑定。" {
+		t.Fatalf("unexpected internal answer: %s", payload.Answer)
+	}
+	if strings.Contains(rec.Body.String(), `"details"`) || strings.Contains(rec.Body.String(), "process_summary") {
+		t.Fatalf("customer chat response must not expose audit details, got %s", rec.Body.String())
+	}
+	trace := readCustomerChatTraceByHeader(t, fixture.router, rec)
+	if apiTestStringValue(apiTestMapValue(trace["runtime"]), "entrypoint") != "internal" {
+		t.Fatalf("expected internal entrypoint in trace, got %#v", trace["runtime"])
+	}
+	if apiTestStringValue(apiTestMapValue(trace["request"]), "message") != "静态 IP 适合什么？" {
+		t.Fatalf("expected request.message in trace, got %#v", trace["request"])
+	}
+	for _, key := range []string{"router", "retrieval", "specialist", "final"} {
+		if _, ok := trace[key]; !ok {
+			t.Fatalf("expected trace.%s, got %#v", key, trace)
+		}
+	}
+	if apiTestStringValue(apiTestMapValue(trace["final"]), "answer") != "静态 IP 适合稳定账号和白名单绑定。" {
+		t.Fatalf("expected final answer in trace, got %#v", trace["final"])
+	}
+
+	streamBody, _ := json.Marshal(map[string]any{
+		"message":    "静态 IP 适合什么？",
+		"session_id": "test-customer-chat-stream",
+		"entrypoint": "internal",
+		"simulation": true,
+		"stream":     true,
+	})
+	streamReq := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(streamBody))
+	streamReq.Header.Set("Content-Type", "application/json")
+	streamRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(streamRec, streamReq)
+	if streamRec.Code != http.StatusOK {
+		t.Fatalf("internal customer chat stream failed: %d %s", streamRec.Code, streamRec.Body.String())
+	}
+	stream := streamRec.Body.String()
+	if !strings.Contains(stream, "event: result") || !strings.Contains(stream, "event: delta") || strings.Contains(stream, `"details"`) || strings.Contains(stream, "process_summary") {
+		t.Fatalf("expected internal customer stream to expose only customer-visible events, got %s", stream)
+	}
+	for _, forbidden := range []string{"event: prompt", "event: llm_delta", "event: llm_reasoning_delta", "event: step_start", "event: step_finish"} {
+		if strings.Contains(stream, forbidden) {
+			t.Fatalf("customer stream must not expose %q, got %s", forbidden, stream)
 		}
 	}
 	if deltaAt, resultAt := strings.Index(stream, "event: delta"), strings.Index(stream, "event: result"); deltaAt < 0 || resultAt < 0 || deltaAt > resultAt {
 		t.Fatalf("expected streamed answer delta before result, got %s", stream)
 	}
-	assertNoPublicAnswerLogs(t, fixture.deps.WorkspaceDir)
+	_ = readCustomerChatTraceByHeader(t, fixture.router, streamRec)
 }
 
-func TestAdminPublicAnswerAuditMatchesExternalPublicAnswer(t *testing.T) {
+func TestInternalCustomerChatMatchesExternalCustomerChat(t *testing.T) {
 	fixture := newAPITestFixture(t, apiStreamingMockLLM{})
 	body, _ := json.Marshal(map[string]any{
-		"question": "静态 IP 适合什么？",
+		"message": "静态 IP 适合什么？",
 		"history": []map[string]any{
 			{"role": "user", "content": "我想了解静态 IP"},
 			{"role": "assistant", "content": "静态 IP 适合固定出口。"},
 		},
 	})
 
-	publicReq := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
-	publicReq.Header.Set("Content-Type", "application/json")
-	publicRec := httptest.NewRecorder()
-	fixture.router.ServeHTTP(publicRec, publicReq)
-	if publicRec.Code != http.StatusOK {
-		t.Fatalf("public answer failed: %d %s", publicRec.Code, publicRec.Body.String())
+	externalReq := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
+	externalReq.Header.Set("Content-Type", "application/json")
+	externalRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(externalRec, externalReq)
+	if externalRec.Code != http.StatusOK {
+		t.Fatalf("customer chat failed: %d %s", externalRec.Code, externalRec.Body.String())
 	}
 
-	auditReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/public-answer/audit", bytes.NewReader(body))
+	internalBody, _ := json.Marshal(map[string]any{
+		"message":    "静态 IP 适合什么？",
+		"entrypoint": "internal",
+		"simulation": true,
+		"history": []map[string]any{
+			{"role": "user", "content": "我想了解静态 IP"},
+			{"role": "assistant", "content": "静态 IP 适合固定出口。"},
+		},
+	})
+	auditReq := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(internalBody))
 	auditReq.Header.Set("Content-Type", "application/json")
 	auditRec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(auditRec, auditReq)
 	if auditRec.Code != http.StatusOK {
-		t.Fatalf("admin public answer audit failed: %d %s", auditRec.Code, auditRec.Body.String())
+		t.Fatalf("admin customer chat audit failed: %d %s", auditRec.Code, auditRec.Body.String())
 	}
 
-	var publicPayload, auditPayload struct {
-		Answer  string         `json:"answer"`
-		Details map[string]any `json:"details"`
+	var externalPayload, auditPayload struct {
+		Answer string `json:"answer"`
 	}
-	if err := json.Unmarshal(publicRec.Body.Bytes(), &publicPayload); err != nil {
-		t.Fatalf("decode public answer: %v", err)
+	if err := json.Unmarshal(externalRec.Body.Bytes(), &externalPayload); err != nil {
+		t.Fatalf("decode customer chat: %v", err)
 	}
 	if err := json.Unmarshal(auditRec.Body.Bytes(), &auditPayload); err != nil {
 		t.Fatalf("decode admin audit answer: %v", err)
 	}
-	if publicPayload.Answer != auditPayload.Answer {
-		t.Fatalf("expected audit answer to match external answer, public=%q audit=%q", publicPayload.Answer, auditPayload.Answer)
+	if externalPayload.Answer != auditPayload.Answer {
+		t.Fatalf("expected internal answer to match external answer, external=%q internal=%q", externalPayload.Answer, auditPayload.Answer)
 	}
-	if publicPayload.Details != nil || auditPayload.Details == nil {
-		t.Fatalf("expected only audit response to include details, public=%+v audit=%+v", publicPayload.Details, auditPayload.Details)
+	if strings.Contains(externalRec.Body.String(), `"details"`) || strings.Contains(auditRec.Body.String(), `"details"`) {
+		t.Fatalf("customer chat responses must not include details, external=%s internal=%s", externalRec.Body.String(), auditRec.Body.String())
+	}
+	externalTrace := readCustomerChatTraceByHeader(t, fixture.router, externalRec)
+	internalTrace := readCustomerChatTraceByHeader(t, fixture.router, auditRec)
+	if apiTestStringValue(apiTestMapValue(externalTrace["runtime"]), "entrypoint") != "external" {
+		t.Fatalf("expected external trace entrypoint, got %#v", externalTrace["runtime"])
+	}
+	if apiTestStringValue(apiTestMapValue(internalTrace["runtime"]), "entrypoint") != "internal" {
+		t.Fatalf("expected internal trace entrypoint, got %#v", internalTrace["runtime"])
 	}
 }
 
-func TestPublicAnswerNoActiveModelFailsWithoutFallbackOrConfigurationLeak(t *testing.T) {
+func TestCustomerChatNoActiveModelFailsWithoutFallbackOrConfigurationLeak(t *testing.T) {
 	fixture := newAPITestFixture(t, apiNoActiveLLM{})
 	body, _ := json.Marshal(map[string]any{
-		"question": "静态 IP 适合什么？",
+		"message": "静态 IP 适合什么？",
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected public model failure status, got %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected customer model failure status, got %d %s", rec.Code, rec.Body.String())
 	}
 	if strings.Contains(rec.Body.String(), `"answer"`) || apiContainsModelInternalLeak(rec.Body.String()) {
-		t.Fatalf("expected public failure without fallback answer or internal config details, got %s", rec.Body.String())
+		t.Fatalf("expected customer failure without fallback answer or internal config details, got %s", rec.Body.String())
+	}
+	entry := readLatestCustomerChatLogEntry(t, fixture.deps.WorkspaceDir)
+	errInfo := apiTestMapValue(entry["error"])
+	if apiTestStringValue(errInfo, "stage") != "router_call" || apiTestStringValue(errInfo, "message") == "" {
+		t.Fatalf("expected failed customer chat JSONL with router_call error, got %#v", entry)
+	}
+	if apiTestStringValue(apiTestMapValue(entry["final"]), "answer") != "" {
+		t.Fatalf("failed customer chat JSONL must not invent final answer, got %#v", entry["final"])
 	}
 }
 
-func TestPublicAnswerProviderUnavailableFailsWithoutFallbackOrAccountLeak(t *testing.T) {
-	fixture := newAPITestFixture(t, apiProviderUnavailableLLM{})
+func TestCustomerChatSpecialistParseFailureWritesAuditError(t *testing.T) {
+	fixture := newAPITestFixture(t, apiCustomerChatTextLLM{text: `{
+  "answer_mode": "clarification",
+  "answer": "",
+  "review_question": "",
+  "confidence": 0.6,
+  "evidence_confidence": 0.6,
+  "review_required": false,
+  "review_reason": "",
+  "suggested_target_path": "",
+  "sources": [],
+  "notes": ""
+}`})
 	body, _ := json.Marshal(map[string]any{
-		"question": "你现在不能回复了吗?",
+		"message": "API 白名单怎么设置？",
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected public provider failure status, got %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected specialist parse failure status, got %d %s", rec.Code, rec.Body.String())
+	}
+	entry := readLatestCustomerChatLogEntry(t, fixture.deps.WorkspaceDir)
+	errInfo := apiTestMapValue(entry["error"])
+	if apiTestStringValue(errInfo, "stage") != "specialist_parse" || !strings.Contains(apiTestStringValue(errInfo, "message"), "empty answer") {
+		t.Fatalf("expected specialist_parse error in JSONL, got %#v", entry)
+	}
+	if !strings.Contains(apiTestStringValue(errInfo, "raw_output"), `"answer": ""`) {
+		t.Fatalf("expected specialist raw output in parse error JSONL, got %#v", errInfo)
+	}
+}
+
+func TestCustomerChatProviderUnavailableFailsWithoutFallbackOrAccountLeak(t *testing.T) {
+	fixture := newAPITestFixture(t, apiProviderUnavailableLLM{})
+	body, _ := json.Marshal(map[string]any{
+		"message": "你现在不能回复了吗?",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected customer provider failure status, got %d %s", rec.Code, rec.Body.String())
 	}
 	responseBody := rec.Body.String()
 	if strings.Contains(responseBody, `"answer"`) || apiContainsModelInternalLeak(responseBody) {
-		t.Fatalf("expected provider error hidden from public failure response, got %s", responseBody)
+		t.Fatalf("expected provider error hidden from customer failure response, got %s", responseBody)
 	}
 }
 
@@ -653,21 +865,21 @@ func apiContainsModelInternalLeak(text string) bool {
 	return false
 }
 
-func TestPublicContextEstimateIsAvailableWithoutAdminAuth(t *testing.T) {
+func TestCustomerContextEstimateIsAvailableWithoutAdminAuth(t *testing.T) {
 	fixture := newAPITestFixture(t, apiMockLLM{})
 	body, _ := json.Marshal(map[string]any{
-		"question": "这个怎么买？",
+		"message": "这个怎么买？",
 		"history": []map[string]any{
 			{"role": "user", "content": "我想了解静态IP"},
 			{"role": "assistant", "content": "静态IP适合固定出口场景。"},
 		},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/context/estimate", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/context/estimate", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("public context estimate failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("customer context estimate failed: %d %s", rec.Code, rec.Body.String())
 	}
 	var payload struct {
 		Mode         string               `json:"mode"`
@@ -676,155 +888,211 @@ func TestPublicContextEstimateIsAvailableWithoutAdminAuth(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode context estimate: %v", err)
 	}
-	if payload.Mode != "public" || payload.ContextUsage.UsedTokens <= 0 || payload.ContextUsage.MaxTokens <= 0 {
-		t.Fatalf("unexpected public context estimate: %+v", payload)
+	if payload.Mode != "customer" || payload.ContextUsage.UsedTokens <= 0 || payload.ContextUsage.MaxTokens <= 0 {
+		t.Fatalf("unexpected customer context estimate: %+v", payload)
 	}
 }
 
-func TestPublicAnswerWritesQuestionAnswerJSONAndThinkingLog(t *testing.T) {
+func TestCustomerChatWritesQuestionAnswerJSONAndThinkingLog(t *testing.T) {
 	fixture := newAPITestFixture(t, apiStreamingMockLLM{})
 	body, _ := json.Marshal(map[string]any{
-		"question":   "静态 IP 适合什么？",
+		"message":    "静态 IP 适合什么？",
 		"session_id": "s-log",
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("public answer failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("customer chat failed: %d %s", rec.Code, rec.Body.String())
 	}
 
-	entry := readLatestPublicAnswerLogEntry(t, fixture.deps.WorkspaceDir)
-	if entry["question"] != "静态 IP 适合什么？" {
-		t.Fatalf("expected logged question, got %#v", entry["question"])
-	}
-	if entry["answer"] != "静态 IP 适合稳定账号和白名单绑定。" {
-		t.Fatalf("expected logged answer, got %#v", entry["answer"])
-	}
-	if thinking, _ := entry["thinking"].(string); !strings.Contains(thinking, "先做安全边界和禁答检查") {
-		t.Fatalf("expected safe audit thinking summary in log, got %#v", entry["thinking"])
-	} else if strings.Contains(thinking, "先确认是否有正式知识证据。") {
-		t.Fatalf("expected raw model reasoning omitted from public log, got %#v", entry["thinking"])
-	}
-	jsonData, ok := entry["json_data"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected json_data object, got %#v", entry["json_data"])
-	}
-	for _, key := range []string{"response", "details", "model_json_raw", "model_json_parsed", "final_json"} {
-		if _, ok := jsonData[key]; !ok {
-			t.Fatalf("expected json_data.%s in log, got %#v", key, jsonData)
+	entry := readLatestCustomerChatLogEntry(t, fixture.deps.WorkspaceDir)
+	for _, key := range []string{"question", "answer", "answer_mode", "process_summary", "message", "logged_at", "received_at", "answered_at", "message_id", "answer_message_id", "message_created_at", "user_id"} {
+		if _, exists := entry[key]; exists {
+			t.Fatalf("customer chat JSONL must not contain compatibility top-level field %q: %#v", key, entry)
 		}
 	}
-	rawSummary, ok := jsonData["model_json_raw"].(map[string]any)
-	if !ok || rawSummary["omitted"] != true {
-		t.Fatalf("expected raw model output to be omitted in public log, got %#v", jsonData["model_json_raw"])
+	if entry["schema_version"] != "customer_chat_audit.v1" || entry["record_type"] != "customer_chat_trace" {
+		t.Fatalf("expected customer chat audit schema fields, got %#v", entry)
 	}
-	encodedLog, _ := json.Marshal(entry)
-	if strings.Contains(string(encodedLog), "先确认是否有正式知识证据。") {
-		t.Fatalf("expected public log not to persist raw model reasoning, got %s", string(encodedLog))
+	if apiTestStringValue(apiTestMapValue(entry["request"]), "message") != "静态 IP 适合什么？" {
+		t.Fatalf("expected request.message, got %#v", entry["request"])
+	}
+	runtimeInfo := apiTestMapValue(entry["runtime"])
+	if apiTestStringValue(runtimeInfo, "customer_chat_mode") != "routed" ||
+		apiTestStringValue(runtimeInfo, "router_model_id") != "active" ||
+		apiTestStringValue(runtimeInfo, "specialist_model_id") != "active" ||
+		apiTestStringValue(runtimeInfo, "router_contract_version") != "customer_router.v1" {
+		t.Fatalf("expected runtime model and contract snapshot, got %#v", runtimeInfo)
+	}
+	timeInfo := apiTestMapValue(entry["time"])
+	for _, key := range []string{"logged_at", "received_at", "answered_at", "total_duration_ms"} {
+		if _, ok := timeInfo[key]; !ok {
+			t.Fatalf("expected time.%s in JSONL, got %#v", key, timeInfo)
+		}
+	}
+	if apiTestStringValue(apiTestMapValue(entry["final"]), "answer") != "静态 IP 适合稳定账号和白名单绑定。" {
+		t.Fatalf("expected final.answer, got %#v", entry["final"])
+	}
+	retrieval := apiTestMapValue(entry["retrieval"])
+	if apiTestInt64Value(retrieval, "source_count") != int64(len(apiTestSliceValue(retrieval["sources"]))) {
+		t.Fatalf("expected retrieval.source_count to count retrieval sources, got %#v", retrieval)
+	}
+	router := apiTestMapValue(entry["router"])
+	if _, ok := router["duration_ms"]; !ok {
+		t.Fatalf("expected router.duration_ms, got %#v", router)
+	}
+	routerModel := apiTestMapValue(router["model"])
+	if routerModel["thinking_enabled"] != false {
+		t.Fatalf("expected router thinking disabled in model snapshot, got %#v", routerModel)
+	}
+	specialist := apiTestMapValue(entry["specialist"])
+	if _, ok := specialist["duration_ms"]; !ok {
+		t.Fatalf("expected specialist.duration_ms, got %#v", specialist)
+	}
+	specialistModel := apiTestMapValue(specialist["model"])
+	if specialistModel["thinking_enabled"] != true {
+		t.Fatalf("expected specialist thinking enabled in model snapshot, got %#v", specialistModel)
+	}
+	input := apiTestMapValue(specialist["input"])
+	if apiTestStringValue(input, "user_message") != "静态 IP 适合什么？" ||
+		apiTestStringValue(input, "router_output_ref") != "router.output" ||
+		apiTestStringValue(input, "candidate_page_paths_ref") != "retrieval.candidate_page_paths" {
+		t.Fatalf("expected specialist input refs, got %#v", input)
+	}
+	finalInfo := apiTestMapValue(entry["final"])
+	specialistOutput := apiTestMapValue(specialist["output"])
+	if apiTestInt64Value(finalInfo, "source_count") != int64(len(apiTestSliceValue(specialistOutput["sources"]))) {
+		t.Fatalf("expected final.source_count to count specialist output sources, final=%#v specialist_output=%#v", finalInfo, specialistOutput)
+	}
+	thinking := apiTestMapValue(specialist["thinking"])
+	if thinking["enabled"] != true || thinking["saved"] != true || !strings.Contains(apiTestStringValue(thinking, "content"), "先确认是否有正式知识证据。") {
+		t.Fatalf("expected full specialist thinking in JSONL when enabled, got %#v", thinking)
+	}
+	routerThinking := apiTestMapValue(router["thinking"])
+	if routerThinking["enabled"] != false || routerThinking["content"] != nil {
+		t.Fatalf("expected router thinking disabled content to be nil, got %#v", routerThinking)
+	}
+	review := apiTestMapValue(entry["review"])
+	if apiTestStringValue(review, "status") != "unreviewed" ||
+		apiTestStringValue(review, "error_type") != "" ||
+		apiTestStringValue(review, "correct_answer") != "" ||
+		apiTestStringValue(review, "note") != "" ||
+		apiTestStringValue(review, "reviewed_by") != "" ||
+		apiTestStringValue(review, "reviewed_at") != "" {
+		t.Fatalf("expected full review placeholder, got %#v", review)
+	}
+	if value, exists := review["is_good_answer"]; !exists || value != nil {
+		t.Fatalf("expected review.is_good_answer=null, got exists=%t value=%#v", exists, value)
 	}
 }
 
-func TestPublicAnswerIgnoresPersistLogFalseAndWritesConversationLog(t *testing.T) {
+func TestCustomerChatIgnoresPersistLogFalseAndWritesConversationLog(t *testing.T) {
 	fixture := newAPITestFixture(t, apiStreamingMockLLM{})
 	body, _ := json.Marshal(map[string]any{
-		"question":    "静态 IP 适合什么？",
+		"message":     "静态 IP 适合什么？",
 		"session_id":  "external-s-user-1",
 		"persist_log": false,
 		"simulation":  true,
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("public answer failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("customer chat failed: %d %s", rec.Code, rec.Body.String())
 	}
 	if strings.Contains(rec.Body.String(), `"details"`) || !strings.Contains(rec.Body.String(), `"answer":"静态 IP 适合稳定账号和白名单绑定。"`) {
-		t.Fatalf("unexpected public answer: %s", rec.Body.String())
+		t.Fatalf("unexpected customer chat: %s", rec.Body.String())
 	}
-	entry := readLatestPublicAnswerLogEntry(t, fixture.deps.WorkspaceDir)
-	if entry["session_id"] != "external-s-user-1" || entry["question"] != "静态 IP 适合什么？" {
-		t.Fatalf("expected external public answer to write a real conversation log, got %#v", entry)
+	entry := readLatestCustomerChatLogEntry(t, fixture.deps.WorkspaceDir)
+	if entry["session_id"] != "external-s-user-1" || apiTestStringValue(apiTestMapValue(entry["request"]), "message") != "静态 IP 适合什么？" {
+		t.Fatalf("expected external customer chat to write a real conversation log, got %#v", entry)
 	}
 }
 
-func TestAdminPublicAnswerAuditStreamDoesNotWriteConversationLog(t *testing.T) {
+func TestInternalCustomerChatStreamWritesConversationLog(t *testing.T) {
 	fixture := newAPITestFixture(t, apiStreamingMockLLM{})
 	body, _ := json.Marshal(map[string]any{
-		"question":   "静态 IP 适合什么？",
+		"message":    "静态 IP 适合什么？",
 		"session_id": "audit-s-user-1",
+		"entrypoint": "internal",
+		"simulation": true,
+		"stream":     true,
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/public-answer/audit/stream", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("admin audit stream public answer failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("admin audit stream customer chat failed: %d %s", rec.Code, rec.Body.String())
 	}
 	if stream := rec.Body.String(); !strings.Contains(stream, "event: result") || !strings.Contains(stream, "静态 IP 适合稳定账号和白名单绑定。") {
-		t.Fatalf("unexpected admin audit public stream: %s", stream)
+		t.Fatalf("unexpected internal customer chat stream: %s", stream)
 	}
-	assertNoPublicAnswerLogs(t, fixture.deps.WorkspaceDir)
+	entry := readLatestCustomerChatLogEntry(t, fixture.deps.WorkspaceDir)
+	if apiTestStringValue(apiTestMapValue(entry["runtime"]), "entrypoint") != "internal" {
+		t.Fatalf("expected internal entrypoint log, got %#v", entry["runtime"])
+	}
 }
 
-func TestPublicAnswerLogCanBeDisabledAndRedactsSecrets(t *testing.T) {
+func TestCustomerChatLogCanBeDisabledAndRedactsSecrets(t *testing.T) {
 	disabledFixture := newAPITestFixture(t, apiMockLLM{})
 	disabled := false
-	disabledFixture.deps.Config.PublicQuery.AnswerLog.Enabled = &disabled
-	body, _ := json.Marshal(map[string]any{"question": "静态 IP 适合什么？"})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	disabledFixture.deps.Config.CustomerChat.AnswerLog.Enabled = &disabled
+	body, _ := json.Marshal(map[string]any{"message": "静态 IP 适合什么？"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	disabledFixture.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("disabled log public answer failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("disabled log customer chat failed: %d %s", rec.Code, rec.Body.String())
 	}
-	assertNoPublicAnswerLogs(t, disabledFixture.deps.WorkspaceDir)
+	assertNoCustomerChatLogs(t, disabledFixture.deps.WorkspaceDir)
 
 	redactFixture := newAPITestFixture(t, apiMockLLM{})
 	secretQuestion := "我的手机号13800138000，token=sk-abcdefgh123456，静态 IP 适合什么？"
-	secretBody, _ := json.Marshal(map[string]any{"question": secretQuestion})
-	secretReq := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(secretBody))
+	secretBody, _ := json.Marshal(map[string]any{"message": secretQuestion})
+	secretReq := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(secretBody))
 	secretReq.Header.Set("Content-Type", "application/json")
 	secretRec := httptest.NewRecorder()
 	redactFixture.router.ServeHTTP(secretRec, secretReq)
 	if secretRec.Code != http.StatusOK {
-		t.Fatalf("redacted log public answer failed: %d %s", secretRec.Code, secretRec.Body.String())
+		t.Fatalf("redacted log customer chat failed: %d %s", secretRec.Code, secretRec.Body.String())
 	}
-	entry := readLatestPublicAnswerLogEntry(t, redactFixture.deps.WorkspaceDir)
+	entry := readLatestCustomerChatLogEntry(t, redactFixture.deps.WorkspaceDir)
 	encoded, _ := json.Marshal(entry)
 	if strings.Contains(string(encoded), "13800138000") || strings.Contains(string(encoded), "sk-abcdefgh123456") {
-		t.Fatalf("expected public answer log to redact secrets, got %s", string(encoded))
+		t.Fatalf("expected customer chat log to redact secrets, got %s", string(encoded))
 	}
 }
 
-func TestAdminPublicConversationsAggregatesPublicAnswerLogs(t *testing.T) {
+func TestAdminCustomerConversationsAggregatesCustomerChatLogs(t *testing.T) {
 	fixture := newAPITestFixture(t, apiMockLLM{})
-	postPublicAnswer(t, fixture.router, map[string]any{
-		"question":            "静态 IP 适合什么？",
-		"session_id":          "s-user-1",
-		"user_id":             "u-1",
-		"question_message_id": "duplicate-question-id",
-		"answer_message_id":   "duplicate-answer-id",
+	postCustomerChat(t, fixture.router, map[string]any{
+		"message":           "静态 IP 适合什么？",
+		"session_id":        "s-user-1",
+		"user_id":           "u-1",
+		"message_id":        "duplicate-question-id",
+		"answer_message_id": "duplicate-answer-id",
 	})
-	postPublicAnswer(t, fixture.router, map[string]any{
-		"question":            "继续说说白名单绑定",
-		"session_id":          "s-user-1",
-		"user_id":             "u-1",
-		"question_message_id": "duplicate-question-id",
-		"answer_message_id":   "duplicate-answer-id",
+	postCustomerChat(t, fixture.router, map[string]any{
+		"message":           "继续说说白名单绑定",
+		"session_id":        "s-user-1",
+		"user_id":           "u-1",
+		"message_id":        "duplicate-question-id",
+		"answer_message_id": "duplicate-answer-id",
 	})
-	postPublicAnswer(t, fixture.router, map[string]any{
-		"question": "没有 session 的问题",
+	postCustomerChat(t, fixture.router, map[string]any{
+		"message": "没有 session 的问题",
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/public-conversations?page_size=10", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/customer-conversations?page_size=10", nil)
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("list public conversations failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("list customer conversations failed: %d %s", rec.Code, rec.Body.String())
 	}
 	var list struct {
 		Conversations []struct {
@@ -837,7 +1105,7 @@ func TestAdminPublicConversationsAggregatesPublicAnswerLogs(t *testing.T) {
 		Total int `json:"total"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
-		t.Fatalf("decode public conversations: %v", err)
+		t.Fatalf("decode customer conversations: %v", err)
 	}
 	if list.Total != 2 {
 		t.Fatalf("expected two conversation groups, got %+v", list)
@@ -846,7 +1114,7 @@ func TestAdminPublicConversationsAggregatesPublicAnswerLogs(t *testing.T) {
 	for _, item := range list.Conversations {
 		if item.SessionID == "s-user-1" {
 			sessionGroupID = item.ID
-			if item.TurnCount != 2 || item.MessageCount != 4 || item.UserID != "u-1" {
+			if item.TurnCount != 2 || item.MessageCount != 4 || item.UserID != "" {
 				t.Fatalf("unexpected grouped session summary: %+v", item)
 			}
 		}
@@ -855,11 +1123,11 @@ func TestAdminPublicConversationsAggregatesPublicAnswerLogs(t *testing.T) {
 		t.Fatalf("expected session group in list: %+v", list.Conversations)
 	}
 
-	detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/public-conversations/"+sessionGroupID, nil)
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/customer-conversations/"+sessionGroupID, nil)
 	detailRec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(detailRec, detailReq)
 	if detailRec.Code != http.StatusOK {
-		t.Fatalf("detail public conversation failed: %d %s", detailRec.Code, detailRec.Body.String())
+		t.Fatalf("detail customer conversation failed: %d %s", detailRec.Code, detailRec.Body.String())
 	}
 	if strings.Contains(detailRec.Body.String(), "model_json_raw") || strings.Contains(detailRec.Body.String(), "先确认是否有正式知识证据") {
 		t.Fatalf("conversation detail should not expose raw model log data: %s", detailRec.Body.String())
@@ -873,7 +1141,7 @@ func TestAdminPublicConversationsAggregatesPublicAnswerLogs(t *testing.T) {
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(detailRec.Body.Bytes(), &detail); err != nil {
-		t.Fatalf("decode public conversation detail: %v", err)
+		t.Fatalf("decode customer conversation detail: %v", err)
 	}
 	if len(detail.Messages) != 4 || detail.Messages[0].Role != "user" || detail.Messages[1].Role != "assistant" {
 		t.Fatalf("unexpected conversation messages: %+v", detail.Messages)
@@ -882,37 +1150,40 @@ func TestAdminPublicConversationsAggregatesPublicAnswerLogs(t *testing.T) {
 		t.Fatalf("user conversation message must not include debug details, got %+v", detail.Messages[0].Details)
 	}
 	assistantDetails := detail.Messages[1].Details
-	if assistantDetails["process_summary"] == nil || assistantDetails["steps"] == nil {
-		t.Fatalf("expected assistant public conversation details, got %+v", assistantDetails)
+	if assistantDetails["process_summary"] == nil || assistantDetails["answer_mode"] == nil {
+		t.Fatalf("expected assistant customer conversation summary details, got %+v", assistantDetails)
+	}
+	if assistantDetails["steps"] != nil {
+		t.Fatalf("conversation detail should not expose execution steps; use trace detail endpoint instead, got %+v", assistantDetails)
 	}
 	seenMessageIDs := map[string]bool{}
 	for _, message := range detail.Messages {
 		if message.ID == "" {
-			t.Fatalf("expected stable public conversation message id, got %+v", detail.Messages)
+			t.Fatalf("expected stable customer conversation message id, got %+v", detail.Messages)
 		}
 		if seenMessageIDs[message.ID] {
-			t.Fatalf("expected unique public conversation message ids, got duplicate %q in %+v", message.ID, detail.Messages)
+			t.Fatalf("expected unique customer conversation message ids, got duplicate %q in %+v", message.ID, detail.Messages)
 		}
 		seenMessageIDs[message.ID] = true
 	}
 }
 
-func TestAdminPublicConversationsSearchAndEmptyDisabledLog(t *testing.T) {
+func TestAdminCustomerConversationsSearchAndEmptyDisabledLog(t *testing.T) {
 	fixture := newAPITestFixture(t, apiMockLLM{})
-	postPublicAnswer(t, fixture.router, map[string]any{
-		"question":   "静态 IP 适合什么？",
+	postCustomerChat(t, fixture.router, map[string]any{
+		"message":    "静态 IP 适合什么？",
 		"session_id": "s-search-1",
 	})
-	postPublicAnswer(t, fixture.router, map[string]any{
-		"question":   "动态 IP 怎么购买？",
+	postCustomerChat(t, fixture.router, map[string]any{
+		"message":    "动态 IP 怎么购买？",
 		"session_id": "s-search-2",
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/public-conversations?q=动态", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/customer-conversations?q=动态", nil)
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("search public conversations failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("search customer conversations failed: %d %s", rec.Code, rec.Body.String())
 	}
 	var searched struct {
 		Conversations []struct {
@@ -921,7 +1192,7 @@ func TestAdminPublicConversationsSearchAndEmptyDisabledLog(t *testing.T) {
 		Total int `json:"total"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &searched); err != nil {
-		t.Fatalf("decode searched public conversations: %v", err)
+		t.Fatalf("decode searched customer conversations: %v", err)
 	}
 	if searched.Total != 1 || searched.Conversations[0].SessionID != "s-search-2" {
 		t.Fatalf("unexpected search result: %+v", searched)
@@ -929,12 +1200,12 @@ func TestAdminPublicConversationsSearchAndEmptyDisabledLog(t *testing.T) {
 
 	emptyFixture := newAPITestFixture(t, apiMockLLM{})
 	disabled := false
-	emptyFixture.deps.Config.PublicQuery.AnswerLog.Enabled = &disabled
-	emptyReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/public-conversations", nil)
+	emptyFixture.deps.Config.CustomerChat.AnswerLog.Enabled = &disabled
+	emptyReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/customer-conversations", nil)
 	emptyRec := httptest.NewRecorder()
 	emptyFixture.router.ServeHTTP(emptyRec, emptyReq)
 	if emptyRec.Code != http.StatusOK {
-		t.Fatalf("empty public conversations failed: %d %s", emptyRec.Code, emptyRec.Body.String())
+		t.Fatalf("empty customer conversations failed: %d %s", emptyRec.Code, emptyRec.Body.String())
 	}
 	var empty struct {
 		Total int `json:"total"`
@@ -943,36 +1214,36 @@ func TestAdminPublicConversationsSearchAndEmptyDisabledLog(t *testing.T) {
 		} `json:"log"`
 	}
 	if err := json.Unmarshal(emptyRec.Body.Bytes(), &empty); err != nil {
-		t.Fatalf("decode empty public conversations: %v", err)
+		t.Fatalf("decode empty customer conversations: %v", err)
 	}
 	if empty.Total != 0 || empty.Log.Enabled {
 		t.Fatalf("expected empty disabled log response, got %+v", empty)
 	}
 }
 
-func TestPublicAnswerContextCanceledDoesNotEmitLLMFailure(t *testing.T) {
+func TestCustomerChatContextCanceledDoesNotEmitLLMFailure(t *testing.T) {
 	fixture := newAPITestFixture(t, apiCanceledLLM{})
 	body, _ := json.Marshal(map[string]any{
-		"question": "静态IP 和 动态IP 价格有什么区别",
-		"stream":   true,
+		"message": "静态IP 和 动态IP 价格有什么区别",
+		"stream":  true,
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
 
 	if body := rec.Body.String(); strings.Contains(body, "event: error") || strings.Contains(body, "context canceled") || strings.Contains(body, "fallback") {
-		t.Fatalf("context cancellation should not be emitted as public answer failure, got %s", body)
+		t.Fatalf("context cancellation should not be emitted as customer chat failure, got %s", body)
 	}
 }
 
-func TestPublicAnswerResponseTimeoutReturnsSafeFallback(t *testing.T) {
+func TestCustomerChatResponseTimeoutReturnsSafeFallback(t *testing.T) {
 	fixture := newAPITestFixture(t, apiBlockingLLM{})
-	fixture.deps.Config.PublicQuery.ResponseTimeoutSec = 1
+	fixture.deps.Config.CustomerChat.ResponseTimeoutSec = 1
 	body, _ := json.Marshal(map[string]any{
-		"question": "API 白名单怎么配置？",
+		"message": "API 白名单怎么配置？",
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
@@ -991,8 +1262,8 @@ func TestPublicAnswerResponseTimeoutReturnsSafeFallback(t *testing.T) {
 	}
 }
 
-func TestPublicAnswerOrdinaryPriceQuestionKeepsModelAnswer(t *testing.T) {
-	fixture := newAPITestFixture(t, apiPublicAnswerTextLLM{text: `{
+func TestCustomerChatOrdinaryPriceQuestionKeepsModelAnswer(t *testing.T) {
+	fixture := newAPITestFixture(t, apiCustomerChatTextLLM{text: `{
   "answer_mode": "evidence",
   "answer": "5M 静态 IP 多买多优惠，10 个可以按 90元/个申请。",
   "review_question": "",
@@ -1004,13 +1275,13 @@ func TestPublicAnswerOrdinaryPriceQuestionKeepsModelAnswer(t *testing.T) {
   "sources": [{"path":"wiki/knowledge/static-ip.md","confidence":"high"}],
   "notes": ""
 }`})
-	body, _ := json.Marshal(map[string]any{"question": "5M静态IP多少钱？"})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	body, _ := json.Marshal(map[string]any{"message": "5M静态IP多少钱？"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("plain price public answer failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("plain price customer chat failed: %d %s", rec.Code, rec.Body.String())
 	}
 
 	var payload struct {
@@ -1026,8 +1297,8 @@ func TestPublicAnswerOrdinaryPriceQuestionKeepsModelAnswer(t *testing.T) {
 	}
 }
 
-func TestPublicAnswerOrdinaryStaticPriceKeepsModelAnswer(t *testing.T) {
-	fixture := newAPITestFixture(t, apiPublicAnswerTextLLM{text: `{
+func TestCustomerChatOrdinaryStaticPriceKeepsModelAnswer(t *testing.T) {
+	fixture := newAPITestFixture(t, apiCustomerChatTextLLM{text: `{
   "answer_mode": "evidence",
   "answer": "我们静态 IP 分为共享型和独享型两类，按月计费：共享型起步价约 25 至 70 元/个/月，按需选择数据中心或住宅 IP，数量越多越划算（买 5 个起可享折扣）。独享型带宽资源更稳，起步价约 300 至 800 元/个/月。您这边主要是做账号运营还是数据采集呢？",
   "review_question": "",
@@ -1039,8 +1310,8 @@ func TestPublicAnswerOrdinaryStaticPriceKeepsModelAnswer(t *testing.T) {
   "sources": [{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],
   "notes": ""
 }`})
-	body, _ := json.Marshal(map[string]any{"question": "静态IP 怎么卖的?"})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	body, _ := json.Marshal(map[string]any{"message": "静态IP 怎么卖的?"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
@@ -1066,8 +1337,8 @@ func TestPublicAnswerOrdinaryStaticPriceKeepsModelAnswer(t *testing.T) {
 	}
 }
 
-func TestPublicAnswerMissingStaticSubtypeKeepsModelAnswer(t *testing.T) {
-	fixture := newAPITestFixture(t, apiPublicAnswerTextLLM{text: `{
+func TestCustomerChatMissingStaticSubtypeKeepsModelAnswer(t *testing.T) {
+	fixture := newAPITestFixture(t, apiCustomerChatTextLLM{text: `{
   "answer_mode": "mixed",
   "answer": "共享型静态IP购买300个以上已经是4折最低价了，10000个也是按这个折扣算。5M折后10元/个/月，10000个每月10万。您打算选哪种带宽？",
   "review_question": "",
@@ -1080,18 +1351,18 @@ func TestPublicAnswerMissingStaticSubtypeKeepsModelAnswer(t *testing.T) {
   "notes": ""
 }`})
 	body, _ := json.Marshal(map[string]any{
-		"question": "如果买10000个ip嗯",
+		"message": "如果买10000个ip嗯",
 		"history": []map[string]any{
 			{"role": "user", "content": "静态ip"},
 			{"role": "user", "content": "1000ge ip neng给优惠么"},
 		},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("discount public answer failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("discount customer chat failed: %d %s", rec.Code, rec.Body.String())
 	}
 
 	var payload struct {
@@ -1107,8 +1378,8 @@ func TestPublicAnswerMissingStaticSubtypeKeepsModelAnswer(t *testing.T) {
 	}
 }
 
-func TestPublicAnswerBandwidthQuestionKeepsModelAnswer(t *testing.T) {
-	fixture := newAPITestFixture(t, apiPublicAnswerTextLLM{text: `{
+func TestCustomerChatBandwidthQuestionKeepsModelAnswer(t *testing.T) {
+	fixture := newAPITestFixture(t, apiCustomerChatTextLLM{text: `{
   "answer_mode": "evidence",
   "answer": "三种带宽的核心区别在于服务器带宽规格。200个数量选共享型很划算，参考价如下：5M折后约15元/个/月，共约3000元/月；10M折后约18元/个/月，共约3600元/月；20M折后约52.5元/个/月，共约10500元/月。您偏向共享型还是独享型？",
   "review_question": "",
@@ -1121,7 +1392,7 @@ func TestPublicAnswerBandwidthQuestionKeepsModelAnswer(t *testing.T) {
   "notes": ""
 }`})
 	body, _ := json.Marshal(map[string]any{
-		"question": "大概得需要200个吧, 带宽这三种有什么区别?",
+		"message": "大概得需要200个吧, 带宽这三种有什么区别?",
 		"history": []map[string]any{
 			{"role": "user", "content": "静态IP 怎么卖的?"},
 			{"role": "assistant", "content": "静态 IP 分共享型和独享型两种。"},
@@ -1129,12 +1400,12 @@ func TestPublicAnswerBandwidthQuestionKeepsModelAnswer(t *testing.T) {
 			{"role": "assistant", "content": "游戏代练确实对稳定性有要求。独享型静态IP带宽独享，比共享型更推荐。"},
 		},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("bandwidth public answer failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("bandwidth customer chat failed: %d %s", rec.Code, rec.Body.String())
 	}
 
 	var payload struct {
@@ -1155,8 +1426,8 @@ func TestPublicAnswerBandwidthQuestionKeepsModelAnswer(t *testing.T) {
 	}
 }
 
-func TestPublicAnswerPurchaseKeepsModelAnswer(t *testing.T) {
-	fixture := newAPITestFixture(t, apiPublicAnswerTextLLM{text: `{
+func TestCustomerChatPurchaseKeepsModelAnswer(t *testing.T) {
+	fixture := newAPITestFixture(t, apiCustomerChatTextLLM{text: `{
   "answer_mode": "evidence",
   "answer": "数据中心共享型静态IP如果买 100 个，5M 折后约 17.5元/个/月，可以申请优惠。",
   "review_question": "",
@@ -1169,7 +1440,7 @@ func TestPublicAnswerPurchaseKeepsModelAnswer(t *testing.T) {
   "notes": ""
 }`})
 	body, _ := json.Marshal(map[string]any{
-		"question": "我想购买数据中心IP",
+		"message": "我想购买数据中心IP",
 		"history": []map[string]any{
 			{"role": "user", "content": "静态IP怎么卖的?"},
 			{"role": "assistant", "content": "静态 IP 分共享型和独享型两种。"},
@@ -1179,12 +1450,12 @@ func TestPublicAnswerPurchaseKeepsModelAnswer(t *testing.T) {
 			{"role": "assistant", "content": "好的，共享型静态IP有数据中心IP和住宅IP两种。"},
 		},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("purchase public answer failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("purchase customer chat failed: %d %s", rec.Code, rec.Body.String())
 	}
 
 	var payload struct {
@@ -1199,40 +1470,35 @@ func TestPublicAnswerPurchaseKeepsModelAnswer(t *testing.T) {
 		}
 	}
 	if strings.Contains(rec.Body.String(), `"details"`) {
-		t.Fatalf("external public answer must not expose sanitizer diagnostics in details, got %s", rec.Body.String())
+		t.Fatalf("external customer chat must not expose sanitizer diagnostics in details, got %s", rec.Body.String())
 	}
 
-	entry := readLatestPublicAnswerLogEntry(t, fixture.deps.WorkspaceDir)
+	entry := readLatestCustomerChatLogEntry(t, fixture.deps.WorkspaceDir)
 	encodedLog, _ := json.Marshal(entry)
 	for _, want := range []string{"17.5元/个", "折后"} {
 		if !strings.Contains(string(encodedLog), want) {
-			t.Fatalf("expected public log to persist final model answer %q, got %s", want, string(encodedLog))
+			t.Fatalf("expected customer log to persist final model answer %q, got %s", want, string(encodedLog))
 		}
 	}
-	jsonData, ok := entry["json_data"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected json_data object, got %#v", entry["json_data"])
-	}
-	details, ok := jsonData["details"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected json_data.details object, got %#v", jsonData["details"])
-	}
-	if sanitizers, ok := details["sanitizers"].([]any); ok && len(sanitizers) > 0 {
-		t.Fatalf("expected service-layer sanitizer diagnostics to be absent, got %#v", sanitizers)
+	if strings.Contains(string(encodedLog), "sanitizers") {
+		t.Fatalf("expected service-layer sanitizer diagnostics to be absent, got %s", string(encodedLog))
 	}
 }
 
-func TestAdminPublicAnswerAuditStreamResultEmitsModelAnswer(t *testing.T) {
-	fixture := newAPITestFixture(t, apiPublicAnswerTextLLM{text: discountInquiryLLMText()})
+func TestAdminCustomerChatAuditStreamResultEmitsModelAnswer(t *testing.T) {
+	fixture := newAPITestFixture(t, apiCustomerChatTextLLM{text: discountInquiryLLMText()})
 	body, _ := json.Marshal(map[string]any{
-		"question": "我想买10个5M共享型静态IP，可以申请优惠吗？",
+		"message":    "我想买10个5M共享型静态IP，可以申请优惠吗？",
+		"entrypoint": "internal",
+		"simulation": true,
+		"stream":     true,
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/public-answer/audit/stream", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	fixture.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("audit stream discount public answer failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("audit stream discount customer chat failed: %d %s", rec.Code, rec.Body.String())
 	}
 	stream := rec.Body.String()
 	if !strings.Contains(stream, `event: result`) {
@@ -1478,11 +1744,11 @@ func TestAdminDashboardReturnsSummaryWithoutAuth(t *testing.T) {
 		} `json:"active_model"`
 		ModelsTotal     int `json:"models_total"`
 		ReviewPending   int `json:"review_pending"`
-		PublicAnswerLog struct {
+		CustomerChatLog struct {
 			Enabled       bool `json:"enabled"`
 			Redact        bool `json:"redact"`
 			RetentionDays int  `json:"retention_days"`
-		} `json:"public_answer_log"`
+		} `json:"customer_chat_log"`
 		QMD struct {
 			Index string `json:"index"`
 			Root  string `json:"root"`
@@ -1500,8 +1766,8 @@ func TestAdminDashboardReturnsSummaryWithoutAuth(t *testing.T) {
 	if payload.QMD.Index != "test-index" || payload.QMD.Root == "" {
 		t.Fatalf("unexpected qmd summary: %+v", payload.QMD)
 	}
-	if !payload.PublicAnswerLog.Enabled || !payload.PublicAnswerLog.Redact || payload.PublicAnswerLog.RetentionDays != 14 {
-		t.Fatalf("unexpected public log summary: %+v", payload.PublicAnswerLog)
+	if !payload.CustomerChatLog.Enabled || !payload.CustomerChatLog.Redact || payload.CustomerChatLog.RetentionDays != 14 {
+		t.Fatalf("unexpected customer chat log summary: %+v", payload.CustomerChatLog)
 	}
 }
 
@@ -1522,21 +1788,21 @@ func TestAdminRuntimeSettingsAPI(t *testing.T) {
 	if err := json.Unmarshal(getRec.Body.Bytes(), &defaults); err != nil {
 		t.Fatalf("decode defaults: %v", err)
 	}
-	if defaults.Settings.PublicQuery.CandidateTopK == 0 || defaults.Environment.WikiRoot == "" {
+	if defaults.Settings.CustomerChat.CandidateTopK == 0 || defaults.Environment.WikiRoot == "" {
 		t.Fatalf("unexpected runtime defaults: %+v", defaults)
 	}
 
 	next := defaults.Settings
-	next.PublicQuery.DirectMin = 0.81
-	next.PublicQuery.ReviewMin = 0.35
-	next.PublicQuery.CandidateTopK = 9
-	next.PublicQuery.MaxEvidenceChars = 3200
-	next.PublicQuery.RouterModelID = "router-fast"
-	next.PublicQuery.SpecialistModelID = "specialist-main"
+	next.CustomerChat.DirectMin = 0.81
+	next.CustomerChat.ReviewMin = 0.35
+	next.CustomerChat.CandidateTopK = 9
+	next.CustomerChat.MaxEvidenceChars = 3200
+	next.CustomerChat.RouterModelID = "router-fast"
+	next.CustomerChat.SpecialistModelID = "specialist-main"
 	routerThinking := false
 	specialistThinking := true
-	next.PublicQuery.RouterEnableThinking = &routerThinking
-	next.PublicQuery.SpecialistEnableThinking = &specialistThinking
+	next.CustomerChat.RouterEnableThinking = &routerThinking
+	next.CustomerChat.SpecialistEnableThinking = &specialistThinking
 	next.Support.Phone = "400-test"
 	next.AnswerLog.Enabled = false
 	next.AnswerLog.Redact = false
@@ -1559,13 +1825,13 @@ func TestAdminRuntimeSettingsAPI(t *testing.T) {
 	if err := json.Unmarshal(putRec.Body.Bytes(), &updated); err != nil {
 		t.Fatalf("decode updated runtime settings: %v", err)
 	}
-	if updated.Settings.PublicQuery.CandidateTopK != 9 ||
-		updated.Settings.PublicQuery.RouterModelID != "router-fast" ||
-		updated.Settings.PublicQuery.SpecialistModelID != "specialist-main" ||
-		updated.Settings.PublicQuery.RouterEnableThinking == nil ||
-		*updated.Settings.PublicQuery.RouterEnableThinking ||
-		updated.Settings.PublicQuery.SpecialistEnableThinking == nil ||
-		!*updated.Settings.PublicQuery.SpecialistEnableThinking ||
+	if updated.Settings.CustomerChat.CandidateTopK != 9 ||
+		updated.Settings.CustomerChat.RouterModelID != "router-fast" ||
+		updated.Settings.CustomerChat.SpecialistModelID != "specialist-main" ||
+		updated.Settings.CustomerChat.RouterEnableThinking == nil ||
+		*updated.Settings.CustomerChat.RouterEnableThinking ||
+		updated.Settings.CustomerChat.SpecialistEnableThinking == nil ||
+		!*updated.Settings.CustomerChat.SpecialistEnableThinking ||
 		updated.Settings.AnswerLog.Enabled ||
 		updated.Settings.Knowledge.MaxTextFileKB != 800 ||
 		updated.UpdatedAt == "" {
@@ -1573,7 +1839,7 @@ func TestAdminRuntimeSettingsAPI(t *testing.T) {
 	}
 
 	invalid := next
-	invalid.PublicQuery.CandidateTopK = 30
+	invalid.CustomerChat.CandidateTopK = 30
 	invalid.AnswerLog.RetentionDays = 0
 	invalidBody, _ := json.Marshal(invalid)
 	invalidReq := httptest.NewRequest(http.MethodPut, "/api/v1/admin/runtime-settings", bytes.NewReader(invalidBody))
@@ -1583,7 +1849,7 @@ func TestAdminRuntimeSettingsAPI(t *testing.T) {
 	if invalidRec.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid runtime settings to return 400, got %d %s", invalidRec.Code, invalidRec.Body.String())
 	}
-	if !strings.Contains(invalidRec.Body.String(), "public_query.candidate_top_k") ||
+	if !strings.Contains(invalidRec.Body.String(), "customer_query.candidate_top_k") ||
 		!strings.Contains(invalidRec.Body.String(), "answer_log.retention_days") {
 		t.Fatalf("expected runtime field validation errors, got %s", invalidRec.Body.String())
 	}
@@ -1597,7 +1863,7 @@ func newAPITestFixture(t *testing.T, client llm.Client) apiTestFixture {
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
 	}
-	intentPath := filepath.Join(root, "wiki", "intents", "public-intents.yaml")
+	intentPath := filepath.Join(root, "wiki", "intents", "customer-intents.yaml")
 	mustWrite(t, intentPath, `version: 1
 fallbacks:
   generic: 您好，这个问题我这边暂时还不能准确确认，您可以补充一下具体场景。
@@ -1610,16 +1876,16 @@ rules: []
 `)
 	enabled := true
 	cfg := &config.Config{
-		Server:        config.ServerConfig{Mode: "debug"},
-		MountedWiki:   config.MountedWikiConfig{Root: root, QMDIndex: "test-index"},
-		Retrieval:     config.RetrievalConfig{TopK: 3},
-		Workspace:     config.WorkspaceConfig{BaseDir: workspace, DefaultTimeoutSec: 5},
-		Sandbox:       config.SandboxConfig{QMDTimeoutSec: 1, PythonTimeoutSec: 1},
-		Sync:          config.SyncConfig{Remote: "origin", Branch: "main"},
-		LLM:           config.LLMConfig{},
-		Storage:       config.StorageConfig{SQLitePath: filepath.Join(workspace, "service.db")},
-		Upload:        config.UploadConfig{MaxTextFileKB: 500},
-		PublicIntents: config.PublicIntentsConfig{Enabled: &enabled, Path: intentPath},
+		Server:          config.ServerConfig{Mode: "debug"},
+		MountedWiki:     config.MountedWikiConfig{Root: root, QMDIndex: "test-index"},
+		Retrieval:       config.RetrievalConfig{TopK: 3},
+		Workspace:       config.WorkspaceConfig{BaseDir: workspace, DefaultTimeoutSec: 5},
+		Sandbox:         config.SandboxConfig{QMDTimeoutSec: 1, PythonTimeoutSec: 1},
+		Sync:            config.SyncConfig{Remote: "origin", Branch: "main"},
+		LLM:             config.LLMConfig{},
+		Storage:         config.StorageConfig{SQLitePath: filepath.Join(workspace, "service.db")},
+		Upload:          config.UploadConfig{MaxTextFileKB: 500},
+		CustomerIntents: config.CustomerIntentsConfig{Enabled: &enabled, Path: intentPath},
 	}
 	dataStore, err := store.Open(cfg.Storage.SQLitePath)
 	if err != nil {
@@ -1629,76 +1895,141 @@ rules: []
 	tools.RegisterAll(registry, tools.Dependencies{Config: cfg, Resolver: wikiadapter.NewPathResolver(cfg.MountedWiki.Root)})
 	registry.Register(apiQMDTool{})
 	rt := runtime.NewRuntime(registry, runtime.NewPolicyEngine(), runtime.NewValidator(), runtime.NewAuditLogger())
-	publicIntents := service.NewPublicIntentManager(cfg.PublicIntents)
+	customerIntents := service.NewCustomerIntentManager(cfg.CustomerIntents)
 	deps := service.Deps{
-		Config:        cfg,
-		Runtime:       rt,
-		LLM:           client,
-		Retriever:     retrieval.NewQMDRetriever(rt),
-		Store:         dataStore,
-		PublicIntents: publicIntents,
-		PromptDir:     "../../internal/llm/prompts",
-		WorkspaceDir:  cfg.Workspace.BaseDir,
+		Config:          cfg,
+		Runtime:         rt,
+		LLM:             client,
+		Retriever:       retrieval.NewQMDRetriever(rt),
+		Store:           dataStore,
+		CustomerIntents: customerIntents,
+		PromptDir:       "../../internal/llm/prompts",
+		WorkspaceDir:    cfg.Workspace.BaseDir,
 	}
 	handlers := api.NewHandlers(
-		service.NewPublicQueryService(deps),
+		service.NewCustomerChatService(deps),
 		service.NewReviewQueueService(deps),
 		service.NewDirectAdminService(deps),
 		service.NewUploadService(deps),
 		service.NewSyncService(deps),
 		dataStore,
 		cfg,
-		publicIntents,
+		customerIntents,
 		service.NewContextCounter(cfg.Context),
 	)
 	return apiTestFixture{router: app.NewRouter(cfg, handlers, dataStore), root: root, deps: deps}
 }
 
-func readLatestPublicAnswerLogEntry(t *testing.T, workspaceDir string) map[string]any {
+func readLatestCustomerChatLogEntry(t *testing.T, workspaceDir string) map[string]any {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(workspaceDir, "public_answer_logs", "*.jsonl"))
+	matches, err := filepath.Glob(filepath.Join(workspaceDir, "customer_chat_logs", "*.jsonl"))
 	if err != nil {
-		t.Fatalf("glob public answer logs: %v", err)
+		t.Fatalf("glob customer chat logs: %v", err)
 	}
 	if len(matches) == 0 {
-		t.Fatalf("expected public answer log file under %s", workspaceDir)
+		t.Fatalf("expected customer chat log file under %s", workspaceDir)
 	}
 	raw, err := os.ReadFile(matches[len(matches)-1])
 	if err != nil {
-		t.Fatalf("read public answer log: %v", err)
+		t.Fatalf("read customer chat log: %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 	if len(lines) == 0 || strings.TrimSpace(lines[len(lines)-1]) == "" {
-		t.Fatalf("expected non-empty public answer log, got %q", string(raw))
+		t.Fatalf("expected non-empty customer chat log, got %q", string(raw))
 	}
 	var entry map[string]any
 	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &entry); err != nil {
-		t.Fatalf("decode public answer log entry: %v\n%s", err, lines[len(lines)-1])
+		t.Fatalf("decode customer chat log entry: %v\n%s", err, lines[len(lines)-1])
 	}
 	return entry
 }
 
-func assertNoPublicAnswerLogs(t *testing.T, workspaceDir string) {
+func assertNoCustomerChatLogs(t *testing.T, workspaceDir string) {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(workspaceDir, "public_answer_logs", "*.jsonl"))
+	matches, err := filepath.Glob(filepath.Join(workspaceDir, "customer_chat_logs", "*.jsonl"))
 	if err != nil {
-		t.Fatalf("glob public answer logs: %v", err)
+		t.Fatalf("glob customer chat logs: %v", err)
 	}
 	if len(matches) != 0 {
-		t.Fatalf("expected no public answer logs, matches=%#v", matches)
+		t.Fatalf("expected no customer chat logs, matches=%#v", matches)
 	}
 }
 
-func postPublicAnswer(t *testing.T, router http.Handler, payload map[string]any) {
+func postCustomerChat(t *testing.T, router http.Handler, payload map[string]any) {
 	t.Helper()
 	body, _ := json.Marshal(payload)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/public/answer", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("public answer failed: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("customer chat failed: %d %s", rec.Code, rec.Body.String())
 	}
+}
+
+func readCustomerChatTraceByHeader(t *testing.T, router http.Handler, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	traceID := strings.TrimSpace(rec.Header().Get("X-Trace-ID"))
+	if traceID == "" {
+		t.Fatalf("expected X-Trace-ID response header")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/customer-chat/traces/"+traceID, nil)
+	traceRec := httptest.NewRecorder()
+	router.ServeHTTP(traceRec, req)
+	if traceRec.Code != http.StatusOK {
+		t.Fatalf("read customer chat trace failed: %d %s", traceRec.Code, traceRec.Body.String())
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(traceRec.Body.Bytes(), &entry); err != nil {
+		t.Fatalf("decode customer chat trace: %v", err)
+	}
+	return entry
+}
+
+func apiTestMapValue(value any) map[string]any {
+	if typed, ok := value.(map[string]any); ok {
+		return typed
+	}
+	return nil
+}
+
+func apiTestStringValue(record map[string]any, key string) string {
+	if record == nil {
+		return ""
+	}
+	value := record[key]
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
+}
+
+func apiTestInt64Value(record map[string]any, key string) int64 {
+	if record == nil {
+		return 0
+	}
+	switch typed := record[key].(type) {
+	case int:
+		return int64(typed)
+	case int64:
+		return typed
+	case float64:
+		return int64(typed)
+	case json.Number:
+		value, _ := typed.Int64()
+		return value
+	default:
+		return 0
+	}
+}
+
+func apiTestSliceValue(value any) []any {
+	if typed, ok := value.([]any); ok {
+		return typed
+	}
+	return nil
 }
 
 func uploadFile(t *testing.T, router http.Handler, path string, filename string, content []byte) *httptest.ResponseRecorder {

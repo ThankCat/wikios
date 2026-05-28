@@ -14,7 +14,7 @@ import (
 	"wikios/internal/runtime"
 )
 
-type PublicSpecialistProfile struct {
+type CustomerSpecialistProfile struct {
 	Name             string   `json:"name"`
 	PromptFile       string   `json:"prompt_file,omitempty"`
 	AllowedPrefixes  []string `json:"allowed_prefixes"`
@@ -22,31 +22,35 @@ type PublicSpecialistProfile struct {
 	MaxEvidenceChars int      `json:"max_evidence_chars,omitempty"`
 }
 
-type publicSpecialistEvidenceResult struct {
-	Profile        PublicSpecialistProfile
+type customerSpecialistEvidenceResult struct {
+	Profile        CustomerSpecialistProfile
 	Queries        []string
 	Candidates     []retrieval.RetrievedPage
 	Sources        []SourceRef
 	ContentBlocks  []string
 	EvidenceBodies map[string]string
 	EvidenceTrace  []map[string]any
-	CacheTrace     publicSpecialistCacheTrace
+	CacheTrace     customerSpecialistCacheTrace
 	Error          string
 }
 
-type publicSpecialistCacheTrace struct {
+type customerSpecialistCacheTrace struct {
 	QMDHits                    int
 	QMDMisses                  int
 	ReadPageHits               int
 	ReadPageMisses             int
 	ExecutedRetrievalQueries   []string
 	AttemptedRetrievalQueries  []string
+	SkippedRetrievalQueries    []string
 	SkippedRetrievalQueryCount int
+	RetrievalResults           []map[string]any
+	ScopeFilteredPages         []map[string]any
+	WikilinkExpandedPages      []map[string]any
 	RetrievalTimings           []map[string]any
 	ReadPageTimings            []map[string]any
 }
 
-func (trace publicSpecialistCacheTrace) summary() map[string]any {
+func (trace customerSpecialistCacheTrace) summary() map[string]any {
 	return map[string]any{
 		"qmd_cache_hits":                  trace.QMDHits,
 		"qmd_cache_misses":                trace.QMDMisses,
@@ -57,81 +61,85 @@ func (trace publicSpecialistCacheTrace) summary() map[string]any {
 		"attempted_retrieval_query_count": len(trace.AttemptedRetrievalQueries),
 		"attempted_retrieval_queries":     append([]string(nil), trace.AttemptedRetrievalQueries...),
 		"skipped_retrieval_query_count":   trace.SkippedRetrievalQueryCount,
+		"skipped_retrieval_queries":       append([]string(nil), trace.SkippedRetrievalQueries...),
+		"retrieval_results":               append([]map[string]any(nil), trace.RetrievalResults...),
+		"scope_filtered_pages":            append([]map[string]any(nil), trace.ScopeFilteredPages...),
+		"wikilink_expanded_pages":         append([]map[string]any(nil), trace.WikilinkExpandedPages...),
 		"retrieval_timings":               append([]map[string]any(nil), trace.RetrievalTimings...),
 		"read_page_timings":               append([]map[string]any(nil), trace.ReadPageTimings...),
 	}
 }
 
-var publicSpecialistProfiles = map[string]PublicSpecialistProfile{
+var customerSpecialistProfiles = map[string]CustomerSpecialistProfile{
 	"reception": {
 		Name:             "reception",
-		PromptFile:       "public_specialist_reception.md",
+		PromptFile:       "customer_specialist_reception.md",
 		AllowedPrefixes:  []string{"wiki/policies/", "wiki/synthesis/", "wiki/intents/"},
 		CandidateTopK:    3,
 		MaxEvidenceChars: 1200,
 	},
 	"product": {
 		Name:             "product",
-		PromptFile:       "public_specialist_product.md",
+		PromptFile:       "customer_specialist_product.md",
 		AllowedPrefixes:  []string{"wiki/knowledge/", "wiki/comparisons/", "wiki/concepts/", "wiki/entities/", "wiki/intents/"},
 		CandidateTopK:    4,
 		MaxEvidenceChars: 1800,
 	},
 	"pricing": {
 		Name:             "pricing",
-		PromptFile:       "public_specialist_pricing.md",
+		PromptFile:       "customer_specialist_pricing.md",
 		AllowedPrefixes:  []string{"wiki/knowledge/", "wiki/comparisons/", "wiki/synthesis/", "wiki/concepts/", "wiki/intents/"},
 		CandidateTopK:    4,
 		MaxEvidenceChars: 1800,
 	},
 	"purchase": {
 		Name:             "purchase",
-		PromptFile:       "public_specialist_purchase.md",
+		PromptFile:       "customer_specialist_purchase.md",
 		AllowedPrefixes:  []string{"wiki/procedures/", "wiki/synthesis/", "wiki/knowledge/", "wiki/intents/"},
 		CandidateTopK:    4,
 		MaxEvidenceChars: 1800,
 	},
 	"technical": {
 		Name:             "technical",
-		PromptFile:       "public_specialist_technical.md",
+		PromptFile:       "customer_specialist_technical.md",
 		AllowedPrefixes:  []string{"wiki/procedures/", "wiki/knowledge/", "wiki/concepts/", "wiki/intents/"},
 		CandidateTopK:    4,
 		MaxEvidenceChars: 1800,
 	},
 	"troubleshooting": {
 		Name:             "troubleshooting",
-		PromptFile:       "public_specialist_troubleshooting.md",
+		PromptFile:       "customer_specialist_troubleshooting.md",
 		AllowedPrefixes:  []string{"wiki/procedures/", "wiki/policies/", "wiki/knowledge/", "wiki/intents/"},
 		CandidateTopK:    4,
 		MaxEvidenceChars: 1800,
 	},
 	"billing_after_sales": {
 		Name:             "billing_after_sales",
-		PromptFile:       "public_specialist_billing_after_sales.md",
+		PromptFile:       "customer_specialist_billing_after_sales.md",
 		AllowedPrefixes:  []string{"wiki/procedures/", "wiki/policies/", "wiki/synthesis/", "wiki/intents/"},
 		CandidateTopK:    4,
 		MaxEvidenceChars: 1800,
 	},
 	"safety": {
 		Name:             "safety",
-		PromptFile:       "public_specialist_safety.md",
+		PromptFile:       "customer_specialist_safety.md",
 		AllowedPrefixes:  []string{"wiki/policies/", "wiki/comparisons/", "wiki/knowledge/", "wiki/procedures/", "wiki/intents/"},
 		CandidateTopK:    4,
 		MaxEvidenceChars: 1800,
 	},
 }
 
-func publicSpecialistProfile(name string) PublicSpecialistProfile {
-	normalized := normalizePublicSpecialist(name)
-	if profile, ok := publicSpecialistProfiles[normalized]; ok {
+func customerSpecialistProfile(name string) CustomerSpecialistProfile {
+	normalized := normalizeCustomerSpecialist(name)
+	if profile, ok := customerSpecialistProfiles[normalized]; ok {
 		return profile
 	}
-	return publicSpecialistProfiles["product"]
+	return customerSpecialistProfiles["product"]
 }
 
-func (profile PublicSpecialistProfile) AllowsPath(path string) bool {
+func (profile CustomerSpecialistProfile) AllowsPath(path string) bool {
 	path = filepath.ToSlash(strings.TrimSpace(path))
-	if !isPublicReadableEvidence(path) {
+	if !isCustomerReadableEvidence(path) {
 		return false
 	}
 	for _, prefix := range profile.AllowedPrefixes {
@@ -142,7 +150,7 @@ func (profile PublicSpecialistProfile) AllowsPath(path string) bool {
 	return false
 }
 
-func (profile PublicSpecialistProfile) summary() map[string]any {
+func (profile CustomerSpecialistProfile) summary() map[string]any {
 	return map[string]any{
 		"name":               profile.Name,
 		"prompt_file":        profile.PromptFile,
@@ -152,11 +160,11 @@ func (profile PublicSpecialistProfile) summary() map[string]any {
 	}
 }
 
-func publicSpecialistRetrievalQueries(routerOutput *PublicRouterOutput) []string {
+func customerSpecialistRetrievalQueries(routerOutput *CustomerRouterOutput) []string {
 	if routerOutput == nil {
 		return nil
 	}
-	queries := make([]string, 0, 2)
+	queries := make([]string, 0, 3)
 	add := func(value string) {
 		value = strings.TrimSpace(value)
 		if value == "" {
@@ -171,7 +179,7 @@ func publicSpecialistRetrievalQueries(routerOutput *PublicRouterOutput) []string
 	}
 	for _, query := range routerOutput.RetrievalQueries {
 		add(query)
-		if len(queries) >= 2 {
+		if len(queries) >= 3 {
 			break
 		}
 	}
@@ -181,13 +189,13 @@ func publicSpecialistRetrievalQueries(routerOutput *PublicRouterOutput) []string
 	return queries
 }
 
-func (s *PublicQueryService) retrievePublicSpecialistEvidence(ctx context.Context, traceID string, routerOutput *PublicRouterOutput, settings RuntimeSettings) publicSpecialistEvidenceResult {
-	profile := publicSpecialistProfile("")
+func (s *CustomerChatService) retrieveCustomerSpecialistEvidence(ctx context.Context, traceID string, routerOutput *CustomerRouterOutput, settings RuntimeSettings) customerSpecialistEvidenceResult {
+	profile := customerSpecialistProfile("")
 	if routerOutput != nil {
-		profile = publicSpecialistProfile(routerOutput.Specialist)
+		profile = customerSpecialistProfile(routerOutput.Specialist)
 	}
-	queries := publicSpecialistRetrievalQueries(routerOutput)
-	result := publicSpecialistEvidenceResult{
+	queries := customerSpecialistRetrievalQueries(routerOutput)
+	result := customerSpecialistEvidenceResult{
 		Profile: profile,
 		Queries: queries,
 	}
@@ -207,9 +215,9 @@ func (s *PublicQueryService) retrievePublicSpecialistEvidence(ctx context.Contex
 		return result
 	}
 
-	env := s.env("public", traceID, "", "")
-	topK := publicSpecialistTopK(profile, settings)
-	maxChars := publicSpecialistMaxEvidenceChars(profile, settings)
+	env := s.env("customer", traceID, "", "")
+	topK := customerSpecialistTopK(profile, settings)
+	maxChars := customerSpecialistMaxEvidenceChars(profile, settings)
 	contentBlocks := []string{}
 	sources := []SourceRef{}
 	evidenceBodies := map[string]string{}
@@ -217,27 +225,29 @@ func (s *PublicQueryService) retrievePublicSpecialistEvidence(ctx context.Contex
 	candidates := []retrieval.RetrievedPage{}
 	evidenceTrace := []map[string]any{}
 	errors := []string{}
-	cacheTrace := publicSpecialistCacheTrace{}
+	cacheTrace := customerSpecialistCacheTrace{}
 
 	readPath := func(path string, query string) (string, bool) {
 		path = filepath.ToSlash(strings.TrimSpace(path))
 		if !profile.AllowsPath(path) {
+			cacheTrace.recordScopeFilteredPage(query, path, profile.Name)
 			return "", false
 		}
 		beforeSources := len(sources)
-		content, ok := s.readPublicSpecialistEvidencePage(ctx, env, traceID, profile.Name, path, query, maxChars, seenPaths, &contentBlocks, &sources, &cacheTrace)
+		content, ok := s.readCustomerSpecialistEvidencePage(ctx, env, traceID, profile.Name, path, query, maxChars, seenPaths, &contentBlocks, &sources, &cacheTrace)
 		if ok && len(sources) > beforeSources {
 			evidenceBodies[path] = content
-			evidenceTrace = append(evidenceTrace, publicEvidenceTraceItem(sources[len(sources)-1], content))
+			evidenceTrace = append(evidenceTrace, customerEvidenceTraceItem(sources[len(sources)-1], content))
 			return content, true
 		}
 		return content, ok
 	}
-	expandLinkedEvidence := func(content string, query string) {
-		for _, linkedPath := range resolvePublicEvidenceWikilinks(env, profile, content) {
+	expandLinkedEvidence := func(sourcePath string, content string, query string) {
+		for _, linkedPath := range resolveCustomerEvidenceWikilinks(env, profile, content) {
 			if len(sources) >= topK {
 				return
 			}
+			cacheTrace.recordWikilinkExpandedPage(query, sourcePath, linkedPath)
 			readPath(linkedPath, query)
 		}
 	}
@@ -245,22 +255,24 @@ func (s *PublicQueryService) retrievePublicSpecialistEvidence(ctx context.Contex
 	for index, query := range queries {
 		if len(sources) >= topK {
 			cacheTrace.SkippedRetrievalQueryCount++
+			cacheTrace.SkippedRetrievalQueries = append(cacheTrace.SkippedRetrievalQueries, query)
 			continue
 		}
 		cacheTrace.AttemptedRetrievalQueries = append(cacheTrace.AttemptedRetrievalQueries, query)
-		pages, err := s.retrievePublicSpecialistPages(ctx, env, traceID, profile.Name, index+1, query, topK, &cacheTrace)
+		pages, err := s.retrieveCustomerSpecialistPages(ctx, env, traceID, profile.Name, index+1, query, topK, &cacheTrace)
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("%s: %s", truncateForPrompt(query, 80), err.Error()))
 			continue
 		}
+		cacheTrace.recordRetrievalResults(index+1, query, pages)
 		candidates = append(candidates, pages...)
-		for _, page := range prioritizePublicRetrievedPages(pages) {
+		for _, page := range prioritizeCustomerRetrievedPages(pages) {
 			if len(sources) >= topK {
 				break
 			}
 			content, ok := readPath(page.Path, query)
 			if ok {
-				expandLinkedEvidence(content, query)
+				expandLinkedEvidence(page.Path, content, query)
 			}
 		}
 	}
@@ -277,7 +289,7 @@ func (s *PublicQueryService) retrievePublicSpecialistEvidence(ctx context.Contex
 	return result
 }
 
-func (s *PublicQueryService) retrievePublicSpecialistPages(
+func (s *CustomerChatService) retrieveCustomerSpecialistPages(
 	ctx context.Context,
 	env *runtime.ExecEnv,
 	traceID string,
@@ -285,16 +297,16 @@ func (s *PublicQueryService) retrievePublicSpecialistPages(
 	queryIndex int,
 	query string,
 	topK int,
-	trace *publicSpecialistCacheTrace,
+	trace *customerSpecialistCacheTrace,
 ) ([]retrieval.RetrievedPage, error) {
 	start := time.Now()
-	key := publicSpecialistRetrievalCacheKey(env, query, topK)
+	key := customerSpecialistRetrievalCacheKey(env, query, topK)
 	if pages, ok := s.cache.getRetrieval(key); ok && len(pages) > 0 {
 		if trace != nil {
 			trace.QMDHits++
 			trace.recordRetrievalTiming(queryIndex, query, "hit", time.Since(start), len(pages), "")
 		}
-		logPublicSpecialistRetrievalTiming(traceID, specialist, queryIndex, query, "hit", time.Since(start), len(pages), "")
+		logCustomerSpecialistRetrievalTiming(traceID, specialist, queryIndex, query, "hit", time.Since(start), len(pages), "")
 		return pages, nil
 	}
 	if trace != nil {
@@ -303,11 +315,11 @@ func (s *PublicQueryService) retrievePublicSpecialistPages(
 	}
 	pages, err := s.deps.Retriever.Retrieve(ctx, env, query, topK)
 	if err != nil {
-		errorMessage := publicSafeErrorTextForLog(err)
+		errorMessage := customerSafeErrorTextForLog(err)
 		if trace != nil {
 			trace.recordRetrievalTiming(queryIndex, query, "miss", time.Since(start), 0, errorMessage)
 		}
-		logPublicSpecialistRetrievalTiming(traceID, specialist, queryIndex, query, "miss", time.Since(start), 0, errorMessage)
+		logCustomerSpecialistRetrievalTiming(traceID, specialist, queryIndex, query, "miss", time.Since(start), 0, errorMessage)
 		return nil, err
 	}
 	if len(pages) > 0 {
@@ -316,11 +328,11 @@ func (s *PublicQueryService) retrievePublicSpecialistPages(
 	if trace != nil {
 		trace.recordRetrievalTiming(queryIndex, query, "miss", time.Since(start), len(pages), "")
 	}
-	logPublicSpecialistRetrievalTiming(traceID, specialist, queryIndex, query, "miss", time.Since(start), len(pages), "")
+	logCustomerSpecialistRetrievalTiming(traceID, specialist, queryIndex, query, "miss", time.Since(start), len(pages), "")
 	return cloneRetrievedPages(pages), nil
 }
 
-func (s *PublicQueryService) readPublicSpecialistEvidencePage(
+func (s *CustomerChatService) readCustomerSpecialistEvidencePage(
 	ctx context.Context,
 	env *runtime.ExecEnv,
 	traceID string,
@@ -331,21 +343,21 @@ func (s *PublicQueryService) readPublicSpecialistEvidencePage(
 	seenPaths map[string]bool,
 	contentBlocks *[]string,
 	sources *[]SourceRef,
-	trace *publicSpecialistCacheTrace,
+	trace *customerSpecialistCacheTrace,
 ) (string, bool) {
 	start := time.Now()
 	path = filepath.ToSlash(strings.TrimSpace(path))
 	if path == "" || seenPaths[path] {
 		return "", false
 	}
-	key := publicSpecialistPageCacheKey(env, path)
+	key := customerSpecialistPageCacheKey(env, path)
 	if content, ok := s.cache.getPage(key); ok && strings.TrimSpace(content) != "" {
 		if trace != nil {
 			trace.ReadPageHits++
 			trace.recordReadPageTiming(path, "hit", time.Since(start), len([]rune(content)), true, "")
 		}
-		logPublicSpecialistReadPageTiming(traceID, specialist, path, "hit", time.Since(start), len([]rune(content)), true, "")
-		return appendPublicEvidencePage(path, question, maxChars, seenPaths, contentBlocks, sources, content)
+		logCustomerSpecialistReadPageTiming(traceID, specialist, path, "hit", time.Since(start), len([]rune(content)), true, "")
+		return appendCustomerEvidencePage(path, question, maxChars, seenPaths, contentBlocks, sources, content)
 	}
 	if trace != nil {
 		trace.ReadPageMisses++
@@ -354,14 +366,14 @@ func (s *PublicQueryService) readPublicSpecialistEvidencePage(
 	if err != nil || !result.Success {
 		errorMessage := ""
 		if err != nil {
-			errorMessage = publicSafeErrorTextForLog(err)
+			errorMessage = customerSafeErrorTextForLog(err)
 		} else {
 			errorMessage = "wiki.read_page returned unsuccessful result"
 		}
 		if trace != nil {
 			trace.recordReadPageTiming(path, "miss", time.Since(start), 0, false, errorMessage)
 		}
-		logPublicSpecialistReadPageTiming(traceID, specialist, path, "miss", time.Since(start), 0, false, errorMessage)
+		logCustomerSpecialistReadPageTiming(traceID, specialist, path, "miss", time.Since(start), 0, false, errorMessage)
 		return "", false
 	}
 	content, _ := result.Data["content"].(string)
@@ -369,26 +381,26 @@ func (s *PublicQueryService) readPublicSpecialistEvidencePage(
 		if trace != nil {
 			trace.recordReadPageTiming(path, "miss", time.Since(start), 0, false, "empty content")
 		}
-		logPublicSpecialistReadPageTiming(traceID, specialist, path, "miss", time.Since(start), 0, false, "empty content")
+		logCustomerSpecialistReadPageTiming(traceID, specialist, path, "miss", time.Since(start), 0, false, "empty content")
 		return "", false
 	}
 	s.cache.setPage(key, content)
 	if trace != nil {
 		trace.recordReadPageTiming(path, "miss", time.Since(start), len([]rune(content)), true, "")
 	}
-	logPublicSpecialistReadPageTiming(traceID, specialist, path, "miss", time.Since(start), len([]rune(content)), true, "")
-	return appendPublicEvidencePage(path, question, maxChars, seenPaths, contentBlocks, sources, content)
+	logCustomerSpecialistReadPageTiming(traceID, specialist, path, "miss", time.Since(start), len([]rune(content)), true, "")
+	return appendCustomerEvidencePage(path, question, maxChars, seenPaths, contentBlocks, sources, content)
 }
 
-func resolvePublicEvidenceWikilinks(env *runtime.ExecEnv, profile PublicSpecialistProfile, content string) []string {
-	links := extractPublicWikilinkTargets(content)
+func resolveCustomerEvidenceWikilinks(env *runtime.ExecEnv, profile CustomerSpecialistProfile, content string) []string {
+	links := extractCustomerWikilinkTargets(content)
 	if len(links) == 0 {
 		return nil
 	}
 	out := make([]string, 0, len(links))
 	seen := map[string]bool{}
 	for _, link := range links {
-		path := resolvePublicWikilinkPath(env, profile, link)
+		path := resolveCustomerWikilinkPath(env, profile, link)
 		if path == "" || seen[path] {
 			continue
 		}
@@ -398,7 +410,7 @@ func resolvePublicEvidenceWikilinks(env *runtime.ExecEnv, profile PublicSpeciali
 	return out
 }
 
-func extractPublicWikilinkTargets(content string) []string {
+func extractCustomerWikilinkTargets(content string) []string {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return nil
@@ -433,7 +445,7 @@ func extractPublicWikilinkTargets(content string) []string {
 	return out
 }
 
-func resolvePublicWikilinkPath(env *runtime.ExecEnv, profile PublicSpecialistProfile, target string) string {
+func resolveCustomerWikilinkPath(env *runtime.ExecEnv, profile CustomerSpecialistProfile, target string) string {
 	target = filepath.ToSlash(strings.TrimSpace(target))
 	if target == "" {
 		return ""
@@ -442,7 +454,7 @@ func resolvePublicWikilinkPath(env *runtime.ExecEnv, profile PublicSpecialistPro
 		if !strings.HasSuffix(target, ".md") {
 			target += ".md"
 		}
-		if profile.AllowsPath(target) && publicEvidencePathExists(env, target) {
+		if profile.AllowsPath(target) && customerEvidencePathExists(env, target) {
 			return target
 		}
 		return ""
@@ -453,19 +465,19 @@ func resolvePublicWikilinkPath(env *runtime.ExecEnv, profile PublicSpecialistPro
 	}
 	for _, prefix := range profile.AllowedPrefixes {
 		candidate := filepath.ToSlash(filepath.Join(filepath.FromSlash(strings.TrimSpace(prefix)), slug+".md"))
-		if profile.AllowsPath(candidate) && publicEvidencePathExists(env, candidate) {
+		if profile.AllowsPath(candidate) && customerEvidencePathExists(env, candidate) {
 			return candidate
 		}
 	}
 	return ""
 }
 
-func publicEvidencePathExists(env *runtime.ExecEnv, path string) bool {
+func customerEvidencePathExists(env *runtime.ExecEnv, path string) bool {
 	if env == nil || strings.TrimSpace(env.WikiRoot) == "" {
 		return false
 	}
 	path = filepath.ToSlash(strings.TrimSpace(path))
-	if !isPublicReadableEvidence(path) {
+	if !isCustomerReadableEvidence(path) {
 		return false
 	}
 	abs := filepath.Join(strings.TrimSpace(env.WikiRoot), filepath.FromSlash(path))
@@ -473,7 +485,7 @@ func publicEvidencePathExists(env *runtime.ExecEnv, path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-func (trace *publicSpecialistCacheTrace) recordRetrievalTiming(queryIndex int, query string, cache string, duration time.Duration, resultCount int, errorMessage string) {
+func (trace *customerSpecialistCacheTrace) recordRetrievalTiming(queryIndex int, query string, cache string, duration time.Duration, resultCount int, errorMessage string) {
 	if trace == nil {
 		return
 	}
@@ -490,7 +502,49 @@ func (trace *publicSpecialistCacheTrace) recordRetrievalTiming(queryIndex int, q
 	trace.RetrievalTimings = append(trace.RetrievalTimings, item)
 }
 
-func (trace *publicSpecialistCacheTrace) recordReadPageTiming(path string, cache string, duration time.Duration, bodyChars int, success bool, errorMessage string) {
+func (trace *customerSpecialistCacheTrace) recordRetrievalResults(queryIndex int, query string, pages []retrieval.RetrievedPage) {
+	if trace == nil {
+		return
+	}
+	trace.RetrievalResults = append(trace.RetrievalResults, map[string]any{
+		"query_index": queryIndex,
+		"query":       truncateForPrompt(query, 160),
+		"candidates":  customerRetrievedPageSummaries(pages, 12),
+	})
+}
+
+func (trace *customerSpecialistCacheTrace) recordScopeFilteredPage(query string, path string, specialist string) {
+	if trace == nil {
+		return
+	}
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if path == "" {
+		return
+	}
+	trace.ScopeFilteredPages = append(trace.ScopeFilteredPages, map[string]any{
+		"query":      truncateForPrompt(query, 160),
+		"path":       path,
+		"specialist": strings.TrimSpace(specialist),
+		"reason":     "outside_specialist_scope_or_customer_evidence",
+	})
+}
+
+func (trace *customerSpecialistCacheTrace) recordWikilinkExpandedPage(query string, sourcePath string, linkedPath string) {
+	if trace == nil {
+		return
+	}
+	linkedPath = filepath.ToSlash(strings.TrimSpace(linkedPath))
+	if linkedPath == "" {
+		return
+	}
+	trace.WikilinkExpandedPages = append(trace.WikilinkExpandedPages, map[string]any{
+		"query":       truncateForPrompt(query, 160),
+		"source_path": filepath.ToSlash(strings.TrimSpace(sourcePath)),
+		"linked_path": linkedPath,
+	})
+}
+
+func (trace *customerSpecialistCacheTrace) recordReadPageTiming(path string, cache string, duration time.Duration, bodyChars int, success bool, errorMessage string) {
 	if trace == nil {
 		return
 	}
@@ -507,10 +561,10 @@ func (trace *publicSpecialistCacheTrace) recordReadPageTiming(path string, cache
 	trace.ReadPageTimings = append(trace.ReadPageTimings, item)
 }
 
-func logPublicSpecialistRetrievalTiming(traceID string, specialist string, queryIndex int, query string, cache string, duration time.Duration, resultCount int, errorMessage string) {
+func logCustomerSpecialistRetrievalTiming(traceID string, specialist string, queryIndex int, query string, cache string, duration time.Duration, resultCount int, errorMessage string) {
 	if errorMessage != "" {
 		log.Printf(
-			"public routed qmd retrieval trace=%s specialist=%s query_index=%d cache=%s duration_ms=%d results=%d query=%q error=%s",
+			"customer routed qmd retrieval trace=%s specialist=%s query_index=%d cache=%s duration_ms=%d results=%d query=%q error=%s",
 			traceID,
 			specialist,
 			queryIndex,
@@ -523,7 +577,7 @@ func logPublicSpecialistRetrievalTiming(traceID string, specialist string, query
 		return
 	}
 	log.Printf(
-		"public routed qmd retrieval trace=%s specialist=%s query_index=%d cache=%s duration_ms=%d results=%d query=%q",
+		"customer routed qmd retrieval trace=%s specialist=%s query_index=%d cache=%s duration_ms=%d results=%d query=%q",
 		traceID,
 		specialist,
 		queryIndex,
@@ -534,10 +588,10 @@ func logPublicSpecialistRetrievalTiming(traceID string, specialist string, query
 	)
 }
 
-func logPublicSpecialistReadPageTiming(traceID string, specialist string, path string, cache string, duration time.Duration, bodyChars int, success bool, errorMessage string) {
+func logCustomerSpecialistReadPageTiming(traceID string, specialist string, path string, cache string, duration time.Duration, bodyChars int, success bool, errorMessage string) {
 	if errorMessage != "" {
 		log.Printf(
-			"public routed read page trace=%s specialist=%s path=%s cache=%s duration_ms=%d body_chars=%d success=%t error=%s",
+			"customer routed read page trace=%s specialist=%s path=%s cache=%s duration_ms=%d body_chars=%d success=%t error=%s",
 			traceID,
 			specialist,
 			filepath.ToSlash(strings.TrimSpace(path)),
@@ -550,7 +604,7 @@ func logPublicSpecialistReadPageTiming(traceID string, specialist string, path s
 		return
 	}
 	log.Printf(
-		"public routed read page trace=%s specialist=%s path=%s cache=%s duration_ms=%d body_chars=%d success=%t",
+		"customer routed read page trace=%s specialist=%s path=%s cache=%s duration_ms=%d body_chars=%d success=%t",
 		traceID,
 		specialist,
 		filepath.ToSlash(strings.TrimSpace(path)),
@@ -561,16 +615,16 @@ func logPublicSpecialistReadPageTiming(traceID string, specialist string, path s
 	)
 }
 
-func publicSafeErrorTextForLog(value any) string {
-	safe := publicSafeErrorForLog(value)
+func customerSafeErrorTextForLog(value any) string {
+	safe := customerSafeErrorForLog(value)
 	code, _ := safe["code"].(string)
 	if code == "" {
-		code = "public_answer_generation_failed"
+		code = "customer_chat_generation_failed"
 	}
 	return fmt.Sprintf("code=%s chars=%v", code, safe["chars"])
 }
 
-func publicSpecialistRetrievalCacheKey(env *runtime.ExecEnv, query string, topK int) string {
+func customerSpecialistRetrievalCacheKey(env *runtime.ExecEnv, query string, topK int) string {
 	if env == nil {
 		return strings.Join([]string{"", "", strings.TrimSpace(query), strconv.Itoa(topK)}, "\x00")
 	}
@@ -582,7 +636,7 @@ func publicSpecialistRetrievalCacheKey(env *runtime.ExecEnv, query string, topK 
 	}, "\x00")
 }
 
-func publicSpecialistPageCacheKey(env *runtime.ExecEnv, path string) string {
+func customerSpecialistPageCacheKey(env *runtime.ExecEnv, path string) string {
 	wikiRoot := ""
 	if env != nil {
 		wikiRoot = strings.TrimSpace(env.WikiRoot)
@@ -590,27 +644,27 @@ func publicSpecialistPageCacheKey(env *runtime.ExecEnv, path string) string {
 	return strings.Join([]string{wikiRoot, filepath.ToSlash(strings.TrimSpace(path))}, "\x00")
 }
 
-func publicSpecialistTopK(profile PublicSpecialistProfile, settings RuntimeSettings) int {
+func customerSpecialistTopK(profile CustomerSpecialistProfile, settings RuntimeSettings) int {
 	if profile.CandidateTopK > 0 {
 		return profile.CandidateTopK
 	}
-	if settings.PublicQuery.CandidateTopK > 0 {
-		return settings.PublicQuery.CandidateTopK
+	if settings.CustomerChat.CandidateTopK > 0 {
+		return settings.CustomerChat.CandidateTopK
 	}
 	return 4
 }
 
-func publicSpecialistMaxEvidenceChars(profile PublicSpecialistProfile, settings RuntimeSettings) int {
+func customerSpecialistMaxEvidenceChars(profile CustomerSpecialistProfile, settings RuntimeSettings) int {
 	if profile.MaxEvidenceChars > 0 {
 		return profile.MaxEvidenceChars
 	}
-	if settings.PublicQuery.MaxEvidenceChars > 0 {
-		return settings.PublicQuery.MaxEvidenceChars
+	if settings.CustomerChat.MaxEvidenceChars > 0 {
+		return settings.CustomerChat.MaxEvidenceChars
 	}
 	return 1800
 }
 
-func filterSpecialistCandidates(candidates []retrieval.RetrievedPage, profile PublicSpecialistProfile) []retrieval.RetrievedPage {
+func filterSpecialistCandidates(candidates []retrieval.RetrievedPage, profile CustomerSpecialistProfile) []retrieval.RetrievedPage {
 	out := make([]retrieval.RetrievedPage, 0, len(candidates))
 	seen := map[string]bool{}
 	for _, candidate := range candidates {

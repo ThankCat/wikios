@@ -17,7 +17,7 @@ import (
 
 const noActiveLLMModelMessage = "当前未启用 LLM 模型，请先在管理员端模型模块配置并启用模型"
 const unavailableLLMModelMessage = "当前启用模型服务不可用，请在管理员端模型模块检查账号余额、API Key 或服务状态"
-const publicLLMUnavailableMessage = "当前在线回复暂时不可用，请稍后再试。"
+const customerLLMUnavailableMessage = "当前在线回复暂时不可用，请稍后再试。"
 const llmModelIDPrefix = "model-id:"
 
 type DynamicLLMClient struct {
@@ -363,7 +363,7 @@ func isLLMModelConfigurationError(err error) bool {
 		errors.Is(err, sql.ErrNoRows)
 }
 
-func isPublicHiddenLLMError(err error) bool {
+func isCustomerHiddenLLMError(err error) bool {
 	return isLLMModelConfigurationError(err) || isLLMProviderUnavailableError(err)
 }
 

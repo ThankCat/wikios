@@ -17,14 +17,14 @@ import (
 )
 
 type Deps struct {
-	Config        *config.Config
-	Runtime       *runtime.Runtime
-	LLM           llm.Client
-	Retriever     *retrieval.QMDRetriever
-	Store         *store.Store
-	PublicIntents *PublicIntentManager
-	PromptDir     string
-	WorkspaceDir  string
+	Config          *config.Config
+	Runtime         *runtime.Runtime
+	LLM             llm.Client
+	Retriever       *retrieval.QMDRetriever
+	Store           *store.Store
+	CustomerIntents *CustomerIntentManager
+	PromptDir       string
+	WorkspaceDir    string
 }
 
 const currentLLMModel = "database-active-model"
@@ -205,7 +205,7 @@ func (s *baseService) executeLLMTraceWithOptionsAndResponseFormat(ctx context.Co
 				"prompt_estimated_tokens": promptTokens,
 				"timeout_sec":             timeoutSec,
 				"enable_thinking":         enableThinking,
-				"response_format":         publicLLMResponseFormatForTrace(responseFormat),
+				"response_format":         customerLLMResponseFormatForTrace(responseFormat),
 				"system_preview":          summarizeMessage(messages, "system"),
 				"user_preview":            summarizeMessage(messages, "user"),
 			},
@@ -244,7 +244,7 @@ func (s *baseService) executeLLMTraceWithOptionsAndResponseFormat(ctx context.Co
 	return text, trace, nil
 }
 
-func publicLLMResponseFormatForTrace(format *llm.ResponseFormat) any {
+func customerLLMResponseFormatForTrace(format *llm.ResponseFormat) any {
 	if format == nil {
 		return nil
 	}
@@ -279,12 +279,12 @@ func (s *baseService) llmRequestTimeout(execution *Execution) time.Duration {
 }
 
 func (s *baseService) adjustLLMRequestTimeout(timeout time.Duration, admin bool) time.Duration {
-	if admin || s == nil || s.deps.Config == nil || s.deps.Config.PublicQuery.ResponseTimeoutSec <= 0 {
+	if admin || s == nil || s.deps.Config == nil || s.deps.Config.CustomerChat.ResponseTimeoutSec <= 0 {
 		return timeout
 	}
-	publicTimeout := time.Duration(s.deps.Config.PublicQuery.ResponseTimeoutSec) * time.Second
-	if publicTimeout > timeout {
-		return publicTimeout
+	customerTimeout := time.Duration(s.deps.Config.CustomerChat.ResponseTimeoutSec) * time.Second
+	if customerTimeout > timeout {
+		return customerTimeout
 	}
 	return timeout
 }
@@ -294,7 +294,7 @@ func isAdminLLMExecution(execution *Execution) bool {
 		return false
 	}
 	kind := strings.ToLower(strings.TrimSpace(execution.Kind))
-	return !strings.HasPrefix(kind, "public-")
+	return !strings.HasPrefix(kind, "customer-")
 }
 
 func (s *baseService) loadPrompt(name string) (string, error) {

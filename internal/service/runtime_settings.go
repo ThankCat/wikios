@@ -15,14 +15,14 @@ const RuntimeSettingsKey = "runtime_settings"
 const timeRFC3339Nano = "2006-01-02T15:04:05.999999999Z07:00"
 
 type RuntimeSettings struct {
-	PublicQuery RuntimePublicQuerySettings `json:"public_query"`
-	Support     RuntimeSupportSettings     `json:"support"`
-	AnswerLog   RuntimeAnswerLogSettings   `json:"answer_log"`
-	Knowledge   RuntimeKnowledgeSettings   `json:"knowledge"`
-	Sync        RuntimeSyncSettings        `json:"sync"`
+	CustomerChat RuntimeCustomerQuerySettings `json:"customer_query"`
+	Support      RuntimeSupportSettings       `json:"support"`
+	AnswerLog    RuntimeAnswerLogSettings     `json:"answer_log"`
+	Knowledge    RuntimeKnowledgeSettings     `json:"knowledge"`
+	Sync         RuntimeSyncSettings          `json:"sync"`
 }
 
-type RuntimePublicQuerySettings struct {
+type RuntimeCustomerQuerySettings struct {
 	DirectMin                float64 `json:"direct_min"`
 	ReviewMin                float64 `json:"review_min"`
 	CandidateTopK            int     `json:"candidate_top_k"`
@@ -54,16 +54,16 @@ type RuntimeSyncSettings struct {
 }
 
 type RuntimeEnvironmentSettings struct {
-	ServerPort        int    `json:"server_port"`
-	ServerMode        string `json:"server_mode"`
-	WikiRoot          string `json:"wiki_root"`
-	WikiName          string `json:"wiki_name"`
-	QMDIndex          string `json:"qmd_index"`
-	WorkspaceDir      string `json:"workspace_dir"`
-	SQLitePath        string `json:"sqlite_path"`
-	WebDistDir        string `json:"web_dist_dir"`
-	WebEnabled        bool   `json:"web_enabled"`
-	PublicIntentsPath string `json:"public_intents_path"`
+	ServerPort          int    `json:"server_port"`
+	ServerMode          string `json:"server_mode"`
+	WikiRoot            string `json:"wiki_root"`
+	WikiName            string `json:"wiki_name"`
+	QMDIndex            string `json:"qmd_index"`
+	WorkspaceDir        string `json:"workspace_dir"`
+	SQLitePath          string `json:"sqlite_path"`
+	WebDistDir          string `json:"web_dist_dir"`
+	WebEnabled          bool   `json:"web_enabled"`
+	CustomerIntentsPath string `json:"customer_intents_path"`
 }
 
 type RuntimeSettingsSnapshot struct {
@@ -77,7 +77,7 @@ func DefaultRuntimeSettings(cfg *config.Config) RuntimeSettings {
 	routerThinking := false
 	specialistThinking := true
 	settings := RuntimeSettings{
-		PublicQuery: RuntimePublicQuerySettings{
+		CustomerChat: RuntimeCustomerQuerySettings{
 			DirectMin:                0.70,
 			ReviewMin:                0.25,
 			CandidateTopK:            6,
@@ -105,17 +105,17 @@ func DefaultRuntimeSettings(cfg *config.Config) RuntimeSettings {
 	if cfg == nil {
 		return settings
 	}
-	if cfg.PublicQuery.Confidence.DirectMin > 0 {
-		settings.PublicQuery.DirectMin = cfg.PublicQuery.Confidence.DirectMin
+	if cfg.CustomerChat.Confidence.DirectMin > 0 {
+		settings.CustomerChat.DirectMin = cfg.CustomerChat.Confidence.DirectMin
 	}
-	if cfg.PublicQuery.Confidence.ReviewMin > 0 {
-		settings.PublicQuery.ReviewMin = cfg.PublicQuery.Confidence.ReviewMin
+	if cfg.CustomerChat.Confidence.ReviewMin > 0 {
+		settings.CustomerChat.ReviewMin = cfg.CustomerChat.Confidence.ReviewMin
 	}
-	if cfg.PublicQuery.CandidateTopK > 0 {
-		settings.PublicQuery.CandidateTopK = cfg.PublicQuery.CandidateTopK
+	if cfg.CustomerChat.CandidateTopK > 0 {
+		settings.CustomerChat.CandidateTopK = cfg.CustomerChat.CandidateTopK
 	}
-	if cfg.PublicQuery.MaxEvidenceChars > 0 {
-		settings.PublicQuery.MaxEvidenceChars = cfg.PublicQuery.MaxEvidenceChars
+	if cfg.CustomerChat.MaxEvidenceChars > 0 {
+		settings.CustomerChat.MaxEvidenceChars = cfg.CustomerChat.MaxEvidenceChars
 	}
 	if strings.TrimSpace(cfg.Support.Phone) != "" {
 		settings.Support.Phone = strings.TrimSpace(cfg.Support.Phone)
@@ -123,14 +123,14 @@ func DefaultRuntimeSettings(cfg *config.Config) RuntimeSettings {
 	if strings.TrimSpace(cfg.Support.WeCom) != "" {
 		settings.Support.WeCom = strings.TrimSpace(cfg.Support.WeCom)
 	}
-	if cfg.PublicQuery.AnswerLog.Enabled != nil {
-		settings.AnswerLog.Enabled = *cfg.PublicQuery.AnswerLog.Enabled
+	if cfg.CustomerChat.AnswerLog.Enabled != nil {
+		settings.AnswerLog.Enabled = *cfg.CustomerChat.AnswerLog.Enabled
 	}
-	if cfg.PublicQuery.AnswerLog.Redact != nil {
-		settings.AnswerLog.Redact = *cfg.PublicQuery.AnswerLog.Redact
+	if cfg.CustomerChat.AnswerLog.Redact != nil {
+		settings.AnswerLog.Redact = *cfg.CustomerChat.AnswerLog.Redact
 	}
-	if cfg.PublicQuery.AnswerLog.RetentionDays > 0 {
-		settings.AnswerLog.RetentionDays = cfg.PublicQuery.AnswerLog.RetentionDays
+	if cfg.CustomerChat.AnswerLog.RetentionDays > 0 {
+		settings.AnswerLog.RetentionDays = cfg.CustomerChat.AnswerLog.RetentionDays
 	}
 	if cfg.Upload.MaxTextFileKB > 0 {
 		settings.Knowledge.MaxTextFileKB = cfg.Upload.MaxTextFileKB
@@ -153,16 +153,16 @@ func RuntimeEnvironmentFromConfig(cfg *config.Config) RuntimeEnvironmentSettings
 		webEnabled = *cfg.Web.Enabled
 	}
 	return RuntimeEnvironmentSettings{
-		ServerPort:        cfg.Server.Port,
-		ServerMode:        cfg.Server.Mode,
-		WikiRoot:          cfg.MountedWiki.Root,
-		WikiName:          cfg.MountedWiki.Name,
-		QMDIndex:          cfg.MountedWiki.QMDIndex,
-		WorkspaceDir:      cfg.Workspace.BaseDir,
-		SQLitePath:        cfg.Storage.SQLitePath,
-		WebDistDir:        cfg.Web.DistDir,
-		WebEnabled:        webEnabled,
-		PublicIntentsPath: cfg.PublicIntents.Path,
+		ServerPort:          cfg.Server.Port,
+		ServerMode:          cfg.Server.Mode,
+		WikiRoot:            cfg.MountedWiki.Root,
+		WikiName:            cfg.MountedWiki.Name,
+		QMDIndex:            cfg.MountedWiki.QMDIndex,
+		WorkspaceDir:        cfg.Workspace.BaseDir,
+		SQLitePath:          cfg.Storage.SQLitePath,
+		WebDistDir:          cfg.Web.DistDir,
+		WebEnabled:          webEnabled,
+		CustomerIntentsPath: cfg.CustomerIntents.Path,
 	}
 }
 
@@ -186,6 +186,18 @@ func LoadRuntimeSettings(ctx context.Context, dataStore *store.Store, cfg *confi
 	var parsed RuntimeSettings
 	if err := json.Unmarshal([]byte(setting.ValueJSON), &parsed); err != nil {
 		return snapshot, fmt.Errorf("decode runtime settings: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(setting.ValueJSON), &raw); err == nil {
+		legacyCustomerQueryKey := "publ" + "ic_query"
+		if _, hasCurrentKey := raw["customer_query"]; !hasCurrentKey {
+			if legacyRaw := raw[legacyCustomerQueryKey]; len(legacyRaw) > 0 {
+				var legacySettings RuntimeCustomerQuerySettings
+				if err := json.Unmarshal(legacyRaw, &legacySettings); err == nil {
+					parsed.CustomerChat = legacySettings
+				}
+			}
+		}
 	}
 	merged := MergeRuntimeSettings(defaults, parsed)
 	if fields := ValidateRuntimeSettings(merged); len(fields) > 0 {
@@ -233,31 +245,31 @@ func SaveRuntimeSettings(ctx context.Context, dataStore *store.Store, cfg *confi
 
 func MergeRuntimeSettings(defaults RuntimeSettings, override RuntimeSettings) RuntimeSettings {
 	settings := defaults
-	if override.PublicQuery.DirectMin != 0 {
-		settings.PublicQuery.DirectMin = override.PublicQuery.DirectMin
+	if override.CustomerChat.DirectMin != 0 {
+		settings.CustomerChat.DirectMin = override.CustomerChat.DirectMin
 	}
-	if override.PublicQuery.ReviewMin != 0 {
-		settings.PublicQuery.ReviewMin = override.PublicQuery.ReviewMin
+	if override.CustomerChat.ReviewMin != 0 {
+		settings.CustomerChat.ReviewMin = override.CustomerChat.ReviewMin
 	}
-	if override.PublicQuery.CandidateTopK != 0 {
-		settings.PublicQuery.CandidateTopK = override.PublicQuery.CandidateTopK
+	if override.CustomerChat.CandidateTopK != 0 {
+		settings.CustomerChat.CandidateTopK = override.CustomerChat.CandidateTopK
 	}
-	if override.PublicQuery.MaxEvidenceChars != 0 {
-		settings.PublicQuery.MaxEvidenceChars = override.PublicQuery.MaxEvidenceChars
+	if override.CustomerChat.MaxEvidenceChars != 0 {
+		settings.CustomerChat.MaxEvidenceChars = override.CustomerChat.MaxEvidenceChars
 	}
-	if strings.TrimSpace(override.PublicQuery.RouterModelID) != "" {
-		settings.PublicQuery.RouterModelID = override.PublicQuery.RouterModelID
+	if strings.TrimSpace(override.CustomerChat.RouterModelID) != "" {
+		settings.CustomerChat.RouterModelID = override.CustomerChat.RouterModelID
 	}
-	if strings.TrimSpace(override.PublicQuery.SpecialistModelID) != "" {
-		settings.PublicQuery.SpecialistModelID = override.PublicQuery.SpecialistModelID
+	if strings.TrimSpace(override.CustomerChat.SpecialistModelID) != "" {
+		settings.CustomerChat.SpecialistModelID = override.CustomerChat.SpecialistModelID
 	}
-	if override.PublicQuery.RouterEnableThinking != nil {
-		value := *override.PublicQuery.RouterEnableThinking
-		settings.PublicQuery.RouterEnableThinking = &value
+	if override.CustomerChat.RouterEnableThinking != nil {
+		value := *override.CustomerChat.RouterEnableThinking
+		settings.CustomerChat.RouterEnableThinking = &value
 	}
-	if override.PublicQuery.SpecialistEnableThinking != nil {
-		value := *override.PublicQuery.SpecialistEnableThinking
-		settings.PublicQuery.SpecialistEnableThinking = &value
+	if override.CustomerChat.SpecialistEnableThinking != nil {
+		value := *override.CustomerChat.SpecialistEnableThinking
+		settings.CustomerChat.SpecialistEnableThinking = &value
 	}
 	if strings.TrimSpace(override.Support.Phone) != "" {
 		settings.Support.Phone = override.Support.Phone
@@ -282,22 +294,22 @@ func MergeRuntimeSettings(defaults RuntimeSettings, override RuntimeSettings) Ru
 }
 
 func NormalizeRuntimeSettings(settings RuntimeSettings, defaults RuntimeSettings) RuntimeSettings {
-	if settings.PublicQuery.DirectMin == 0 {
-		settings.PublicQuery.DirectMin = defaults.PublicQuery.DirectMin
+	if settings.CustomerChat.DirectMin == 0 {
+		settings.CustomerChat.DirectMin = defaults.CustomerChat.DirectMin
 	}
-	if settings.PublicQuery.ReviewMin == 0 {
-		settings.PublicQuery.ReviewMin = defaults.PublicQuery.ReviewMin
+	if settings.CustomerChat.ReviewMin == 0 {
+		settings.CustomerChat.ReviewMin = defaults.CustomerChat.ReviewMin
 	}
-	if settings.PublicQuery.CandidateTopK == 0 {
-		settings.PublicQuery.CandidateTopK = defaults.PublicQuery.CandidateTopK
+	if settings.CustomerChat.CandidateTopK == 0 {
+		settings.CustomerChat.CandidateTopK = defaults.CustomerChat.CandidateTopK
 	}
-	if settings.PublicQuery.MaxEvidenceChars == 0 {
-		settings.PublicQuery.MaxEvidenceChars = defaults.PublicQuery.MaxEvidenceChars
+	if settings.CustomerChat.MaxEvidenceChars == 0 {
+		settings.CustomerChat.MaxEvidenceChars = defaults.CustomerChat.MaxEvidenceChars
 	}
-	settings.PublicQuery.RouterModelID = strings.TrimSpace(settings.PublicQuery.RouterModelID)
-	settings.PublicQuery.SpecialistModelID = strings.TrimSpace(settings.PublicQuery.SpecialistModelID)
-	settings.PublicQuery.RouterEnableThinking = cloneBoolPtr(settings.PublicQuery.RouterEnableThinking)
-	settings.PublicQuery.SpecialistEnableThinking = cloneBoolPtr(settings.PublicQuery.SpecialistEnableThinking)
+	settings.CustomerChat.RouterModelID = strings.TrimSpace(settings.CustomerChat.RouterModelID)
+	settings.CustomerChat.SpecialistModelID = strings.TrimSpace(settings.CustomerChat.SpecialistModelID)
+	settings.CustomerChat.RouterEnableThinking = cloneBoolPtr(settings.CustomerChat.RouterEnableThinking)
+	settings.CustomerChat.SpecialistEnableThinking = cloneBoolPtr(settings.CustomerChat.SpecialistEnableThinking)
 	if strings.TrimSpace(settings.Support.Phone) == "" {
 		settings.Support.Phone = defaults.Support.Phone
 	} else {
@@ -328,10 +340,10 @@ func NormalizeRuntimeSettings(settings RuntimeSettings, defaults RuntimeSettings
 }
 
 func TrimRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
-	settings.PublicQuery.RouterModelID = strings.TrimSpace(settings.PublicQuery.RouterModelID)
-	settings.PublicQuery.SpecialistModelID = strings.TrimSpace(settings.PublicQuery.SpecialistModelID)
-	settings.PublicQuery.RouterEnableThinking = cloneBoolPtr(settings.PublicQuery.RouterEnableThinking)
-	settings.PublicQuery.SpecialistEnableThinking = cloneBoolPtr(settings.PublicQuery.SpecialistEnableThinking)
+	settings.CustomerChat.RouterModelID = strings.TrimSpace(settings.CustomerChat.RouterModelID)
+	settings.CustomerChat.SpecialistModelID = strings.TrimSpace(settings.CustomerChat.SpecialistModelID)
+	settings.CustomerChat.RouterEnableThinking = cloneBoolPtr(settings.CustomerChat.RouterEnableThinking)
+	settings.CustomerChat.SpecialistEnableThinking = cloneBoolPtr(settings.CustomerChat.SpecialistEnableThinking)
 	settings.Support.Phone = strings.TrimSpace(settings.Support.Phone)
 	settings.Support.WeCom = strings.TrimSpace(settings.Support.WeCom)
 	settings.Sync.Remote = strings.TrimSpace(settings.Sync.Remote)
@@ -349,20 +361,20 @@ func cloneBoolPtr(value *bool) *bool {
 
 func ValidateRuntimeSettings(settings RuntimeSettings) map[string]string {
 	fields := map[string]string{}
-	if settings.PublicQuery.DirectMin < 0 || settings.PublicQuery.DirectMin > 1 {
-		fields["public_query.direct_min"] = "must be between 0 and 1"
+	if settings.CustomerChat.DirectMin < 0 || settings.CustomerChat.DirectMin > 1 {
+		fields["customer_query.direct_min"] = "must be between 0 and 1"
 	}
-	if settings.PublicQuery.ReviewMin < 0 || settings.PublicQuery.ReviewMin > 1 {
-		fields["public_query.review_min"] = "must be between 0 and 1"
+	if settings.CustomerChat.ReviewMin < 0 || settings.CustomerChat.ReviewMin > 1 {
+		fields["customer_query.review_min"] = "must be between 0 and 1"
 	}
-	if settings.PublicQuery.ReviewMin > settings.PublicQuery.DirectMin {
-		fields["public_query.review_min"] = "must be less than or equal to public_query.direct_min"
+	if settings.CustomerChat.ReviewMin > settings.CustomerChat.DirectMin {
+		fields["customer_query.review_min"] = "must be less than or equal to customer_query.direct_min"
 	}
-	if settings.PublicQuery.CandidateTopK < 1 || settings.PublicQuery.CandidateTopK > 20 {
-		fields["public_query.candidate_top_k"] = "must be between 1 and 20"
+	if settings.CustomerChat.CandidateTopK < 1 || settings.CustomerChat.CandidateTopK > 20 {
+		fields["customer_query.candidate_top_k"] = "must be between 1 and 20"
 	}
-	if settings.PublicQuery.MaxEvidenceChars < 200 || settings.PublicQuery.MaxEvidenceChars > 20000 {
-		fields["public_query.max_evidence_chars"] = "must be between 200 and 20000"
+	if settings.CustomerChat.MaxEvidenceChars < 200 || settings.CustomerChat.MaxEvidenceChars > 20000 {
+		fields["customer_query.max_evidence_chars"] = "must be between 200 and 20000"
 	}
 	if settings.AnswerLog.RetentionDays < 1 || settings.AnswerLog.RetentionDays > 365 {
 		fields["answer_log.retention_days"] = "must be between 1 and 365"

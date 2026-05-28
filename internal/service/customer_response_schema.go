@@ -2,55 +2,65 @@ package service
 
 import "wikios/internal/llm"
 
-func publicRouterResponseFormat() *llm.ResponseFormat {
+func customerRouterResponseFormat() *llm.ResponseFormat {
 	return &llm.ResponseFormat{
 		Type: "json_schema",
 		JSONSchema: &llm.ResponseFormatJSONSchema{
-			Name:   "public_router_output",
+			Name:   "customer_router_output",
 			Strict: true,
 			Schema: map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"required": []any{
+					"contract_version",
 					"specialist",
+					"routing_confidence",
+					"routing_reason",
 					"intent",
 					"rewritten_question",
 					"history_summary",
 					"slots",
+					"ambiguity",
 					"missing_info",
 					"risk_flags",
 					"needs_retrieval",
 					"retrieval_queries",
-					"answer_policy",
+					"handoff_notes",
 				},
 				"properties": map[string]any{
+					"contract_version": map[string]any{
+						"type": "string",
+						"enum": []any{customerRouterContractVersion},
+					},
 					"specialist": map[string]any{
 						"type": "string",
 						"enum": []any{"reception", "product", "pricing", "purchase", "technical", "troubleshooting", "billing_after_sales", "safety"},
 					},
+					"routing_confidence": map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+					"routing_reason":     map[string]any{"type": "string"},
 					"intent":             map[string]any{"type": "string"},
 					"rewritten_question": map[string]any{"type": "string"},
 					"history_summary":    map[string]any{"type": "string"},
-					"slots":              publicRouterSlotsSchema(),
-					"missing_info":       stringArraySchema(),
-					"risk_flags":         stringArraySchema(),
+					"slots":              customerRouterSlotsSchema(),
+					"ambiguity":          customerRouterAmbiguitySchema(),
+					"missing_info":       enumStringArraySchema([]any{"primary_product", "static_type", "ip_type", "bandwidth", "quantity", "scenario", "platform", "device", "error_code", "authentication_method", "account", "order_id"}, 12),
+					"risk_flags":         enumStringArraySchema([]any{"pricing", "discount", "refund", "billing", "platform_risk", "overseas_access", "compliance", "internal", "illegal", "technical", "troubleshooting", "after_sales", "low_confidence"}, 12),
 					"needs_retrieval":    map[string]any{"type": "boolean"},
-					"retrieval_queries":  stringArraySchema(),
-					"answer_policy":      map[string]any{"type": "string"},
+					"retrieval_queries":  stringArraySchemaWithMax(3),
+					"handoff_notes":      map[string]any{"type": "string"},
 				},
 			},
 		},
 	}
 }
 
-func publicRouterSlotsSchema() map[string]any {
+func customerRouterSlotsSchema() map[string]any {
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"required": []any{
-			"product",
+			"primary_product",
 			"products",
-			"product_resolution",
 			"static_type",
 			"ip_type",
 			"bandwidth",
@@ -61,49 +71,45 @@ func publicRouterSlotsSchema() map[string]any {
 			"error_code",
 		},
 		"properties": map[string]any{
-			"product":            map[string]any{"type": "string"},
-			"products":           stringArraySchema(),
-			"product_resolution": publicRouterProductResolutionSchema(),
-			"static_type":        map[string]any{"type": "string"},
-			"ip_type":            map[string]any{"type": "string"},
-			"bandwidth":          map[string]any{"type": "string"},
-			"quantity":           map[string]any{"type": "string"},
-			"scenario":           map[string]any{"type": "string"},
-			"platform":           map[string]any{"type": "string"},
-			"device":             map[string]any{"type": "string"},
-			"error_code":         map[string]any{"type": "string"},
+			"primary_product": map[string]any{
+				"type": "string",
+				"enum": []any{"static_ip", "dynamic_ip", "overseas_ip", "residential_ip", "datacenter_ip", "unlimited_ip", "mobile_proxy", "unknown"},
+			},
+			"products":    enumStringArraySchema([]any{"static_ip", "dynamic_ip", "overseas_ip", "residential_ip", "datacenter_ip", "unlimited_ip", "mobile_proxy", "unknown"}, 8),
+			"static_type": map[string]any{"type": "string", "enum": []any{"", "shared", "dedicated", "unknown"}},
+			"ip_type":     map[string]any{"type": "string", "enum": []any{"", "datacenter", "residential", "overseas", "mobile", "unknown"}},
+			"bandwidth":   map[string]any{"type": "string"},
+			"quantity":    map[string]any{"type": "string"},
+			"scenario":    map[string]any{"type": "string"},
+			"platform":    map[string]any{"type": "string"},
+			"device":      map[string]any{"type": "string"},
+			"error_code":  map[string]any{"type": "string"},
 		},
 	}
 }
 
-func publicRouterProductResolutionSchema() map[string]any {
+func customerRouterAmbiguitySchema() map[string]any {
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"required": []any{
-			"primary",
-			"all",
-			"from_history",
-			"confidence",
-			"ambiguous",
+			"is_ambiguous",
+			"ambiguous_fields",
 			"reason",
 		},
 		"properties": map[string]any{
-			"primary":      map[string]any{"type": "string"},
-			"all":          stringArraySchema(),
-			"from_history": map[string]any{"type": "boolean"},
-			"confidence":   map[string]any{"type": "number"},
-			"ambiguous":    map[string]any{"type": "boolean"},
-			"reason":       map[string]any{"type": "string"},
+			"is_ambiguous":     map[string]any{"type": "boolean"},
+			"ambiguous_fields": enumStringArraySchema([]any{"primary_product", "products", "scenario", "platform", "device", "intent", "target_object"}, 8),
+			"reason":           map[string]any{"type": "string"},
 		},
 	}
 }
 
-func publicSpecialistResponseFormat() *llm.ResponseFormat {
+func customerSpecialistResponseFormat() *llm.ResponseFormat {
 	return &llm.ResponseFormat{
 		Type: "json_schema",
 		JSONSchema: &llm.ResponseFormatJSONSchema{
-			Name:   "public_specialist_answer",
+			Name:   "customer_specialist_answer",
 			Strict: true,
 			Schema: map[string]any{
 				"type":                 "object",
@@ -159,4 +165,26 @@ func stringArraySchema() map[string]any {
 		"type":  "array",
 		"items": map[string]any{"type": "string"},
 	}
+}
+
+func stringArraySchemaWithMax(maxItems int) map[string]any {
+	schema := stringArraySchema()
+	if maxItems > 0 {
+		schema["maxItems"] = maxItems
+	}
+	return schema
+}
+
+func enumStringArraySchema(values []any, maxItems int) map[string]any {
+	schema := map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type": "string",
+			"enum": values,
+		},
+	}
+	if maxItems > 0 {
+		schema["maxItems"] = maxItems
+	}
+	return schema
 }

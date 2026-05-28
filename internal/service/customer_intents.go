@@ -17,15 +17,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type PublicIntentManager struct {
+type CustomerIntentManager struct {
 	path    string
 	enabled bool
 	mu      sync.RWMutex
-	status  PublicIntentStatus
+	status  CustomerIntentStatus
 	current atomic.Value
 }
 
-type PublicIntentStatus struct {
+type CustomerIntentStatus struct {
 	Path      string    `json:"path"`
 	LoadedAt  time.Time `json:"loaded_at"`
 	Error     string    `json:"error,omitempty"`
@@ -33,88 +33,88 @@ type PublicIntentStatus struct {
 	RuleCount int       `json:"rule_count"`
 }
 
-type PublicIntentConfig struct {
-	Version   int                   `yaml:"version" json:"version"`
-	Fallbacks PublicIntentFallbacks `yaml:"fallbacks" json:"fallbacks"`
-	Rules     []PublicIntentRule    `yaml:"rules" json:"rules"`
+type CustomerIntentConfig struct {
+	Version   int                     `yaml:"version" json:"version"`
+	Fallbacks CustomerIntentFallbacks `yaml:"fallbacks" json:"fallbacks"`
+	Rules     []CustomerIntentRule    `yaml:"rules" json:"rules"`
 }
 
-type PublicIntentFallbacks struct {
+type CustomerIntentFallbacks struct {
 	Generic          string   `yaml:"generic" json:"generic"`
 	Operation        string   `yaml:"operation" json:"operation"`
 	DeviceOperation  string   `yaml:"device_operation" json:"device_operation"`
 	ModelUnavailable []string `yaml:"model_unavailable" json:"model_unavailable"`
 }
 
-type PublicIntentRule struct {
-	Name     string            `yaml:"name" json:"name"`
-	Enabled  *bool             `yaml:"enabled" json:"enabled"`
-	Priority int               `yaml:"priority" json:"priority"`
-	Category string            `yaml:"category" json:"category"`
-	Match    PublicIntentMatch `yaml:"match" json:"match"`
-	Response string            `yaml:"response" json:"response"`
+type CustomerIntentRule struct {
+	Name     string              `yaml:"name" json:"name"`
+	Enabled  *bool               `yaml:"enabled" json:"enabled"`
+	Priority int                 `yaml:"priority" json:"priority"`
+	Category string              `yaml:"category" json:"category"`
+	Match    CustomerIntentMatch `yaml:"match" json:"match"`
+	Response string              `yaml:"response" json:"response"`
 }
 
-type PublicIntentMatch struct {
+type CustomerIntentMatch struct {
 	Exact    []string `yaml:"exact" json:"exact"`
 	Contains []string `yaml:"contains" json:"contains"`
 }
 
-type PublicIntentResult struct {
+type CustomerIntentResult struct {
 	Name     string `json:"name"`
 	Category string `json:"category"`
 	Response string `json:"response"`
 }
 
-type publicIntentSnapshot struct {
-	config PublicIntentConfig
-	rules  []PublicIntentRule
+type customerIntentSnapshot struct {
+	config CustomerIntentConfig
+	rules  []CustomerIntentRule
 }
 
-var publicIntentNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+var customerIntentNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
-func NewPublicIntentManager(cfg config.PublicIntentsConfig) *PublicIntentManager {
+func NewCustomerIntentManager(cfg config.CustomerIntentsConfig) *CustomerIntentManager {
 	enabled := cfg.Enabled == nil || *cfg.Enabled
 	path := strings.TrimSpace(cfg.Path)
 	if path == "" {
-		path = filepath.Join("configs", "public_intents.yaml")
+		path = filepath.Join("configs", "customer_intents.yaml")
 	}
-	m := &PublicIntentManager{path: filepath.Clean(path), enabled: enabled}
-	m.current.Store(&publicIntentSnapshot{config: defaultPublicIntentConfig()})
-	m.status = PublicIntentStatus{Path: m.path}
+	m := &CustomerIntentManager{path: filepath.Clean(path), enabled: enabled}
+	m.current.Store(&customerIntentSnapshot{config: defaultCustomerIntentConfig()})
+	m.status = CustomerIntentStatus{Path: m.path}
 	if enabled {
 		_ = m.Reload()
 	}
 	return m
 }
 
-func (m *PublicIntentManager) Match(question string) (PublicIntentResult, bool) {
+func (m *CustomerIntentManager) Match(question string) (CustomerIntentResult, bool) {
 	if m == nil || !m.enabled {
-		return PublicIntentResult{}, false
+		return CustomerIntentResult{}, false
 	}
 	snapshot := m.snapshot()
-	normalized := normalizePublicIntentText(question)
+	normalized := normalizeCustomerIntentText(question)
 	if normalized == "" {
-		return PublicIntentResult{}, false
+		return CustomerIntentResult{}, false
 	}
 	for _, rule := range snapshot.rules {
 		if !ruleEnabled(rule) {
 			continue
 		}
-		if publicIntentRuleMatches(rule, normalized) {
-			return PublicIntentResult{
+		if customerIntentRuleMatches(rule, normalized) {
+			return CustomerIntentResult{
 				Name:     strings.TrimSpace(rule.Name),
 				Category: strings.TrimSpace(rule.Category),
 				Response: strings.TrimSpace(rule.Response),
 			}, true
 		}
 	}
-	return PublicIntentResult{}, false
+	return CustomerIntentResult{}, false
 }
 
-func (m *PublicIntentManager) Fallback(question string) string {
+func (m *CustomerIntentManager) Fallback(question string) string {
 	if m == nil || !m.enabled {
-		return genericPublicFallback(question)
+		return genericCustomerFallback(question)
 	}
 	fallbacks := m.snapshot().config.Fallbacks
 	lower := strings.ToLower(strings.TrimSpace(question))
@@ -131,30 +131,30 @@ func (m *PublicIntentManager) Fallback(question string) string {
 	if strings.TrimSpace(fallbacks.Generic) != "" {
 		return strings.TrimSpace(fallbacks.Generic)
 	}
-	return genericPublicFallback(question)
+	return genericCustomerFallback(question)
 }
 
-func (m *PublicIntentManager) ModelUnavailableFallback(seed string) string {
-	fallbacks := defaultPublicIntentConfig().Fallbacks.ModelUnavailable
+func (m *CustomerIntentManager) ModelUnavailableFallback(seed string) string {
+	fallbacks := defaultCustomerIntentConfig().Fallbacks.ModelUnavailable
 	if m != nil && m.enabled {
 		if configured := m.snapshot().config.Fallbacks.ModelUnavailable; len(configured) > 0 {
 			fallbacks = configured
 		}
 	}
-	return pickPublicFallback(fallbacks, seed)
+	return pickCustomerFallback(fallbacks, seed)
 }
 
-func (m *PublicIntentManager) Reload() error {
+func (m *CustomerIntentManager) Reload() error {
 	source, err := m.Source()
 	if err != nil {
 		if os.IsNotExist(err) {
-			source = defaultPublicIntentSource()
+			source = defaultCustomerIntentSource()
 		} else {
 			m.setError(err)
 			return err
 		}
 	}
-	config, warnings, err := ParsePublicIntentConfig(source)
+	config, warnings, err := ParseCustomerIntentConfig(source)
 	if err != nil {
 		m.setError(err)
 		return err
@@ -163,9 +163,9 @@ func (m *PublicIntentManager) Reload() error {
 	return nil
 }
 
-func (m *PublicIntentManager) Source() (string, error) {
+func (m *CustomerIntentManager) Source() (string, error) {
 	if m == nil {
-		return "", fmt.Errorf("public intent manager is not configured")
+		return "", fmt.Errorf("customer intent manager is not configured")
 	}
 	raw, err := os.ReadFile(m.path)
 	if err != nil {
@@ -174,19 +174,19 @@ func (m *PublicIntentManager) Source() (string, error) {
 	return string(raw), nil
 }
 
-func (m *PublicIntentManager) SourceOrDefault() string {
+func (m *CustomerIntentManager) SourceOrDefault() string {
 	source, err := m.Source()
 	if err == nil {
 		return source
 	}
-	return defaultPublicIntentSource()
+	return defaultCustomerIntentSource()
 }
 
-func (m *PublicIntentManager) Save(source string) (PublicIntentStatus, error) {
+func (m *CustomerIntentManager) Save(source string) (CustomerIntentStatus, error) {
 	if m == nil || !m.enabled {
-		return PublicIntentStatus{}, fmt.Errorf("public intents are disabled")
+		return CustomerIntentStatus{}, fmt.Errorf("customer intents are disabled")
 	}
-	config, warnings, err := ParsePublicIntentConfig(source)
+	config, warnings, err := ParseCustomerIntentConfig(source)
 	if err != nil {
 		return m.Status(), err
 	}
@@ -205,31 +205,31 @@ func (m *PublicIntentManager) Save(source string) (PublicIntentStatus, error) {
 	return m.Status(), nil
 }
 
-func (m *PublicIntentManager) Status() PublicIntentStatus {
+func (m *CustomerIntentManager) Status() CustomerIntentStatus {
 	if m == nil {
-		return PublicIntentStatus{}
+		return CustomerIntentStatus{}
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.status
 }
 
-func (m *PublicIntentManager) snapshot() *publicIntentSnapshot {
+func (m *CustomerIntentManager) snapshot() *customerIntentSnapshot {
 	value := m.current.Load()
-	if snapshot, ok := value.(*publicIntentSnapshot); ok && snapshot != nil {
+	if snapshot, ok := value.(*customerIntentSnapshot); ok && snapshot != nil {
 		return snapshot
 	}
-	return &publicIntentSnapshot{config: defaultPublicIntentConfig()}
+	return &customerIntentSnapshot{config: defaultCustomerIntentConfig()}
 }
 
-func (m *PublicIntentManager) store(config PublicIntentConfig, warnings []string, errorText string) {
-	rules := append([]PublicIntentRule{}, config.Rules...)
+func (m *CustomerIntentManager) store(config CustomerIntentConfig, warnings []string, errorText string) {
+	rules := append([]CustomerIntentRule{}, config.Rules...)
 	sort.SliceStable(rules, func(i, j int) bool {
 		return rules[i].Priority > rules[j].Priority
 	})
-	m.current.Store(&publicIntentSnapshot{config: config, rules: rules})
+	m.current.Store(&customerIntentSnapshot{config: config, rules: rules})
 	m.mu.Lock()
-	m.status = PublicIntentStatus{
+	m.status = CustomerIntentStatus{
 		Path:      m.path,
 		LoadedAt:  time.Now(),
 		Error:     errorText,
@@ -239,44 +239,44 @@ func (m *PublicIntentManager) store(config PublicIntentConfig, warnings []string
 	m.mu.Unlock()
 }
 
-func (m *PublicIntentManager) setError(err error) {
+func (m *CustomerIntentManager) setError(err error) {
 	m.mu.Lock()
 	m.status.Path = m.path
 	m.status.Error = err.Error()
 	m.mu.Unlock()
 }
 
-func ParsePublicIntentConfig(source string) (PublicIntentConfig, []string, error) {
-	var parsed PublicIntentConfig
+func ParseCustomerIntentConfig(source string) (CustomerIntentConfig, []string, error) {
+	var parsed CustomerIntentConfig
 	if err := yaml.Unmarshal([]byte(source), &parsed); err != nil {
-		return PublicIntentConfig{}, nil, err
+		return CustomerIntentConfig{}, nil, err
 	}
-	return validatePublicIntentConfig(parsed)
+	return validateCustomerIntentConfig(parsed)
 }
 
-func validatePublicIntentConfig(parsed PublicIntentConfig) (PublicIntentConfig, []string, error) {
+func validateCustomerIntentConfig(parsed CustomerIntentConfig) (CustomerIntentConfig, []string, error) {
 	if parsed.Version != 1 {
-		return PublicIntentConfig{}, nil, fmt.Errorf("version must be 1")
+		return CustomerIntentConfig{}, nil, fmt.Errorf("version must be 1")
 	}
 	if strings.TrimSpace(parsed.Fallbacks.Generic) == "" {
-		parsed.Fallbacks.Generic = defaultPublicIntentConfig().Fallbacks.Generic
+		parsed.Fallbacks.Generic = defaultCustomerIntentConfig().Fallbacks.Generic
 	}
-	if banned := firstBannedPublicIntentResponseTerm(parsed.Fallbacks.Generic); banned != "" {
-		return PublicIntentConfig{}, nil, fmt.Errorf("fallbacks.generic contains internal wording %q", banned)
+	if banned := firstBannedCustomerIntentResponseTerm(parsed.Fallbacks.Generic); banned != "" {
+		return CustomerIntentConfig{}, nil, fmt.Errorf("fallbacks.generic contains internal wording %q", banned)
 	}
-	if banned := firstBannedPublicIntentResponseTerm(parsed.Fallbacks.Operation); banned != "" {
-		return PublicIntentConfig{}, nil, fmt.Errorf("fallbacks.operation contains internal wording %q", banned)
+	if banned := firstBannedCustomerIntentResponseTerm(parsed.Fallbacks.Operation); banned != "" {
+		return CustomerIntentConfig{}, nil, fmt.Errorf("fallbacks.operation contains internal wording %q", banned)
 	}
-	if banned := firstBannedPublicIntentResponseTerm(parsed.Fallbacks.DeviceOperation); banned != "" {
-		return PublicIntentConfig{}, nil, fmt.Errorf("fallbacks.device_operation contains internal wording %q", banned)
+	if banned := firstBannedCustomerIntentResponseTerm(parsed.Fallbacks.DeviceOperation); banned != "" {
+		return CustomerIntentConfig{}, nil, fmt.Errorf("fallbacks.device_operation contains internal wording %q", banned)
 	}
-	parsed.Fallbacks.ModelUnavailable = cleanPublicFallbackPool(parsed.Fallbacks.ModelUnavailable, defaultPublicIntentConfig().Fallbacks.ModelUnavailable)
+	parsed.Fallbacks.ModelUnavailable = cleanCustomerFallbackPool(parsed.Fallbacks.ModelUnavailable, defaultCustomerIntentConfig().Fallbacks.ModelUnavailable)
 	for i, response := range parsed.Fallbacks.ModelUnavailable {
-		if banned := firstBannedPublicIntentResponseTerm(response); banned != "" {
-			return PublicIntentConfig{}, nil, fmt.Errorf("fallbacks.model_unavailable[%d] contains internal wording %q", i, banned)
+		if banned := firstBannedCustomerIntentResponseTerm(response); banned != "" {
+			return CustomerIntentConfig{}, nil, fmt.Errorf("fallbacks.model_unavailable[%d] contains internal wording %q", i, banned)
 		}
 		if banned := firstBannedModelUnavailableFallbackTerm(response); banned != "" {
-			return PublicIntentConfig{}, nil, fmt.Errorf("fallbacks.model_unavailable[%d] contains service internals %q", i, banned)
+			return CustomerIntentConfig{}, nil, fmt.Errorf("fallbacks.model_unavailable[%d] contains service internals %q", i, banned)
 		}
 	}
 	names := map[string]bool{}
@@ -289,38 +289,38 @@ func validatePublicIntentConfig(parsed PublicIntentConfig) (PublicIntentConfig, 
 		rule.Category = strings.TrimSpace(rule.Category)
 		rule.Response = strings.TrimSpace(rule.Response)
 		if rule.Name == "" {
-			return PublicIntentConfig{}, nil, fmt.Errorf("rules[%d].name is required", i)
+			return CustomerIntentConfig{}, nil, fmt.Errorf("rules[%d].name is required", i)
 		}
-		if !publicIntentNamePattern.MatchString(rule.Name) {
-			return PublicIntentConfig{}, nil, fmt.Errorf("rules[%d].name must use letters, digits, '_' or '-'", i)
+		if !customerIntentNamePattern.MatchString(rule.Name) {
+			return CustomerIntentConfig{}, nil, fmt.Errorf("rules[%d].name must use letters, digits, '_' or '-'", i)
 		}
 		if names[rule.Name] {
-			return PublicIntentConfig{}, nil, fmt.Errorf("duplicate rule name %q", rule.Name)
+			return CustomerIntentConfig{}, nil, fmt.Errorf("duplicate rule name %q", rule.Name)
 		}
 		names[rule.Name] = true
 		if rule.Priority < 0 || rule.Priority > 1000 {
-			return PublicIntentConfig{}, nil, fmt.Errorf("rules[%d].priority must be between 0 and 1000", i)
+			return CustomerIntentConfig{}, nil, fmt.Errorf("rules[%d].priority must be between 0 and 1000", i)
 		}
 		var err error
-		rule.Match.Exact, err = cleanPublicIntentPatterns(rule.Match.Exact, fmt.Sprintf("rules[%d].match.exact", i))
+		rule.Match.Exact, err = cleanCustomerIntentPatterns(rule.Match.Exact, fmt.Sprintf("rules[%d].match.exact", i))
 		if err != nil {
-			return PublicIntentConfig{}, nil, err
+			return CustomerIntentConfig{}, nil, err
 		}
-		rule.Match.Contains, err = cleanPublicIntentPatterns(rule.Match.Contains, fmt.Sprintf("rules[%d].match.contains", i))
+		rule.Match.Contains, err = cleanCustomerIntentPatterns(rule.Match.Contains, fmt.Sprintf("rules[%d].match.contains", i))
 		if err != nil {
-			return PublicIntentConfig{}, nil, err
+			return CustomerIntentConfig{}, nil, err
 		}
 		if !ruleEnabled(*rule) {
 			continue
 		}
 		if len(rule.Match.Exact) == 0 && len(rule.Match.Contains) == 0 {
-			return PublicIntentConfig{}, nil, fmt.Errorf("rules[%d] must define match.exact or match.contains", i)
+			return CustomerIntentConfig{}, nil, fmt.Errorf("rules[%d] must define match.exact or match.contains", i)
 		}
 		if rule.Response == "" {
-			return PublicIntentConfig{}, nil, fmt.Errorf("rules[%d].response is required", i)
+			return CustomerIntentConfig{}, nil, fmt.Errorf("rules[%d].response is required", i)
 		}
-		if banned := firstBannedPublicIntentResponseTerm(rule.Response); banned != "" {
-			return PublicIntentConfig{}, nil, fmt.Errorf("rules[%d].response contains internal wording %q", i, banned)
+		if banned := firstBannedCustomerIntentResponseTerm(rule.Response); banned != "" {
+			return CustomerIntentConfig{}, nil, fmt.Errorf("rules[%d].response contains internal wording %q", i, banned)
 		}
 		if strings.EqualFold(rule.Category, "safety") {
 			if rule.Priority < minSafetyPriority {
@@ -336,7 +336,7 @@ func validatePublicIntentConfig(parsed PublicIntentConfig) (PublicIntentConfig, 
 	return parsed, warnings, nil
 }
 
-func cleanPublicFallbackPool(values []string, defaults []string) []string {
+func cleanCustomerFallbackPool(values []string, defaults []string) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
 		trimmed := strings.TrimSpace(value)
@@ -350,7 +350,7 @@ func cleanPublicFallbackPool(values []string, defaults []string) []string {
 	return out
 }
 
-func cleanPublicIntentPatterns(values []string, field string) ([]string, error) {
+func cleanCustomerIntentPatterns(values []string, field string) ([]string, error) {
 	out := make([]string, 0, len(values))
 	for i, value := range values {
 		trimmed := strings.TrimSpace(value)
@@ -362,7 +362,7 @@ func cleanPublicIntentPatterns(values []string, field string) ([]string, error) 
 	return out, nil
 }
 
-func firstBannedPublicIntentResponseTerm(response string) string {
+func firstBannedCustomerIntentResponseTerm(response string) string {
 	lower := strings.ToLower(response)
 	for _, term := range []string{
 		"知识库",
@@ -411,9 +411,9 @@ func firstBannedModelUnavailableFallbackTerm(response string) string {
 	return ""
 }
 
-func pickPublicFallback(values []string, seed string) string {
+func pickCustomerFallback(values []string, seed string) string {
 	if len(values) == 0 {
-		return publicLLMUnavailableMessage
+		return customerLLMUnavailableMessage
 	}
 	if len(values) == 1 {
 		return values[0]
@@ -427,7 +427,7 @@ func pickPublicFallback(values []string, seed string) string {
 	return values[int(hash.Sum32())%len(values)]
 }
 
-func genericPublicFallback(question string) string {
+func genericCustomerFallback(question string) string {
 	lower := strings.ToLower(strings.TrimSpace(question))
 	switch {
 	case containsAny(lower, "关机", "重启", "开机", "启动"):
@@ -439,14 +439,14 @@ func genericPublicFallback(question string) string {
 	}
 }
 
-func publicIntentRuleMatches(rule PublicIntentRule, normalizedQuestion string) bool {
+func customerIntentRuleMatches(rule CustomerIntentRule, normalizedQuestion string) bool {
 	for _, item := range rule.Match.Exact {
-		if normalizePublicIntentText(item) == normalizedQuestion {
+		if normalizeCustomerIntentText(item) == normalizedQuestion {
 			return true
 		}
 	}
 	for _, item := range rule.Match.Contains {
-		pattern := normalizePublicIntentText(item)
+		pattern := normalizeCustomerIntentText(item)
 		if pattern != "" && strings.Contains(normalizedQuestion, pattern) {
 			return true
 		}
@@ -454,21 +454,21 @@ func publicIntentRuleMatches(rule PublicIntentRule, normalizedQuestion string) b
 	return false
 }
 
-func ruleEnabled(rule PublicIntentRule) bool {
+func ruleEnabled(rule CustomerIntentRule) bool {
 	return rule.Enabled == nil || *rule.Enabled
 }
 
-func normalizePublicIntentText(text string) string {
+func normalizeCustomerIntentText(text string) string {
 	normalized := strings.ToLower(strings.TrimSpace(text))
 	normalized = strings.Trim(normalized, " \t\r\n？?。.!！~～")
 	normalized = strings.Join(strings.Fields(normalized), " ")
 	return normalized
 }
 
-func defaultPublicIntentConfig() PublicIntentConfig {
-	return PublicIntentConfig{
+func defaultCustomerIntentConfig() CustomerIntentConfig {
+	return CustomerIntentConfig{
 		Version: 1,
-		Fallbacks: PublicIntentFallbacks{
+		Fallbacks: CustomerIntentFallbacks{
 			Generic:         "这个问题我还需要再确认一点信息。您可以把具体产品、套餐或使用场景发我，我会按当前对话继续帮您判断。",
 			Operation:       "这类操作我需要先确认您使用的产品、设备或页面入口。您把当前步骤和遇到的提示发我，我再继续帮您排查。",
 			DeviceOperation: "这项操作要结合设备状态来看。您可以补充设备型号、当前页面提示和想完成的动作，我先帮您判断下一步。",
@@ -481,7 +481,7 @@ func defaultPublicIntentConfig() PublicIntentConfig {
 	}
 }
 
-func defaultPublicIntentSource() string {
+func defaultCustomerIntentSource() string {
 	return strings.TrimSpace(`version: 1
 
 fallbacks:

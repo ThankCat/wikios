@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,8 +15,8 @@ import (
 	"wikios/internal/runtime"
 )
 
-func TestPublicSpecialistProfilePricingScope(t *testing.T) {
-	profile := publicSpecialistProfile("pricing")
+func TestCustomerSpecialistProfilePricingScope(t *testing.T) {
+	profile := customerSpecialistProfile("pricing")
 	if profile.Name != "pricing" {
 		t.Fatalf("expected pricing profile, got %q", profile.Name)
 	}
@@ -43,8 +44,8 @@ func TestPublicSpecialistProfilePricingScope(t *testing.T) {
 	}
 }
 
-func TestPublicSpecialistProfileSafetyScopesPublicEvidenceDirectories(t *testing.T) {
-	profile := publicSpecialistProfile("safety")
+func TestCustomerSpecialistProfileSafetyScopesCustomerEvidenceDirectories(t *testing.T) {
+	profile := customerSpecialistProfile("safety")
 	if profile.Name != "safety" {
 		t.Fatalf("expected safety profile, got %q", profile.Name)
 	}
@@ -56,19 +57,19 @@ func TestPublicSpecialistProfileSafetyScopesPublicEvidenceDirectories(t *testing
 	}
 }
 
-func TestPublicSpecialistProfileUnknownFallsBackToProduct(t *testing.T) {
-	profile := publicSpecialistProfile("not-a-specialist")
+func TestCustomerSpecialistProfileUnknownFallsBackToProduct(t *testing.T) {
+	profile := customerSpecialistProfile("not-a-specialist")
 	if profile.Name != "product" {
 		t.Fatalf("expected unknown specialist to fall back to product, got %q", profile.Name)
 	}
 }
 
-func TestPublicSpecialistRetrievalQueriesUsesRouterQueriesThenRewriteFallback(t *testing.T) {
-	queries := publicSpecialistRetrievalQueries(&PublicRouterOutput{
+func TestCustomerSpecialistRetrievalQueriesUsesRouterQueriesThenRewriteFallback(t *testing.T) {
+	queries := customerSpecialistRetrievalQueries(&CustomerRouterOutput{
 		RewrittenQuestion: "静态 IP 价格",
-		RetrievalQueries:  []string{" 静态 IP 价格 ", "静态 IP 价格", "共享静态 IP 报价", "第三条不会执行"},
+		RetrievalQueries:  []string{" 静态 IP 价格 ", "静态 IP 价格", "共享静态 IP 报价", "第三条会执行", "第四条不会执行"},
 	})
-	want := []string{"静态 IP 价格", "共享静态 IP 报价"}
+	want := []string{"静态 IP 价格", "共享静态 IP 报价", "第三条会执行"}
 	if len(queries) != len(want) {
 		t.Fatalf("expected %d queries, got %+v", len(want), queries)
 	}
@@ -78,13 +79,13 @@ func TestPublicSpecialistRetrievalQueriesUsesRouterQueriesThenRewriteFallback(t 
 		}
 	}
 
-	queries = publicSpecialistRetrievalQueries(&PublicRouterOutput{RewrittenQuestion: "静态 IP 价格"})
+	queries = customerSpecialistRetrievalQueries(&CustomerRouterOutput{RewrittenQuestion: "静态 IP 价格"})
 	if len(queries) != 1 || queries[0] != "静态 IP 价格" {
 		t.Fatalf("expected rewrite fallback query, got %+v", queries)
 	}
 }
 
-func TestRetrievePublicSpecialistEvidenceCachesRetrievalAndPages(t *testing.T) {
+func TestRetrieveCustomerSpecialistEvidenceCachesRetrievalAndPages(t *testing.T) {
 	qmdCalls := 0
 	readCalls := 0
 	rt := testRuntime(
@@ -102,18 +103,18 @@ func TestRetrievePublicSpecialistEvidenceCachesRetrievalAndPages(t *testing.T) {
 			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"content": "---\ntitle: 静态价格\n---\n静态 IP 按个/月计费。"}}, nil
 		}},
 	)
-	svc := newTestPublicQueryService(t, rt)
-	routerOutput := &PublicRouterOutput{
+	svc := newTestCustomerChatService(t, rt)
+	routerOutput := &CustomerRouterOutput{
 		Specialist:        "pricing",
 		RewrittenQuestion: "静态 IP 怎么卖",
 		NeedsRetrieval:    true,
 		RetrievalQueries:  []string{"静态 IP 价格"},
 	}
-	first := svc.retrievePublicSpecialistEvidence(context.Background(), "trace-cache-1", routerOutput, RuntimeSettings{})
+	first := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-cache-1", routerOutput, RuntimeSettings{})
 	if first.Error != "" || len(first.Sources) != 1 {
 		t.Fatalf("expected first retrieval to read evidence, got error=%q sources=%d", first.Error, len(first.Sources))
 	}
-	second := svc.retrievePublicSpecialistEvidence(context.Background(), "trace-cache-2", routerOutput, RuntimeSettings{})
+	second := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-cache-2", routerOutput, RuntimeSettings{})
 	if second.Error != "" || len(second.Sources) != 1 {
 		t.Fatalf("expected second retrieval to read cached evidence, got error=%q sources=%d", second.Error, len(second.Sources))
 	}
@@ -128,7 +129,7 @@ func TestRetrievePublicSpecialistEvidenceCachesRetrievalAndPages(t *testing.T) {
 	}
 }
 
-func TestRetrievePublicSpecialistEvidenceExpandsAllowedWikilinks(t *testing.T) {
+func TestRetrieveCustomerSpecialistEvidenceExpandsAllowedWikilinks(t *testing.T) {
 	root := t.TempDir()
 	writeTestWikiPage(t, root, "wiki/knowledge/si-ye-tian-dynamic-ip.md", "---\ntitle: 四叶天动态 IP\n---\n使用 API 前先配置白名单，具体配置见 [[si-ye-tian-api-whitelist-setup]]。")
 	writeTestWikiPage(t, root, "wiki/procedures/si-ye-tian-api-whitelist-setup.md", "---\ntitle: 四叶天白名单、API 与认证配置\n---\n登录后进入白名单管理页，添加当前网络的公网出口 IP；自动白名单接口在提取 API 页的其他接口位置查看。")
@@ -152,8 +153,8 @@ func TestRetrievePublicSpecialistEvidenceExpandsAllowedWikilinks(t *testing.T) {
 			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"content": string(raw)}}, nil
 		}},
 	)
-	svc := newTestPublicQueryServiceWithRoot(t, rt, root)
-	result := svc.retrievePublicSpecialistEvidence(context.Background(), "trace-expand-link", &PublicRouterOutput{
+	svc := newTestCustomerChatServiceWithRoot(t, rt, root)
+	result := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-expand-link", &CustomerRouterOutput{
 		Specialist:        "technical",
 		RewrittenQuestion: "客户询问如何通过 API 接口添加白名单。",
 		NeedsRetrieval:    true,
@@ -174,23 +175,29 @@ func TestRetrievePublicSpecialistEvidenceExpandsAllowedWikilinks(t *testing.T) {
 	if readCalls != 2 {
 		t.Fatalf("expected reading original and linked page, got %d", readCalls)
 	}
+	if len(result.CacheTrace.WikilinkExpandedPages) != 1 {
+		t.Fatalf("expected wikilink expansion trace, got %+v", result.CacheTrace)
+	}
+	if got, _ := result.CacheTrace.WikilinkExpandedPages[0]["linked_path"].(string); got != "wiki/procedures/si-ye-tian-api-whitelist-setup.md" {
+		t.Fatalf("expected linked procedure trace, got %+v", result.CacheTrace.WikilinkExpandedPages)
+	}
 }
 
-func TestResolvePublicEvidenceWikilinksKeepsSpecialistScope(t *testing.T) {
+func TestResolveCustomerEvidenceWikilinksKeepsSpecialistScope(t *testing.T) {
 	root := t.TempDir()
 	writeTestWikiPage(t, root, "wiki/procedures/si-ye-tian-api-whitelist-setup.md", "procedure")
 	env := &runtime.ExecEnv{WikiRoot: root}
-	links := resolvePublicEvidenceWikilinks(env, publicSpecialistProfile("pricing"), "见 [[si-ye-tian-api-whitelist-setup]]")
+	links := resolveCustomerEvidenceWikilinks(env, customerSpecialistProfile("pricing"), "见 [[si-ye-tian-api-whitelist-setup]]")
 	if len(links) != 0 {
 		t.Fatalf("expected pricing scope to block procedure wikilink, got %+v", links)
 	}
-	links = resolvePublicEvidenceWikilinks(env, publicSpecialistProfile("technical"), "见 [[si-ye-tian-api-whitelist-setup|白名单配置]]")
+	links = resolveCustomerEvidenceWikilinks(env, customerSpecialistProfile("technical"), "见 [[si-ye-tian-api-whitelist-setup|白名单配置]]")
 	if len(links) != 1 || links[0] != "wiki/procedures/si-ye-tian-api-whitelist-setup.md" {
 		t.Fatalf("expected technical scope to resolve procedure wikilink, got %+v", links)
 	}
 }
 
-func TestRetrievePublicSpecialistEvidenceExecutesAtMostTwoRouterQueries(t *testing.T) {
+func TestRetrieveCustomerSpecialistEvidenceExecutesAtMostThreeRouterQueries(t *testing.T) {
 	qmdCalls := 0
 	rt := testRuntime(
 		testRuntimeTool{name: "exec.qmd", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
@@ -202,8 +209,8 @@ func TestRetrievePublicSpecialistEvidenceExecutesAtMostTwoRouterQueries(t *testi
 		}},
 		testRuntimeTool{name: "wiki.read_page"},
 	)
-	svc := newTestPublicQueryService(t, rt)
-	result := svc.retrievePublicSpecialistEvidence(context.Background(), "trace-two-queries", &PublicRouterOutput{
+	svc := newTestCustomerChatService(t, rt)
+	result := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-two-queries", &CustomerRouterOutput{
 		Specialist:        "pricing",
 		RewrittenQuestion: "兜底问题",
 		NeedsRetrieval:    true,
@@ -212,16 +219,16 @@ func TestRetrievePublicSpecialistEvidenceExecutesAtMostTwoRouterQueries(t *testi
 	if result.Error != "" {
 		t.Fatalf("expected empty retrieval without error, got %q", result.Error)
 	}
-	if qmdCalls != 2 {
-		t.Fatalf("expected at most two qmd queries, got %d", qmdCalls)
+	if qmdCalls != 3 {
+		t.Fatalf("expected at most three qmd queries, got %d", qmdCalls)
 	}
-	want := []string{"query-1", "query-2"}
-	if len(result.Queries) != len(want) || result.Queries[0] != want[0] || result.Queries[1] != want[1] {
-		t.Fatalf("expected first two router queries, got %+v", result.Queries)
+	want := []string{"query-1", "query-2", "query-3"}
+	if len(result.Queries) != len(want) || result.Queries[0] != want[0] || result.Queries[1] != want[1] || result.Queries[2] != want[2] {
+		t.Fatalf("expected first three router queries, got %+v", result.Queries)
 	}
 }
 
-func TestRetrievePublicSpecialistEvidenceStopsAfterEnoughEvidence(t *testing.T) {
+func TestRetrieveCustomerSpecialistEvidenceStopsAfterEnoughEvidence(t *testing.T) {
 	qmdCalls := 0
 	rt := testRuntime(
 		testRuntimeTool{name: "exec.qmd", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
@@ -242,8 +249,8 @@ func TestRetrievePublicSpecialistEvidenceStopsAfterEnoughEvidence(t *testing.T) 
 			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"content": fmt.Sprintf("---\ntitle: %s\n---\n证据正文。", path)}}, nil
 		}},
 	)
-	svc := newTestPublicQueryService(t, rt)
-	result := svc.retrievePublicSpecialistEvidence(context.Background(), "trace-stop", &PublicRouterOutput{
+	svc := newTestCustomerChatService(t, rt)
+	result := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-stop", &CustomerRouterOutput{
 		Specialist:        "pricing",
 		RewrittenQuestion: "静态 IP 价格",
 		NeedsRetrieval:    true,
@@ -263,7 +270,7 @@ func TestRetrievePublicSpecialistEvidenceStopsAfterEnoughEvidence(t *testing.T) 
 	}
 }
 
-func TestRetrievePublicSpecialistCacheDoesNotBypassProfileScope(t *testing.T) {
+func TestRetrieveCustomerSpecialistCacheDoesNotBypassProfileScope(t *testing.T) {
 	qmdCalls := 0
 	readCalls := 0
 	rt := testRuntime(
@@ -281,17 +288,20 @@ func TestRetrievePublicSpecialistCacheDoesNotBypassProfileScope(t *testing.T) {
 			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"content": "不应该读取。"}}, nil
 		}},
 	)
-	svc := newTestPublicQueryService(t, rt)
-	routerOutput := &PublicRouterOutput{
+	svc := newTestCustomerChatService(t, rt)
+	routerOutput := &CustomerRouterOutput{
 		Specialist:        "pricing",
 		RewrittenQuestion: "静态 IP 价格",
 		NeedsRetrieval:    true,
 		RetrievalQueries:  []string{"白名单"},
 	}
-	first := svc.retrievePublicSpecialistEvidence(context.Background(), "trace-scope-1", routerOutput, RuntimeSettings{})
-	second := svc.retrievePublicSpecialistEvidence(context.Background(), "trace-scope-2", routerOutput, RuntimeSettings{})
+	first := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-scope-1", routerOutput, RuntimeSettings{})
+	second := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-scope-2", routerOutput, RuntimeSettings{})
 	if len(first.Sources) != 0 || len(second.Sources) != 0 {
 		t.Fatalf("expected pricing scope to reject procedure pages, got first=%+v second=%+v", first.Sources, second.Sources)
+	}
+	if len(first.CacheTrace.ScopeFilteredPages) == 0 || len(second.CacheTrace.ScopeFilteredPages) == 0 {
+		t.Fatalf("expected scoped-out pages to be traced, got first=%+v second=%+v", first.CacheTrace, second.CacheTrace)
 	}
 	if qmdCalls != 1 {
 		t.Fatalf("expected second retrieval to use cached candidates, got %d qmd calls", qmdCalls)
@@ -301,7 +311,148 @@ func TestRetrievePublicSpecialistCacheDoesNotBypassProfileScope(t *testing.T) {
 	}
 }
 
-func TestRetrievePublicSpecialistCacheExpires(t *testing.T) {
+func TestRetrieveCustomerSpecialistEvidenceTechnicalWhitelistReadsProcedure(t *testing.T) {
+	rt := testRuntime(
+		testRuntimeTool{name: "exec.qmd", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			raw, err := json.Marshal([]map[string]any{{"path": "wiki/procedures/si-ye-tian-api-whitelist-setup.md", "score": 100}})
+			if err != nil {
+				return runtime.ToolResult{}, err
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"stdout": string(raw)}}, nil
+		}},
+		testRuntimeTool{name: "wiki.search_pages"},
+		testRuntimeTool{name: "wiki.read_page", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			path, _ := args["path"].(string)
+			if path != "wiki/procedures/si-ye-tian-api-whitelist-setup.md" {
+				return runtime.ToolResult{Success: false, RiskLevel: runtime.RiskLow, Error: &runtime.ToolError{Code: "UNEXPECTED_PATH", Message: path}}, nil
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"content": "---\ntitle: API 白名单\n---\n添加当前出口公网 IP 到授权白名单。"}}, nil
+		}},
+	)
+	svc := newTestCustomerChatService(t, rt)
+	result := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-whitelist-procedure", &CustomerRouterOutput{
+		Specialist:        "technical",
+		RewrittenQuestion: "客户询问 API 白名单怎么添加。",
+		NeedsRetrieval:    true,
+		RetrievalQueries:  []string{"四叶天 API 白名单 添加 出口公网 IP"},
+	}, RuntimeSettings{})
+	if result.Error != "" {
+		t.Fatalf("expected technical retrieval without error, got %q", result.Error)
+	}
+	if len(result.Sources) != 1 || result.Sources[0].Path != "wiki/procedures/si-ye-tian-api-whitelist-setup.md" {
+		t.Fatalf("expected whitelist procedure evidence, got %+v", result.Sources)
+	}
+	if len(result.CacheTrace.RetrievalResults) != 1 {
+		t.Fatalf("expected retrieval result trace, got %+v", result.CacheTrace)
+	}
+}
+
+func TestRetrieveCustomerSpecialistEvidenceSafetyReadsPolicyBoundary(t *testing.T) {
+	rt := testRuntime(
+		testRuntimeTool{name: "exec.qmd", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			raw, err := json.Marshal([]map[string]any{
+				{"path": "wiki/sources/si-ye-tian-safety-boundaries-source.md", "score": 120},
+				{"path": "wiki/policies/si-ye-tian-safety-boundaries.md", "score": 100},
+			})
+			if err != nil {
+				return runtime.ToolResult{}, err
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"stdout": string(raw)}}, nil
+		}},
+		testRuntimeTool{name: "wiki.search_pages"},
+		testRuntimeTool{name: "wiki.read_page", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			path, _ := args["path"].(string)
+			if path != "wiki/policies/si-ye-tian-safety-boundaries.md" {
+				return runtime.ToolResult{Success: false, RiskLevel: runtime.RiskLow, Error: &runtime.ToolError{Code: "UNEXPECTED_PATH", Message: path}}, nil
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"content": "---\ntitle: 安全边界\n---\n不承诺绕过平台风控或访问受限服务。"}}, nil
+		}},
+	)
+	svc := newTestCustomerChatService(t, rt)
+	result := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-safety-boundary", &CustomerRouterOutput{
+		Specialist:        "safety",
+		RewrittenQuestion: "客户询问海外 IP 是否可以稳定访问 Google 和 ChatGPT。",
+		NeedsRetrieval:    true,
+		RetrievalQueries:  []string{"四叶天 海外 IP Google ChatGPT 访问边界"},
+	}, RuntimeSettings{})
+	if result.Error != "" {
+		t.Fatalf("expected safety retrieval without error, got %q", result.Error)
+	}
+	if len(result.Sources) != 1 || result.Sources[0].Path != "wiki/policies/si-ye-tian-safety-boundaries.md" {
+		t.Fatalf("expected safety policy evidence, got %+v", result.Sources)
+	}
+	if len(result.CacheTrace.ScopeFilteredPages) == 0 {
+		t.Fatalf("expected raw source page to be scope-filtered, got %+v", result.CacheTrace)
+	}
+	if len(result.CacheTrace.RetrievalResults) != 1 {
+		t.Fatalf("expected safety query-to-candidate trace, got %+v", result.CacheTrace.RetrievalResults)
+	}
+}
+
+func TestRetrieveCustomerSpecialistEvidenceMultiProductPricingReadsMultipleProductEvidence(t *testing.T) {
+	qmdCalls := 0
+	rt := testRuntime(
+		testRuntimeTool{name: "exec.qmd", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			qmdCalls++
+			question, _ := args["question"].(string)
+			path := "wiki/knowledge/si-ye-tian-static-ip-pricing.md"
+			if strings.Contains(question, "动态") {
+				path = "wiki/knowledge/si-ye-tian-dynamic-ip-pricing.md"
+			}
+			raw, err := json.Marshal([]map[string]any{{"path": path, "score": 100}})
+			if err != nil {
+				return runtime.ToolResult{}, err
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"stdout": string(raw)}}, nil
+		}},
+		testRuntimeTool{name: "wiki.search_pages"},
+		testRuntimeTool{name: "wiki.read_page", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			path, _ := args["path"].(string)
+			pages := map[string]string{
+				"wiki/knowledge/si-ye-tian-static-ip-pricing.md":  "---\ntitle: 静态 IP 价格\n---\n静态 IP 公开价格证据。",
+				"wiki/knowledge/si-ye-tian-dynamic-ip-pricing.md": "---\ntitle: 动态 IP 价格\n---\n动态 IP 公开价格证据。",
+			}
+			content := pages[path]
+			if content == "" {
+				return runtime.ToolResult{Success: false, RiskLevel: runtime.RiskLow, Error: &runtime.ToolError{Code: "NOT_FOUND", Message: path}}, nil
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"content": content}}, nil
+		}},
+	)
+	svc := newTestCustomerChatService(t, rt)
+	result := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-multi-product-pricing", &CustomerRouterOutput{
+		Specialist:        "pricing",
+		RewrittenQuestion: "客户想比较动态 IP 和静态 IP 的价格。",
+		NeedsRetrieval:    true,
+		RetrievalQueries: []string{
+			"四叶天 静态 IP 价格",
+			"四叶天 动态 IP 价格",
+		},
+	}, RuntimeSettings{})
+	if result.Error != "" {
+		t.Fatalf("expected multi-product pricing retrieval without error, got %q", result.Error)
+	}
+	if qmdCalls != 2 {
+		t.Fatalf("expected two product-specific retrieval queries, got %d", qmdCalls)
+	}
+	paths := map[string]bool{}
+	for _, source := range result.Sources {
+		paths[source.Path] = true
+	}
+	for _, path := range []string{
+		"wiki/knowledge/si-ye-tian-static-ip-pricing.md",
+		"wiki/knowledge/si-ye-tian-dynamic-ip-pricing.md",
+	} {
+		if !paths[path] {
+			t.Fatalf("expected multi-product evidence %s, got %+v", path, result.Sources)
+		}
+	}
+	if len(result.CacheTrace.RetrievalResults) != 2 {
+		t.Fatalf("expected query-to-candidate trace for both product queries, got %+v", result.CacheTrace.RetrievalResults)
+	}
+}
+
+func TestRetrieveCustomerSpecialistCacheExpires(t *testing.T) {
 	qmdCalls := 0
 	readCalls := 0
 	rt := testRuntime(
@@ -319,17 +470,17 @@ func TestRetrievePublicSpecialistCacheExpires(t *testing.T) {
 			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"content": "---\ntitle: 静态价格\n---\n静态 IP 按个/月计费。"}}, nil
 		}},
 	)
-	svc := newTestPublicQueryService(t, rt)
-	svc.cache = newPublicAnswerCache(time.Millisecond)
-	routerOutput := &PublicRouterOutput{
+	svc := newTestCustomerChatService(t, rt)
+	svc.cache = newCustomerChatCache(time.Millisecond)
+	routerOutput := &CustomerRouterOutput{
 		Specialist:        "pricing",
 		RewrittenQuestion: "静态 IP 怎么卖",
 		NeedsRetrieval:    true,
 		RetrievalQueries:  []string{"静态 IP 价格"},
 	}
-	_ = svc.retrievePublicSpecialistEvidence(context.Background(), "trace-expire-1", routerOutput, RuntimeSettings{})
+	_ = svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-expire-1", routerOutput, RuntimeSettings{})
 	time.Sleep(2 * time.Millisecond)
-	_ = svc.retrievePublicSpecialistEvidence(context.Background(), "trace-expire-2", routerOutput, RuntimeSettings{})
+	_ = svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-expire-2", routerOutput, RuntimeSettings{})
 	if qmdCalls != 2 {
 		t.Fatalf("expected qmd cache to expire, got %d qmd calls", qmdCalls)
 	}
@@ -338,7 +489,7 @@ func TestRetrievePublicSpecialistCacheExpires(t *testing.T) {
 	}
 }
 
-func TestRetrievePublicSpecialistEvidenceScopesRetrievedPages(t *testing.T) {
+func TestRetrieveCustomerSpecialistEvidenceScopesRetrievedPages(t *testing.T) {
 	rt := testRuntime(
 		testRuntimeTool{name: "exec.qmd", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
 			raw, err := json.Marshal([]map[string]any{
@@ -360,7 +511,7 @@ func TestRetrievePublicSpecialistEvidenceScopesRetrievedPages(t *testing.T) {
 				"wiki/knowledge/si-ye-tian-proxy-ip-pricing.md":              "---\ntitle: 代理 IP 价格\n---\n动态代理按套餐计费。",
 				"wiki/synthesis/si-ye-tian-purchase-guidance-rules.md":       "---\ntitle: 购买建议\n---\n普通问价只回答公开基础价。",
 				"wiki/procedures/si-ye-tian-api-whitelist-setup.md":          "---\ntitle: API 白名单\n---\n这不是价格证据。",
-				"wiki/sources/raw-pricing-note.md":                           "---\ntitle: 原始价格笔记\n---\n这不是 public specialist 证据。",
+				"wiki/sources/raw-pricing-note.md":                           "---\ntitle: 原始价格笔记\n---\n这不是 customer specialist 证据。",
 				"wiki/policies/si-ye-tian-safety-boundaries.md":              "---\ntitle: 安全边界\n---\n安全边界证据。",
 				"wiki/comparisons/si-ye-tian-platform-scenario-selection.md": "---\ntitle: 平台场景\n---\n平台场景证据。",
 			}
@@ -371,12 +522,12 @@ func TestRetrievePublicSpecialistEvidenceScopesRetrievedPages(t *testing.T) {
 			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"content": content}}, nil
 		}},
 	)
-	svc := NewPublicQueryService(Deps{
+	svc := NewCustomerChatService(Deps{
 		Config:    &config.Config{MountedWiki: config.MountedWikiConfig{Root: t.TempDir(), QMDIndex: "test"}},
 		Runtime:   rt,
 		Retriever: retrieval.NewQMDRetriever(rt),
 	})
-	result := svc.retrievePublicSpecialistEvidence(context.Background(), "trace-specialist", &PublicRouterOutput{
+	result := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-specialist", &CustomerRouterOutput{
 		Specialist:        "pricing",
 		RewrittenQuestion: "静态 IP 价格",
 		NeedsRetrieval:    true,
@@ -388,30 +539,36 @@ func TestRetrievePublicSpecialistEvidenceScopesRetrievedPages(t *testing.T) {
 	if result.Profile.Name != "pricing" {
 		t.Fatalf("expected pricing specialist, got %q", result.Profile.Name)
 	}
-	for _, candidate := range publicRetrievedPageSummaries(result.Candidates, 12) {
+	for _, candidate := range customerRetrievedPageSummaries(result.Candidates, 12) {
 		path, _ := candidate["path"].(string)
 		if path == "wiki/procedures/si-ye-tian-api-whitelist-setup.md" || path == "wiki/sources/raw-pricing-note.md" {
 			t.Fatalf("expected scoped candidates to exclude %s, got %+v", path, result.Candidates)
 		}
 	}
 	for _, source := range result.Sources {
-		if !publicSpecialistProfile("pricing").AllowsPath(source.Path) {
+		if !customerSpecialistProfile("pricing").AllowsPath(source.Path) {
 			t.Fatalf("expected source %s to stay inside pricing scope, got %+v", source.Path, result.Sources)
 		}
 	}
 	if len(result.Sources) == 0 {
 		t.Fatalf("expected at least one scoped source, got %+v", result)
 	}
+	if len(result.CacheTrace.ScopeFilteredPages) < 2 {
+		t.Fatalf("expected scope-filter trace for procedure and source pages, got %+v", result.CacheTrace.ScopeFilteredPages)
+	}
+	if len(result.CacheTrace.RetrievalResults) != 1 {
+		t.Fatalf("expected query-to-candidate trace, got %+v", result.CacheTrace.RetrievalResults)
+	}
 }
 
-func newTestPublicQueryService(t *testing.T, rt *runtime.Runtime) *PublicQueryService {
+func newTestCustomerChatService(t *testing.T, rt *runtime.Runtime) *CustomerChatService {
 	t.Helper()
-	return newTestPublicQueryServiceWithRoot(t, rt, t.TempDir())
+	return newTestCustomerChatServiceWithRoot(t, rt, t.TempDir())
 }
 
-func newTestPublicQueryServiceWithRoot(t *testing.T, rt *runtime.Runtime, root string) *PublicQueryService {
+func newTestCustomerChatServiceWithRoot(t *testing.T, rt *runtime.Runtime, root string) *CustomerChatService {
 	t.Helper()
-	return NewPublicQueryService(Deps{
+	return NewCustomerChatService(Deps{
 		Config:    &config.Config{MountedWiki: config.MountedWikiConfig{Root: root, QMDIndex: "test"}},
 		Runtime:   rt,
 		Retriever: retrieval.NewQMDRetriever(rt),

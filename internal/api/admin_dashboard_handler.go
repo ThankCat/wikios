@@ -20,7 +20,7 @@ type adminDashboardResponse struct {
 	ReviewPending   int                          `json:"review_pending"`
 	Sync            adminDashboardSyncSummary    `json:"sync"`
 	QMD             adminDashboardQMDSummary     `json:"qmd"`
-	PublicAnswerLog adminDashboardLogSummary     `json:"public_answer_log"`
+	CustomerChatLog adminDashboardLogSummary     `json:"customer_chat_log"`
 	GeneratedAt     string                       `json:"generated_at"`
 	RecentErrors    []adminDashboardErrorSummary `json:"recent_errors"`
 }
@@ -67,7 +67,7 @@ type adminDashboardErrorSummary struct {
 func (h *Handlers) AdminDashboard(c *gin.Context) {
 	resp := adminDashboardResponse{
 		GeneratedAt:     time.Now().Format(time.RFC3339Nano),
-		PublicAnswerLog: h.dashboardPublicAnswerLog(),
+		CustomerChatLog: h.dashboardCustomerChatLog(),
 		QMD:             h.dashboardQMDStatus(c.Request.Context()),
 		RecentErrors:    []adminDashboardErrorSummary{},
 	}
@@ -125,13 +125,13 @@ func (h *Handlers) AdminDashboard(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-func (h *Handlers) dashboardPublicAnswerLog() adminDashboardLogSummary {
+func (h *Handlers) dashboardCustomerChatLog() adminDashboardLogSummary {
 	settings := service.LoadRuntimeSettingsOrDefault(context.Background(), h.Store, h.Config)
 	return adminDashboardLogSummary{
 		Enabled:       settings.AnswerLog.Enabled,
 		Redact:        settings.AnswerLog.Redact,
 		RetentionDays: settings.AnswerLog.RetentionDays,
-		Path:          ".workspace/public_answer_logs/*.jsonl",
+		Path:          ".workspace/customer_chat_logs/*.jsonl",
 	}
 }
 

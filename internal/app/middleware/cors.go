@@ -13,7 +13,8 @@ func LocalDevCORS() gin.HandlerFunc {
 		if allowedOrigin(origin) {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Access-Control-Allow-Credentials", "true")
-			c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+			c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Trace-ID")
+			c.Header("Access-Control-Expose-Headers", "X-Trace-ID")
 			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			c.Header("Vary", "Origin")
 		}
