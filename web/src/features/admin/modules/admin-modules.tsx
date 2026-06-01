@@ -31,6 +31,8 @@ import {
   Square,
   Wrench,
   Trash2,
+  Eye,
+  X,
   Upload,
   XCircle,
 } from "lucide-react";
@@ -50,11 +52,13 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { MarkdownContent } from "@/components/chat/markdown-content";
 import { AdminChat } from "@/features/admin/admin-chat";
 import { ChatDetailDrawer } from "@/components/chat/chat-detail-drawer";
+import { MessageDetails } from "@/components/chat/message-details";
 import { MessageCard } from "@/components/chat/message-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { FileTree, type FileTreeNode } from "@/components/ui/file-tree";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -79,6 +83,7 @@ import type {
   LLMModelTestResponse,
   CustomerChatHistoryItem,
   CustomerConversationDetailResponse,
+  CustomerConversationMessage,
   CustomerConversationSummary,
   CustomerIntentsStatus,
   CustomerStreamEvent,
@@ -99,6 +104,11 @@ export type BaseModuleProps = {
   setDetail: (title: string, node: React.ReactNode) => void;
   openModule: (module: AdminModuleId) => void;
 };
+
+type ConversationEntrypointFilter = "all" | "external" | "internal";
+type ConversationSimulationFilter = "all" | "formal" | "simulation";
+
+const conversationListPageSize = 30;
 
 export function DashboardModule({ dashboard, onDashboardRefresh, openModule }: BaseModuleProps) {
   const activeModel = dashboard?.active_model;
@@ -151,7 +161,7 @@ export function DashboardModule({ dashboard, onDashboardRefresh, openModule }: B
       </div>
 
       <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
+        <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <ShieldCheck className="h-4 w-4" />
@@ -185,7 +195,7 @@ export function DashboardModule({ dashboard, onDashboardRefresh, openModule }: B
               </Alert>
             ) : null}
             {!dashboard?.sync.error && dashboard?.sync.needs_setup ? (
-              <Alert className="mt-4 rounded-lg border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-100">
+              <Alert className="mt-4 rounded-lg border-border bg-muted/40 text-foreground">
                 <AlertTitle>同步配置待完善</AlertTitle>
                 <AlertDescription>{dashboard.sync.setup_hint || "请在知识库同步页执行检测或修复。"}</AlertDescription>
               </Alert>
@@ -193,7 +203,7 @@ export function DashboardModule({ dashboard, onDashboardRefresh, openModule }: B
           </CardContent>
         </Card>
 
-        <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
+        <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
           <CardHeader>
             <CardTitle className="text-base">近期风险</CardTitle>
             <CardDescription>Dashboard 聚合到的最近错误摘要。</CardDescription>
@@ -202,14 +212,14 @@ export function DashboardModule({ dashboard, onDashboardRefresh, openModule }: B
             {hasErrors ? (
               <div className="space-y-2">
                 {dashboard?.recent_errors.map((item) => (
-                  <div key={`${item.scope}-${item.message}`} className="rounded-lg border border-red-100 bg-red-50 p-3 text-sm dark:border-red-500/40 dark:bg-red-950/30">
-                    <div className="font-medium text-red-700 dark:text-red-200">{item.scope}</div>
-                    <div className="mt-1 text-red-600 dark:text-red-100">{item.message}</div>
+                  <div key={`${item.scope}-${item.message}`} className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-sm">
+                    <div className="font-medium text-destructive">{item.scope}</div>
+                    <div className="mt-1 text-destructive">{item.message}</div>
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-950/30 dark:text-emerald-100">
+              <div className="rounded-lg border border-border bg-muted/40 p-4 text-sm text-muted-foreground">
                 暂未发现聚合错误。
               </div>
             )}
@@ -225,15 +235,31 @@ export function ConversationsModule(_props: BaseModuleProps) {
   const [activeId, setActiveId] = React.useState("");
   const [detail, setDetail] = React.useState<CustomerConversationDetailResponse | null>(null);
   const [query, setQuery] = React.useState("");
+  const [page, setPage] = React.useState(1);
+  const [hasMore, setHasMore] = React.useState(false);
+  const [entrypointFilter, setEntrypointFilter] = React.useState<ConversationEntrypointFilter>("all");
+  const [simulationFilter, setSimulationFilter] = React.useState<ConversationSimulationFilter>("all");
   const [loading, setLoading] = React.useState(false);
   const [detailLoading, setDetailLoading] = React.useState(false);
+  const [deletingId, setDeletingId] = React.useState("");
   const [error, setError] = React.useState("");
   const [total, setTotal] = React.useState(0);
   const [logEnabled, setLogEnabled] = React.useState(true);
   const [activeTab, setActiveTab] = React.useState<"records" | "chat-test">("records");
+  const [selectedTraceDetail, setSelectedTraceDetail] = React.useState<{
+    id: string;
+    role: "user" | "assistant";
+    content: string;
+    createdAt?: string;
+    details?: unknown;
+    statusText?: string;
+  } | null>(null);
   const requestSeqRef = React.useRef(0);
   const activeIdRef = React.useRef("");
   const queryRef = React.useRef("");
+  const pageRef = React.useRef(1);
+  const entrypointFilterRef = React.useRef<ConversationEntrypointFilter>("all");
+  const simulationFilterRef = React.useRef<ConversationSimulationFilter>("all");
 
   React.useEffect(() => {
     activeIdRef.current = activeId;
@@ -243,23 +269,81 @@ export function ConversationsModule(_props: BaseModuleProps) {
     queryRef.current = query;
   }, [query]);
 
-  const load = React.useCallback(async (nextQuery?: string) => {
+  React.useEffect(() => {
+    pageRef.current = page;
+  }, [page]);
+
+  React.useEffect(() => {
+    entrypointFilterRef.current = entrypointFilter;
+  }, [entrypointFilter]);
+
+  React.useEffect(() => {
+    simulationFilterRef.current = simulationFilter;
+  }, [simulationFilter]);
+
+  const inspectConversationMessage = React.useCallback(async (message: CustomerConversationMessage) => {
+    setSelectedTraceDetail({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      createdAt: message.created_at,
+      details: message.details ?? {},
+      statusText: message.trace_id ? "正在读取完整 trace..." : "本条消息没有 trace_id",
+    });
+    if (!message.trace_id) {
+      return;
+    }
+    try {
+      const trace = await api.customerChatTrace(message.trace_id);
+      setSelectedTraceDetail({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        createdAt: message.created_at,
+        details: { audit_trace: trace },
+        statusText: "完整 trace",
+      });
+    } catch (err) {
+      setSelectedTraceDetail({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        createdAt: message.created_at,
+        details: {
+          trace_error: errorMessage(err),
+          trace_id: message.trace_id,
+          fallback_details: message.details ?? {},
+        },
+        statusText: "Trace 读取失败",
+      });
+    }
+  }, []);
+
+  const load = React.useCallback(async (options?: { q?: string; page?: number }) => {
     const requestSeq = ++requestSeqRef.current;
-    const resolvedQuery = nextQuery ?? queryRef.current;
-    const currentActiveId = activeIdRef.current;
+    const resolvedQuery = options?.q ?? queryRef.current;
+    const resolvedPage = options?.page ?? pageRef.current;
+    const resolvedEntrypoint = entrypointFilterRef.current;
+    const resolvedSimulation = simulationFilterRef.current;
     setLoading(true);
     setError("");
     try {
-      const response = await api.customerConversations({ q: resolvedQuery.trim(), page_size: 50 });
+      const response = await api.customerConversations({
+        q: resolvedQuery.trim(),
+        page: resolvedPage,
+        page_size: conversationListPageSize,
+        entrypoint: resolvedEntrypoint === "all" ? undefined : resolvedEntrypoint,
+        simulation: resolvedSimulation === "all" ? undefined : resolvedSimulation === "simulation",
+      });
       if (requestSeq !== requestSeqRef.current) {
         return;
       }
       const conversations = Array.isArray(response.conversations) ? response.conversations : [];
       setItems(conversations);
       setTotal(Number.isFinite(response.total) ? response.total : conversations.length);
+      setPage(response.page || resolvedPage);
+      setHasMore(Boolean(response.has_more));
       setLogEnabled(response.log?.enabled ?? true);
-      const nextActive = conversations.find((item) => item.id === currentActiveId)?.id ?? conversations[0]?.id ?? "";
-      setActiveId(nextActive);
     } catch (err) {
       if (requestSeq !== requestSeqRef.current) {
         return;
@@ -273,19 +357,21 @@ export function ConversationsModule(_props: BaseModuleProps) {
   }, []);
 
   React.useEffect(() => {
-    void load("");
+    void load({ page: 1 });
     return () => {
       requestSeqRef.current += 1;
     };
-  }, [load]);
+  }, [entrypointFilter, simulationFilter, load]);
 
   const detailMessages = Array.isArray(detail?.messages) ? detail.messages : [];
 
   React.useEffect(() => {
     if (!activeId) {
       setDetail(null);
+      setSelectedTraceDetail(null);
       return;
     }
+    setSelectedTraceDetail(null);
     let cancelled = false;
     setDetailLoading(true);
     setDetail(null);
@@ -293,6 +379,10 @@ export function ConversationsModule(_props: BaseModuleProps) {
       .then((response) => {
         if (!cancelled) {
           setDetail(response);
+          const latestAssistant = [...(response.messages ?? [])].reverse().find((message) => message.role === "assistant");
+          if (latestAssistant) {
+            void inspectConversationMessage(latestAssistant);
+          }
         }
       })
       .catch((err) => {
@@ -309,7 +399,49 @@ export function ConversationsModule(_props: BaseModuleProps) {
     return () => {
       cancelled = true;
     };
-  }, [activeId]);
+  }, [activeId, inspectConversationMessage]);
+
+  function applySearch() {
+    pageRef.current = 1;
+    setPage(1);
+    void load({ q: query, page: 1 });
+  }
+
+  function openConversation(id: string) {
+    setActiveId(id);
+  }
+
+  function closeConversation() {
+    setActiveId("");
+    setDetail(null);
+    setSelectedTraceDetail(null);
+  }
+
+  async function deleteConversation(item: CustomerConversationSummary) {
+    const confirmed = window.confirm(`确认删除会话「${item.title || item.session_id || item.id}」吗？\n\n会物理删除该会话对应的 JSONL 记录，不可恢复。`);
+    if (!confirmed) {
+      return;
+    }
+    setDeletingId(item.id);
+    setError("");
+    try {
+      const response = await api.deleteCustomerConversation(item.id);
+      toast.success("会话已删除", `删除 ${response.deleted_records} 条 JSONL 记录，影响 ${response.touched_files} 个文件。`);
+      if (activeIdRef.current === item.id) {
+        closeConversation();
+      }
+      const nextPage = items.length <= 1 && pageRef.current > 1 ? pageRef.current - 1 : pageRef.current;
+      pageRef.current = nextPage;
+      setPage(nextPage);
+      await load({ page: nextPage });
+    } catch (err) {
+      const message = errorMessage(err);
+      setError(message);
+      toast.error("删除失败", message);
+    } finally {
+      setDeletingId("");
+    }
+  }
 
   return (
     <ModuleFrame
@@ -333,122 +465,283 @@ export function ConversationsModule(_props: BaseModuleProps) {
         </TabsList>
 
         {activeTab === "records" ? (
-        <TabsContent className="mt-0 space-y-4">
-          {error ? (
-            <Alert variant="destructive" className="rounded-lg">
-              <AlertTitle>用户会话读取失败</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          ) : null}
-          {!logEnabled ? (
-            <Alert className="rounded-lg border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-100">
-              <AlertTitle>客户问答日志未开启</AlertTitle>
-              <AlertDescription>当前不会产生新的用户会话记录，请在配置中开启 customer chat log。</AlertDescription>
-            </Alert>
-          ) : null}
-          <div className="grid min-h-[680px] gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
-            <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
-              <CardHeader className="space-y-3">
-                <div>
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <MessageSquareText className="h-4 w-4" />
-                    会话列表
-                  </CardTitle>
-                  <CardDescription>共 {total} 个会话，按最近更新时间排序。</CardDescription>
+          <TabsContent className="mt-0 space-y-4">
+            {error ? (
+              <Alert variant="destructive" className="rounded-lg">
+                <AlertTitle>用户会话读取失败</AlertTitle>
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            ) : null}
+            {!logEnabled ? (
+              <Alert className="rounded-lg border-border bg-muted/40 text-foreground">
+                <AlertTitle>客户问答日志未开启</AlertTitle>
+                <AlertDescription>当前不会产生新的用户会话记录，请在配置中开启 customer chat log。</AlertDescription>
+              </Alert>
+            ) : null}
+            <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
+              <CardHeader className="space-y-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <MessageSquareText className="h-4 w-4" />
+                      会话列表
+                    </CardTitle>
+                    <CardDescription>共 {total} 个会话，按最近更新时间排序。</CardDescription>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span>第 {page} 页</span>
+                    <span>每页 {conversationListPageSize}</span>
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <Input
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        void load(query);
-                      }
+                <div className="grid gap-2 lg:grid-cols-[minmax(260px,1fr)_150px_150px_auto_auto]">
+                  <div className="flex min-w-0 gap-2">
+                    <Input
+                      value={query}
+                      onChange={(event) => setQuery(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          applySearch();
+                        }
+                      }}
+                      placeholder="搜索问题、回答、session、trace"
+                    />
+                    <Button variant="outline" onClick={applySearch} title="搜索会话" aria-label="搜索会话">
+                      <Search className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <Select
+                    value={entrypointFilter}
+                    onChange={(event) => {
+                      pageRef.current = 1;
+                      setPage(1);
+                      setEntrypointFilter(event.target.value as ConversationEntrypointFilter);
                     }}
-                    placeholder="搜索问题、回答、session"
-                  />
-                  <Button variant="outline" onClick={() => void load(query)}>
-                    <Search className="h-4 w-4" />
+                    aria-label="来源筛选"
+                  >
+                    <option value="all">全部来源</option>
+                    <option value="external">外部</option>
+                    <option value="internal">内部</option>
+                  </Select>
+                  <Select
+                    value={simulationFilter}
+                    onChange={(event) => {
+                      pageRef.current = 1;
+                      setPage(1);
+                      setSimulationFilter(event.target.value as ConversationSimulationFilter);
+                    }}
+                    aria-label="测试筛选"
+                  >
+                    <option value="all">全部记录</option>
+                    <option value="formal">正式</option>
+                    <option value="simulation">测试</option>
+                  </Select>
+                  <Button variant="outline" onClick={() => void load({ page })} disabled={loading}>
+                    <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />
+                    刷新
                   </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={loading || page <= 1}
+                      onClick={() => {
+                        const nextPage = Math.max(1, page - 1);
+                        pageRef.current = nextPage;
+                        setPage(nextPage);
+                        void load({ page: nextPage });
+                      }}
+                    >
+                      上一页
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={loading || !hasMore}
+                      onClick={() => {
+                        const nextPage = page + 1;
+                        pageRef.current = nextPage;
+                        setPage(nextPage);
+                        void load({ page: nextPage });
+                      }}
+                    >
+                      下一页
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="max-h-[560px] space-y-2 overflow-y-auto pr-1">
-                  {items.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={cn(
-                        "w-full rounded-lg border p-3 text-left transition hover:border-slate-300 hover:bg-slate-50 dark:hover:border-border dark:hover:bg-secondary/50",
-                        activeId === item.id && "border-slate-950 bg-slate-50 dark:border-primary dark:bg-secondary",
-                      )}
-                      onClick={() => setActiveId(item.id)}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0 truncate text-sm font-medium">{item.title || item.session_id}</div>
-                        <Badge>{item.turn_count} 轮</Badge>
-                      </div>
-                      <div className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.last_question || "无问题文本"}</div>
-                      <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                        <span className="min-w-0 truncate">{item.session_id}</span>
-                        <span className="shrink-0">{formatDate(item.updated_at)}</span>
-                      </div>
-                    </button>
-                  ))}
-                  {!items.length && !loading ? (
-                    <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-                      {query.trim() ? "没有匹配的用户会话。" : "还没有客户会话记录。"}
-                    </div>
-                  ) : null}
+                <div className="overflow-x-auto rounded-lg border">
+                  <Table className="min-w-[1020px]">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-[120px]">更新时间</TableHead>
+                        <TableHead className="w-[150px]">来源</TableHead>
+                        <TableHead>会话 / 标题</TableHead>
+                        <TableHead className="w-[90px]">消息数</TableHead>
+                        <TableHead className="w-[100px]">平均耗时</TableHead>
+                        <TableHead className="w-[90px]">需审查</TableHead>
+                        <TableHead className="w-[130px]">异常 / 审查</TableHead>
+                        <TableHead className="w-[70px]">轮数</TableHead>
+                        <TableHead className="w-[130px]">操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {items.map((item) => (
+                        <TableRow key={item.id} className="cursor-pointer" onClick={() => openConversation(item.id)}>
+                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDate(item.updated_at)}</TableCell>
+                          <TableCell>
+                            <ConversationSourceBadges item={item} />
+                          </TableCell>
+                          <TableCell>
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium">{item.title || item.session_id || item.id}</div>
+                              <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">{item.session_id || item.id}</div>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-sm">{item.message_count}</span>
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{durationMSLabel(item.average_duration_ms)}</TableCell>
+                          <TableCell className="text-sm">{numberLabel(item.review_required_count)}</TableCell>
+                          <TableCell>
+                            <ConversationStatusBadges item={item} />
+                          </TableCell>
+                          <TableCell>
+                            <Badge>{item.turn_count}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex gap-1" onClick={(event) => event.stopPropagation()}>
+                              <Button type="button" variant="ghost" size="sm" onClick={() => openConversation(item.id)} title="查看会话">
+                                <Eye className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => void deleteConversation(item)}
+                                disabled={deletingId === item.id}
+                                title="删除会话"
+                              >
+                                {deletingId === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4 text-destructive" />}
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
                 </div>
+                {!items.length && !loading ? (
+                  <div className="mt-4 rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+                    {query.trim() || entrypointFilter !== "all" || simulationFilter !== "all" ? "没有匹配的用户会话。" : "还没有客户会话记录。"}
+                  </div>
+                ) : null}
+                {loading ? <div className="mt-4 rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">正在读取会话...</div> : null}
               </CardContent>
             </Card>
 
-            <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
-              <CardHeader>
-                <CardTitle className="text-base">会话详情</CardTitle>
-                <CardDescription>
-                  {detail?.conversation ? `${detail.conversation.session_id} · ${detail.conversation.turn_count} 轮` : "选择左侧会话查看消息流水。"}
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {detailLoading ? <div className="py-12 text-center text-sm text-muted-foreground">正在读取会话...</div> : null}
-                {!detailLoading && detail ? (
-                  <div className="space-y-4">
-                    <div className="grid gap-2 md:grid-cols-3">
-                      <StatusLine label="Session" value={detail.conversation.session_id} ok />
-                      <StatusLine label="User" value={detail.conversation.user_id || "-"} ok={Boolean(detail.conversation.user_id)} />
-                      <StatusLine label="更新" value={formatDate(detail.conversation.updated_at)} ok />
+            <Dialog open={Boolean(activeId)}>
+              <DialogContent className="flex h-[88vh] max-w-[min(1500px,calc(100vw-2rem))] flex-col overflow-hidden p-0">
+                <DialogHeader className="mb-0 border-b px-5 py-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <DialogTitle className="truncate text-base">会话详情</DialogTitle>
+                      <DialogDescription className="mt-1 truncate">
+                        {detail?.conversation ? `${detail.conversation.session_id} · ${detail.conversation.turn_count} 轮 · ${formatDate(detail.conversation.updated_at)}` : "正在读取会话流水与审计详情"}
+                      </DialogDescription>
                     </div>
-                    <div className="max-h-[520px] space-y-3 overflow-y-auto pr-1">
-                      {detailMessages.map((message, index) => (
-                        <div key={`${message.id || message.message_id || "message"}-${message.role}-${index}`} className="space-y-2">
-                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                            <div className="flex items-center gap-2">
-                              <Badge variant={message.role === "user" ? "default" : "success"}>{message.role === "user" ? "用户" : "助手"}</Badge>
-                              {message.answer_mode ? <Badge variant="warning">{message.answer_mode}</Badge> : null}
-                            </div>
-                            <span>{formatDate(message.created_at)}</span>
-                          </div>
-                          <MessageCard
-                            id={message.id}
-                            role={message.role}
-                            content={message.content}
-                            createdAt={message.created_at}
-                            details={message.role === "assistant" ? message.details : undefined}
-                            detailMode="after"
-                          />
-                          {message.trace_id ? <div className="px-1 font-mono text-[11px] text-muted-foreground">trace: {message.trace_id}</div> : null}
-                        </div>
-                      ))}
-                    </div>
+                    <Button type="button" variant="ghost" size="sm" onClick={closeConversation}>
+                      <X className="mr-2 h-4 w-4" />
+                      关闭
+                    </Button>
                   </div>
-                ) : null}
-                {!detailLoading && !detail ? <div className="py-12 text-center text-sm text-muted-foreground">暂无会话详情。</div> : null}
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
+                </DialogHeader>
+                <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(360px,42%)_minmax(0,1fr)]">
+                  <section className="min-h-0 border-r bg-muted/40 dark:bg-background/40">
+                    <div className="flex h-full min-h-0 flex-col">
+                      <div className="border-b bg-card px-4 py-3 dark:bg-card">
+                        {detail?.conversation ? (
+                          <div className="space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <ConversationSourceBadges item={detail.conversation} />
+                              <ConversationStatusBadges item={detail.conversation} />
+                            </div>
+                            <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                              <div className="min-w-0 truncate">会话：{detail.conversation.session_id}</div>
+                              <div>轮数: {detail.conversation.turn_count}</div>
+                              <div>消息数: {detail.conversation.message_count}</div>
+                              <div>平均耗时: {averageAssistantDurationLabel(detailMessages)}</div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-sm text-muted-foreground">正在读取会话元信息...</div>
+                        )}
+                      </div>
+                      <ScrollArea className="min-h-0 flex-1">
+                        <div className="space-y-4 p-4">
+                          {detailLoading ? <div className="rounded-lg border border-dashed bg-card p-6 text-center text-sm text-muted-foreground dark:bg-card">正在读取会话...</div> : null}
+                          {!detailLoading && detailMessages.length === 0 ? (
+                            <div className="rounded-lg border border-dashed bg-card p-6 text-center text-sm text-muted-foreground dark:bg-card">暂无会话详情。</div>
+                          ) : null}
+                          {detailMessages.map((message, index) => (
+                            <div
+                              key={`${message.id || message.message_id || "message"}-${message.role}-${index}`}
+                              className={cn(
+                                "rounded-lg",
+                                message.role === "assistant" && "cursor-pointer",
+                              )}
+                              role={message.role === "assistant" ? "button" : undefined}
+                              tabIndex={message.role === "assistant" ? 0 : undefined}
+                              onClick={message.role === "assistant" ? () => void inspectConversationMessage(message) : undefined}
+                              onKeyDown={(event) => {
+                                if (message.role === "assistant" && (event.key === "Enter" || event.key === " ")) {
+                                  event.preventDefault();
+                                  void inspectConversationMessage(message);
+                                }
+                              }}
+                            >
+                              <ConversationMessageAuditCard message={message} selected={selectedTraceDetail?.id === message.id} />
+                            </div>
+                          ))}
+                        </div>
+                      </ScrollArea>
+                    </div>
+                  </section>
+                  <section className="min-h-0 bg-card dark:bg-card">
+                    <ScrollArea className="h-full px-5 pb-5">
+                      {selectedTraceDetail ? (
+                        <MessageDetails
+                          details={selectedTraceDetail.details ?? {}}
+                          message={{
+                            role: selectedTraceDetail.role,
+                            content: selectedTraceDetail.content,
+                            createdAt: selectedTraceDetail.createdAt,
+                            statusText: selectedTraceDetail.statusText,
+                            answer: selectedTraceDetail.role === "assistant" ? selectedTraceDetail.content : undefined,
+                          }}
+                          leadingContent={
+                            <section className="min-w-0 rounded-lg bg-muted/40 px-3 py-2 dark:bg-secondary/50">
+                              <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                <Badge variant="success">助手</Badge>
+                                {selectedTraceDetail.statusText ? <span>{selectedTraceDetail.statusText}</span> : null}
+                              </div>
+                              <div className="max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground dark:text-muted-foreground">
+                                {selectedTraceDetail.content}
+                              </div>
+                            </section>
+                          }
+                        />
+                      ) : (
+                        <div className="mt-6 rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+                          选择左侧任意助手回答查看 trace 审计详情。
+                        </div>
+                      )}
+                    </ScrollArea>
+                  </section>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </TabsContent>
         ) : null}
 
         {activeTab === "chat-test" ? (
@@ -459,6 +752,110 @@ export function ConversationsModule(_props: BaseModuleProps) {
       </Tabs>
     </ModuleFrame>
   );
+}
+
+function ConversationSourceBadges({ item }: { item: CustomerConversationSummary }) {
+  const entrypoints = Array.isArray(item.entrypoints) && item.entrypoints.length > 0 ? item.entrypoints : item.last_entrypoint ? [item.last_entrypoint] : [];
+  return (
+    <div className="flex flex-wrap gap-1">
+      {entrypoints.length ? (
+        entrypoints.map((entrypoint) => (
+          <Badge key={entrypoint} variant={entrypoint === "external" ? "success" : "default"}>
+            {entrypoint}
+          </Badge>
+        ))
+      ) : (
+        <Badge>unknown</Badge>
+      )}
+      {item.last_simulation ? <Badge variant="warning">simulation</Badge> : null}
+    </div>
+  );
+}
+
+function ConversationMessageAuditCard({ message, selected }: { message: CustomerConversationMessage; selected: boolean }) {
+  return (
+    <article
+      className={cn(
+        "min-w-0 rounded-lg border bg-card p-3 shadow-sm dark:bg-card",
+        message.role === "assistant" && "border-border",
+        message.role === "user" && "border-border bg-muted/40 dark:bg-secondary/40",
+        selected && "border-border ring-1 ring-slate-300 dark:border-border dark:ring-border",
+      )}
+    >
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={message.role === "user" ? "default" : "success"}>{message.role === "user" ? "用户" : "助手"}</Badge>
+          {message.role === "assistant" && message.specialist ? <Badge>{message.specialist}</Badge> : null}
+          {message.role === "assistant" && message.answer_mode ? <Badge variant="warning">{message.answer_mode}</Badge> : null}
+          {message.role === "assistant" && message.simulation ? <Badge variant="warning">simulation</Badge> : null}
+        </div>
+        <span className="whitespace-nowrap">
+          {formatDate(message.created_at)}
+          {message.role === "assistant" && message.duration_ms ? <span> · 耗时 {durationMSLabel(message.duration_ms)}</span> : null}
+        </span>
+      </div>
+      <div className="min-w-0 whitespace-pre-wrap break-words text-sm leading-6 text-foreground dark:text-foreground">
+        {message.role === "assistant" ? (
+          <MarkdownContent className="prose prose-slate prose-sm max-w-none dark:prose-invert prose-table:my-0 prose-th:p-0 prose-td:p-0">
+            {message.content}
+          </MarkdownContent>
+        ) : (
+          message.content
+        )}
+      </div>
+      {message.role === "assistant" && message.trace_id ? <div className="mt-2 font-mono text-[11px] text-muted-foreground">Trace：{message.trace_id}</div> : null}
+    </article>
+  );
+}
+
+function ConversationStatusBadges({ item }: { item: CustomerConversationSummary }) {
+  const errorCount = item.error_count ?? 0;
+  const reviewCount = item.review_required_count ?? 0;
+  if (errorCount <= 0 && reviewCount <= 0) {
+    return <Badge variant="success">正常</Badge>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {errorCount > 0 ? <Badge variant="danger">{errorCount} 异常</Badge> : null}
+      {reviewCount > 0 ? <Badge variant="warning">{reviewCount} 待审</Badge> : null}
+    </div>
+  );
+}
+
+function averageAssistantDurationLabel(messages: CustomerConversationMessage[]) {
+  const durations = messages
+    .filter((message) => message.role === "assistant")
+    .map((message) => Number(message.duration_ms ?? 0))
+    .filter((duration) => Number.isFinite(duration) && duration > 0);
+  if (!durations.length) {
+    return "-";
+  }
+  const average = durations.reduce((sum, duration) => sum + duration, 0) / durations.length;
+  return durationMSLabel(average);
+}
+
+function durationMSLabel(value?: number) {
+  const ms = Number(value ?? 0);
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return "-";
+  }
+  if (ms < 1000) {
+    return `${Math.round(ms)}ms`;
+  }
+  if (ms < 60000) {
+    return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
+  }
+  const minutes = Math.floor(ms / 60000);
+  const seconds = Math.round((ms % 60000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}
+
+function numberLabel(value?: number) {
+  const number = Number(value ?? 0);
+  if (!Number.isFinite(number)) {
+    return "-";
+  }
+  return String(number);
 }
 
 type SimulationMessageStatus = "pending" | "streaming" | "done" | "error" | "cancelled";
@@ -479,17 +876,151 @@ type ConversationSimulationSession = {
 
 type ConversationSimulationStore = Record<string, ConversationSimulationSession>;
 
+type ConversationSimulationRuntime = {
+  initialized: boolean;
+  store: ConversationSimulationStore;
+  error: string;
+  busySessionId: string;
+  activeRequest: { sessionId: string; controller: AbortController } | null;
+  listeners: Set<() => void>;
+  persistTimer?: number;
+};
+
 const conversationSimulationStorageKey = "wikios.admin.customer-chat-interface-test.v1";
 const chatInterfaceTestSessionId = "external-chat-interface";
+const conversationSimulationRuntime: ConversationSimulationRuntime = {
+  initialized: false,
+  store: {},
+  error: "",
+  busySessionId: "",
+  activeRequest: null,
+  listeners: new Set(),
+};
+
+function conversationSimulationSnapshot() {
+  return {
+    store: conversationSimulationRuntime.store,
+    error: conversationSimulationRuntime.error,
+    busySessionId: conversationSimulationRuntime.busySessionId,
+  };
+}
+
+function initializeConversationSimulationRuntime() {
+  if (conversationSimulationRuntime.initialized || typeof window === "undefined") {
+    return;
+  }
+  try {
+    conversationSimulationRuntime.store = normalizeConversationSimulationStore(JSON.parse(localStorage.getItem(conversationSimulationStorageKey) || "{}"));
+  } catch {
+    conversationSimulationRuntime.store = {};
+  }
+  conversationSimulationRuntime.initialized = true;
+  notifyConversationSimulationRuntime();
+}
+
+function notifyConversationSimulationRuntime() {
+  for (const listener of conversationSimulationRuntime.listeners) {
+    listener();
+  }
+}
+
+function scheduleConversationSimulationPersist() {
+  if (!conversationSimulationRuntime.initialized || typeof window === "undefined") {
+    return;
+  }
+  if (conversationSimulationRuntime.persistTimer) {
+    window.clearTimeout(conversationSimulationRuntime.persistTimer);
+  }
+  conversationSimulationRuntime.persistTimer = window.setTimeout(() => {
+    localStorage.setItem(conversationSimulationStorageKey, JSON.stringify(conversationSimulationRuntime.store));
+    conversationSimulationRuntime.persistTimer = undefined;
+  }, 120);
+}
+
+function setConversationSimulationStore(updater: ConversationSimulationStore | ((current: ConversationSimulationStore) => ConversationSimulationStore)) {
+  conversationSimulationRuntime.store = typeof updater === "function" ? updater(conversationSimulationRuntime.store) : updater;
+  scheduleConversationSimulationPersist();
+  notifyConversationSimulationRuntime();
+}
+
+function setConversationSimulationError(error: string) {
+  conversationSimulationRuntime.error = error;
+  notifyConversationSimulationRuntime();
+}
+
+function setConversationSimulationBusySessionId(sessionId: string) {
+  conversationSimulationRuntime.busySessionId = sessionId;
+  notifyConversationSimulationRuntime();
+}
+
+function patchConversationSimulationSession(id: string, updater: (current: ConversationSimulationSession) => ConversationSimulationSession) {
+  if (!id) {
+    return;
+  }
+  setConversationSimulationStore((current) => ({ ...current, [id]: updater(current[id] ?? emptySimulationSession()) }));
+}
+
+function appendConversationSimulationMessage(id: string, message: ConversationSimulationMessage) {
+  patchConversationSimulationSession(id, (current) => ({ ...current, messages: [...current.messages, message] }));
+}
+
+function patchConversationSimulationMessage(
+  id: string,
+  messageId: string,
+  updates: {
+    content?: string | ((prev: string) => string);
+    created_at?: string;
+    status?: SimulationMessageStatus;
+    details?: unknown | ((prev: unknown) => unknown);
+  },
+) {
+  patchConversationSimulationSession(id, (current) => ({
+    ...current,
+    messages: current.messages.map((message) => {
+      if (message.id !== messageId) {
+        return message;
+      }
+      return {
+        ...message,
+        content: typeof updates.content === "function" ? updates.content(message.content) : updates.content ?? message.content,
+        created_at: updates.created_at?.trim() ? updates.created_at : message.created_at,
+        status: updates.status ?? message.status,
+        details: "details" in updates ? resolveSimulationDetailUpdate(updates.details, message.details) : message.details,
+      };
+    }),
+  }));
+}
+
+function appendConversationSimulationEventDetail(id: string, messageId: string, key: string, value: unknown, limit: number) {
+  patchConversationSimulationMessage(id, messageId, {
+    details: (previous: unknown) => {
+      const object = simulationRecord(previous);
+      const current = Array.isArray(object[key]) ? object[key] : [];
+      return { ...object, [key]: [...current, value].slice(-limit) };
+    },
+  });
+}
+
+function appendConversationSimulationDetailText(id: string, messageId: string, key: string, value: string, limit: number) {
+  if (!value) {
+    return;
+  }
+  patchConversationSimulationMessage(id, messageId, {
+    details: (previous: unknown) => {
+      const object = simulationRecord(previous);
+      const next = `${String(object[key] ?? "")}${value}`;
+      return { ...object, [key]: next.length > limit ? next.slice(-limit) : next };
+    },
+  });
+}
 
 function ChatInterfaceTestPanel() {
-  const [store, setStore] = React.useState<ConversationSimulationStore>({});
-  const [hydrated, setHydrated] = React.useState(false);
-  const [error, setError] = React.useState("");
-  const [busySessionId, setBusySessionId] = React.useState("");
+  const [runtimeSnapshot, setRuntimeSnapshot] = React.useState(conversationSimulationSnapshot);
   const [selectedDetailId, setSelectedDetailId] = React.useState("");
-  const activeRequestRef = React.useRef<{ sessionId: string; controller: AbortController } | null>(null);
   const sessionId = chatInterfaceTestSessionId;
+  const store = runtimeSnapshot.store;
+  const error = runtimeSnapshot.error;
+  const busySessionId = runtimeSnapshot.busySessionId;
   const scroll = useScrollFollow<HTMLDivElement>([sessionId, store[sessionId]?.messages]);
   const activeSession = store[sessionId] ?? emptySimulationSession();
   const busy = Boolean(sessionId && busySessionId === sessionId);
@@ -500,42 +1031,21 @@ function ChatInterfaceTestPanel() {
   );
 
   React.useEffect(() => {
-    try {
-      setStore(normalizeConversationSimulationStore(JSON.parse(localStorage.getItem(conversationSimulationStorageKey) || "{}")));
-    } catch {
-      setStore({});
-    } finally {
-      setHydrated(true);
-    }
+    initializeConversationSimulationRuntime();
+    const listener = () => setRuntimeSnapshot(conversationSimulationSnapshot());
+    conversationSimulationRuntime.listeners.add(listener);
+    listener();
+    return () => {
+      conversationSimulationRuntime.listeners.delete(listener);
+    };
   }, []);
-
-  React.useEffect(() => {
-    if (!hydrated) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      localStorage.setItem(conversationSimulationStorageKey, JSON.stringify(store));
-    }, 120);
-    return () => window.clearTimeout(timer);
-  }, [hydrated, store]);
 
   React.useEffect(() => {
     scroll.scrollToBottom("auto");
   }, [sessionId, scroll.scrollToBottom]);
 
-  React.useEffect(
-    () => () => {
-      activeRequestRef.current?.controller.abort();
-      activeRequestRef.current = null;
-    },
-    [],
-  );
-
   function patchSession(id: string, updater: (current: ConversationSimulationSession) => ConversationSimulationSession) {
-    if (!id) {
-      return;
-    }
-    setStore((current) => ({ ...current, [id]: updater(current[id] ?? emptySimulationSession()) }));
+    patchConversationSimulationSession(id, updater);
   }
 
   function setDraft(value: string) {
@@ -543,7 +1053,7 @@ function ChatInterfaceTestPanel() {
   }
 
   function appendMessage(id: string, message: ConversationSimulationMessage) {
-    patchSession(id, (current) => ({ ...current, messages: [...current.messages, message] }));
+    appendConversationSimulationMessage(id, message);
   }
 
   function patchMessage(
@@ -556,44 +1066,15 @@ function ChatInterfaceTestPanel() {
       details?: unknown | ((prev: unknown) => unknown);
     },
   ) {
-    patchSession(id, (current) => ({
-      ...current,
-      messages: current.messages.map((message) => {
-        if (message.id !== messageId) {
-          return message;
-        }
-        return {
-          ...message,
-          content: typeof updates.content === "function" ? updates.content(message.content) : updates.content ?? message.content,
-          created_at: updates.created_at?.trim() ? updates.created_at : message.created_at,
-          status: updates.status ?? message.status,
-          details: "details" in updates ? resolveSimulationDetailUpdate(updates.details, message.details) : message.details,
-        };
-      }),
-    }));
+    patchConversationSimulationMessage(id, messageId, updates);
   }
 
   function appendEventDetail(id: string, messageId: string, key: string, value: unknown, limit: number) {
-    patchMessage(id, messageId, {
-      details: (previous: unknown) => {
-        const object = simulationRecord(previous);
-        const current = Array.isArray(object[key]) ? object[key] : [];
-        return { ...object, [key]: [...current, value].slice(-limit) };
-      },
-    });
+    appendConversationSimulationEventDetail(id, messageId, key, value, limit);
   }
 
   function appendDetailText(id: string, messageId: string, key: string, value: string, limit: number) {
-    if (!value) {
-      return;
-    }
-    patchMessage(id, messageId, {
-      details: (previous: unknown) => {
-        const object = simulationRecord(previous);
-        const next = `${String(object[key] ?? "")}${value}`;
-        return { ...object, [key]: next.length > limit ? next.slice(-limit) : next };
-      },
-    });
+    appendConversationSimulationDetailText(id, messageId, key, value, limit);
   }
 
   function handleStreamEvent(id: string, messageId: string, event: CustomerStreamEvent) {
@@ -607,7 +1088,6 @@ function ChatInterfaceTestPanel() {
         content: (previous) => `${previous}${String(data.delta ?? "")}`,
         status: "streaming",
       });
-      scroll.scrollToBottom("smooth");
       return;
     }
     if (event.type === "step_start" || event.type === "step_finish") {
@@ -664,13 +1144,12 @@ function ChatInterfaceTestPanel() {
           response: data,
         }),
       });
-      scroll.scrollToBottom("smooth");
       return;
     }
     if (event.type === "error") {
       const data = simulationRecord(event.data);
       const message = String(data.message ?? "接口测试失败");
-      setError(message);
+      setConversationSimulationError(message);
       patchMessage(id, messageId, {
         content: message,
         status: "error",
@@ -689,7 +1168,7 @@ function ChatInterfaceTestPanel() {
     if (!id || !question || busySessionId) {
       return;
     }
-    setError("");
+    setConversationSimulationError("");
     patchSession(id, (current) => ({ ...current, draft: "" }));
     const questionCreatedAt = new Date().toISOString();
     const userMessage: ConversationSimulationMessage = {
@@ -708,11 +1187,9 @@ function ChatInterfaceTestPanel() {
       created_at: new Date().toISOString(),
       status: "streaming",
     });
-    window.requestAnimationFrame(() => scroll.scrollToBottom("auto"));
-
     const controller = new AbortController();
-    activeRequestRef.current = { sessionId: id, controller };
-    setBusySessionId(id);
+    conversationSimulationRuntime.activeRequest = { sessionId: id, controller };
+    setConversationSimulationBusySessionId(id);
     try {
       const traceID = await api.customerChatAuditStream(
         question,
@@ -754,22 +1231,24 @@ function ChatInterfaceTestPanel() {
         });
       } else {
         const message = reason instanceof Error ? reason.message : "接口测试失败";
-        setError(message);
+        setConversationSimulationError(message);
         patchMessage(id, assistantId, { content: message, status: "error" });
       }
     } finally {
-      if (activeRequestRef.current?.controller === controller) {
-        activeRequestRef.current = null;
+      if (conversationSimulationRuntime.activeRequest?.controller === controller) {
+        conversationSimulationRuntime.activeRequest = null;
       }
-      setBusySessionId((current) => (current === id ? "" : current));
+      if (conversationSimulationRuntime.busySessionId === id) {
+        setConversationSimulationBusySessionId("");
+      }
     }
   }
 
   function stopSimulation() {
-    if (!busy || activeRequestRef.current?.sessionId !== sessionId) {
+    if (!busy || conversationSimulationRuntime.activeRequest?.sessionId !== sessionId) {
       return;
     }
-    activeRequestRef.current.controller.abort();
+    conversationSimulationRuntime.activeRequest.controller.abort();
   }
 
   function clearSimulation() {
@@ -778,11 +1257,11 @@ function ChatInterfaceTestPanel() {
     }
     patchSession(sessionId, () => emptySimulationSession());
     setSelectedDetailId("");
-    setError("");
+    setConversationSimulationError("");
   }
 
   return (
-    <Card className="relative overflow-hidden rounded-lg border bg-white shadow-sm dark:bg-card xl:col-span-2 2xl:col-span-1">
+    <Card className="relative overflow-hidden rounded-lg border bg-card shadow-sm dark:bg-card xl:col-span-2 2xl:col-span-1">
       <CardHeader className="space-y-3 pb-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -796,9 +1275,6 @@ function ChatInterfaceTestPanel() {
             清空上下文
           </Button>
         </div>
-        <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-muted-foreground dark:bg-secondary/50">
-          审查消息只保存在本机浏览器，不写入用户会话日志，也不会改变会话记录。
-        </div>
       </CardHeader>
       <CardContent className="flex h-[640px] min-h-0 flex-col gap-3">
         {error ? (
@@ -807,32 +1283,36 @@ function ChatInterfaceTestPanel() {
             <AlertDescription className="break-words">{error}</AlertDescription>
           </Alert>
         ) : null}
-        <div className="relative min-h-0 flex-1 rounded-lg bg-slate-50 dark:bg-background/60">
+        <div className="relative min-h-0 flex-1 rounded-lg bg-muted/40 dark:bg-background/60">
           <ScrollArea viewportRef={scroll.viewportRef} className="h-full px-3 py-4">
             <div className="mx-auto flex max-w-2xl flex-col gap-3 pb-2">
               {!activeSession.messages.length ? (
-                <div className="rounded-lg border border-dashed bg-white p-5 text-center text-sm leading-6 text-muted-foreground dark:bg-card">
+                <div className="rounded-lg border border-dashed bg-card p-5 text-center text-sm leading-6 text-muted-foreground dark:bg-card">
                   输入客户问题，审查外部聊天接口返回；这里的上下文独立于真实用户会话。
                 </div>
               ) : null}
-              {activeSession.messages.map((message) => (
-                <MessageCard
-                  key={message.id}
-                  id={message.id}
-                  role={message.role}
-                  content={message.content}
-                  createdAt={message.created_at}
-                  pending={message.status === "pending" || message.status === "streaming"}
-                  statusText={simulationMessageStatusText(message)}
-                  details={message.details}
-                  selected={selectedDetailId === message.id}
-                  onInspect={message.details ? ({ id }) => setSelectedDetailId(id) : undefined}
-                />
-              ))}
+              {activeSession.messages.map((message) => {
+                const pending = message.status === "pending" || message.status === "streaming";
+                const showTypingIndicator = message.role === "assistant" && pending && message.content.trim() === "";
+                return (
+                  <MessageCard
+                    key={message.id}
+                    id={message.id}
+                    role={message.role}
+                    content={message.content}
+                    createdAt={message.created_at}
+                    pending={pending}
+                    statusText={showTypingIndicator ? "" : simulationMessageStatusText(message)}
+                    details={message.details}
+                    selected={selectedDetailId === message.id}
+                    onInspect={message.details ? ({ id }) => setSelectedDetailId(id) : undefined}
+                  />
+                );
+              })}
             </div>
           </ScrollArea>
         </div>
-        <div className="rounded-2xl border bg-white p-2 shadow-sm dark:bg-background dark:shadow-none">
+        <div className="rounded-lg border bg-card p-2 shadow-sm dark:bg-background dark:shadow-none">
           <Textarea
             value={activeSession.draft}
             onChange={(event) => setDraft(event.target.value)}
@@ -1201,7 +1681,7 @@ function ModelSettingsPanel({ onDashboardRefresh, setDetail }: Pick<BaseModulePr
       ) : null}
 
       <div className="grid gap-3 xl:grid-cols-[380px_minmax(0,1fr)]">
-        <Card className="rounded-lg border bg-white shadow-sm">
+        <Card className="rounded-lg border bg-card shadow-sm">
           <CardHeader>
             <CardTitle className="text-base">{form.id ? "编辑模型" : "新增模型"}</CardTitle>
             <CardDescription>API Key 只提交给后端，编辑时留空会保留原密钥。</CardDescription>
@@ -1245,7 +1725,7 @@ function ModelSettingsPanel({ onDashboardRefresh, setDetail }: Pick<BaseModulePr
           </CardContent>
         </Card>
 
-        <Card className="rounded-lg border bg-white shadow-sm">
+        <Card className="rounded-lg border bg-card shadow-sm">
           <CardHeader>
             <CardTitle className="text-base">已添加模型</CardTitle>
             <CardDescription>备用模型调用成功后，后端会自动把成功模型持久设为当前 active。</CardDescription>
@@ -1281,7 +1761,7 @@ function ModelSettingsPanel({ onDashboardRefresh, setDetail }: Pick<BaseModulePr
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
                           {result ? (
-                            <span className={cn("inline-flex items-center gap-1 text-xs", result.ok ? "text-emerald-700" : "text-red-700")}>
+                            <span className={cn("inline-flex items-center gap-1 text-xs", result.ok ? "text-muted-foreground" : "text-destructive")}>
                               {result.ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
                               {result.latency_ms}ms
                             </span>
@@ -1939,7 +2419,7 @@ export function KnowledgeModule({ dashboard, user, onDashboardRefresh, initialPa
       ) : null}
 
       <Tabs className="min-h-[680px]">
-        <TabsList className="w-full justify-start overflow-x-auto rounded-lg bg-white p-1 dark:bg-card">
+        <TabsList className="w-full justify-start overflow-x-auto rounded-lg bg-card p-1 dark:bg-card">
           {knowledgeViews.map((item) => {
             const Icon = item.icon;
             return (
@@ -1959,7 +2439,7 @@ export function KnowledgeModule({ dashboard, user, onDashboardRefresh, initialPa
         {view === "browse" ? (
           <TabsContent>
             <div className="grid gap-3 xl:grid-cols-[360px_minmax(0,1fr)]">
-              <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
+              <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
                 <CardHeader className="space-y-3">
                   <div>
                     <CardTitle className="text-base">Wiki 浏览</CardTitle>
@@ -2036,7 +2516,7 @@ export function KnowledgeModule({ dashboard, user, onDashboardRefresh, initialPa
         ) : null}
 
         {view === "assistant" ? (
-          <TabsContent className="h-[680px] overflow-hidden rounded-lg border bg-white dark:bg-card">
+          <TabsContent className="h-[680px] overflow-hidden">
             <AdminChat
               username={user.username}
               embedded
@@ -2137,7 +2617,7 @@ function WikiFileWorkspace({
   }, [canFormat, file?.editable, onFormat, onSave]);
 
   return (
-    <Card className="min-h-[620px] rounded-lg border bg-white shadow-sm dark:bg-card">
+    <Card className="min-h-[620px] rounded-lg border bg-card shadow-sm dark:bg-card">
       <CardHeader className="space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
@@ -2151,7 +2631,7 @@ function WikiFileWorkspace({
                 href={api.wikiDownloadURL(file.path)}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-sm hover:bg-slate-50 dark:hover:bg-secondary"
+                className="inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-sm hover:bg-muted/40 dark:hover:bg-secondary"
                 title="下载这个文件"
               >
                 <Download className="h-4 w-4" />
@@ -2161,7 +2641,7 @@ function WikiFileWorkspace({
           ) : null}
         </div>
         {file ? (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-slate-50 px-3 py-2 text-xs text-muted-foreground dark:bg-background">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground dark:bg-background">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <span className="font-mono text-foreground">{file.name}</span>
               <span>{file.text_kind || file.preview}</span>
@@ -2171,7 +2651,7 @@ function WikiFileWorkspace({
             {file.editable ? (
               <div className="flex flex-wrap items-center gap-2">
                 {isMarkdown ? (
-                  <div className="flex rounded-lg border bg-white p-0.5 dark:bg-card">
+                  <div className="flex rounded-lg border bg-card p-0.5 dark:bg-card">
                     <Button variant={mode === "edit" ? "secondary" : "ghost"} size="sm" className="h-7 rounded-md px-2 text-xs" onClick={() => onModeChange("edit")}>
                       <PanelLeftClose className="mr-1 h-3.5 w-3.5" />
                       编辑
@@ -2211,7 +2691,7 @@ function WikiFileWorkspace({
           >
             {editorVisible ? (
               <div className="min-w-0 border-b xl:border-b-0 xl:border-r">
-                <div className="flex h-9 items-center gap-2 border-b bg-slate-50 px-3 text-xs font-medium text-muted-foreground dark:bg-secondary/40">
+                <div className="flex h-9 items-center gap-2 border-b bg-muted/40 px-3 text-xs font-medium text-muted-foreground dark:bg-secondary/40">
                   <FileText className="h-3.5 w-3.5" />
                   源码
                 </div>
@@ -2233,7 +2713,7 @@ function WikiFileWorkspace({
             ) : null}
             {previewVisible ? (
               <div className="min-w-0">
-                <div className="flex h-9 items-center gap-2 border-b bg-slate-50 px-3 text-xs font-medium text-muted-foreground dark:bg-secondary/40">
+                <div className="flex h-9 items-center gap-2 border-b bg-muted/40 px-3 text-xs font-medium text-muted-foreground dark:bg-secondary/40">
                   <BookOpen className="h-3.5 w-3.5" />
                   Markdown 预览
                 </div>
@@ -2245,8 +2725,8 @@ function WikiFileWorkspace({
           </div>
         ) : null}
         {file && !file.editable ? (
-          <div className="flex min-h-[520px] flex-col justify-center rounded-lg border border-dashed bg-slate-50 p-8 text-center dark:bg-background">
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-white text-muted-foreground shadow-sm dark:bg-secondary">
+          <div className="flex min-h-[520px] flex-col justify-center rounded-lg border border-dashed bg-muted/40 p-8 text-center dark:bg-background">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-card text-muted-foreground shadow-sm dark:bg-secondary">
               <Upload className="h-5 w-5" />
             </div>
             <div className="mt-4 text-sm font-medium text-foreground">该文件不是文本格式</div>
@@ -2318,7 +2798,7 @@ function KnowledgeSyncPanel({
   const pushLabel = pushDone ? "已推送" : `推送${(status?.push_count ?? 0) > 0 ? `（${status?.push_count}）` : ""}`;
   return (
     <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
-      <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
+      <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -2354,17 +2834,17 @@ function KnowledgeSyncPanel({
               <StatusLine label="待推送" value={`${status?.push_count ?? 0} 个提交`} ok={(status?.push_count ?? 0) === 0} />
             </div>
           {status?.configured_url_redacted && (!status.remote_url_redacted || status.remote_matches_configured) ? (
-            <div className="mb-3 rounded-lg border bg-slate-50 px-3 py-2 text-xs text-muted-foreground dark:bg-background">
+            <div className="mb-3 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground dark:bg-background">
               Git URL：<span className="break-all font-mono">{status.configured_url_redacted}</span>
             </div>
           ) : null}
           {!status?.configured_url_redacted && status?.remote_url_redacted ? (
-            <div className="mb-3 rounded-lg border bg-slate-50 px-3 py-2 text-xs text-muted-foreground dark:bg-background">
+            <div className="mb-3 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground dark:bg-background">
               Git URL：<span className="break-all font-mono">{status.remote_url_redacted}</span>
             </div>
           ) : null}
           {status?.configured_url_redacted && status.remote_url_redacted && !status.remote_matches_configured ? (
-            <Alert className="mb-3 rounded-lg border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-100">
+            <Alert className="mb-3 rounded-lg border-border bg-muted/40 text-foreground">
               <AlertTitle>仓库 remote 与环境变量不一致</AlertTitle>
               <AlertDescription>
                 <div>配置 URL：<span className="break-all font-mono">{status.configured_url_redacted}</span></div>
@@ -2374,7 +2854,7 @@ function KnowledgeSyncPanel({
             </Alert>
           ) : null}
           {status?.needs_setup ? (
-            <Alert className="mb-3 rounded-lg border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-100">
+            <Alert className="mb-3 rounded-lg border-border bg-muted/40 text-foreground">
               <AlertTitle>同步配置需要处理</AlertTitle>
               <AlertDescription>{status.setup_hint || "请先检测连接或修复同步配置。"}</AlertDescription>
             </Alert>
@@ -2392,9 +2872,9 @@ function KnowledgeSyncPanel({
                       onChange={() => onTogglePath(file.path)}
                       title="选择是否把这个文件加入本次提交"
                     />
-                    <span className="w-14 shrink-0 rounded-full bg-slate-100 px-2 py-1 text-center text-[11px] text-slate-600 dark:bg-secondary dark:text-muted-foreground">{file.status || "?"}</span>
+                    <span className="w-14 shrink-0 rounded-full bg-muted px-2 py-1 text-center text-[11px] text-muted-foreground dark:bg-secondary dark:text-muted-foreground">{file.status || "?"}</span>
                     <span className="min-w-0 flex-1 truncate font-mono text-xs">{file.path}</span>
-                    {file.deleted ? <span className="text-xs text-rose-600 dark:text-rose-300">已删除</span> : <span className="text-xs text-emerald-700 dark:text-emerald-300">可提交</span>}
+                    {file.deleted ? <span className="text-xs text-destructive dark:text-destructive">已删除</span> : <span className="text-xs text-muted-foreground dark:text-muted-foreground">可提交</span>}
                   </label>
                 ))}
               </div>
@@ -2403,7 +2883,7 @@ function KnowledgeSyncPanel({
         </CardContent>
       </Card>
 
-      <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
+      <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
         <CardHeader>
           <CardTitle className="text-base">提交</CardTitle>
           <CardDescription>已选择 {selectedPaths.length} 个文件。</CardDescription>
@@ -2412,7 +2892,7 @@ function KnowledgeSyncPanel({
           <div className="space-y-3">
             <div>
               <div className="mb-2 flex items-center justify-between gap-2">
-                <label className="text-xs font-semibold text-slate-600 dark:text-muted-foreground">提交信息</label>
+                <label className="text-xs font-semibold text-muted-foreground dark:text-muted-foreground">提交信息</label>
                 <Button type="button" variant="outline" size="sm" disabled={busy || messageBusy || selectedPaths.length === 0} onClick={onGenerateMessage}>
                   <Sparkles className="mr-2 h-4 w-4" />
                   {messageBusy ? "生成中" : "LLM 生成"}
@@ -2423,13 +2903,13 @@ function KnowledgeSyncPanel({
                 {messageRule || "规则：中文一行，说明本次 Wiki 资料变更，不提 LLM/AI/server/prompt。"}
               </p>
             </div>
-            {result ? <div className="rounded-lg border bg-emerald-50 p-3 text-xs text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-950/30 dark:text-emerald-100">最近提交：{result.hash}</div> : null}
+            {result ? <div className="rounded-lg border bg-muted/40 p-3 text-xs text-foreground">最近提交：{result.hash}</div> : null}
             {(status?.commits_to_push.length ?? 0) > 0 ? (
-              <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 dark:border-emerald-500/40 dark:bg-emerald-950/30">
-                <div className="text-xs font-semibold text-emerald-800 dark:text-emerald-100">待推送提交</div>
+              <div className="rounded-lg border border-border bg-muted/40 p-3">
+                <div className="text-xs font-semibold text-foreground">待推送提交</div>
                 <div className="mt-2 space-y-1">
                   {status?.commits_to_push.map((commit) => (
-                    <div key={commit.hash} className="text-xs text-emerald-900 dark:text-emerald-100">
+                    <div key={commit.hash} className="text-xs text-foreground">
                       <span className="font-mono">{commit.hash}</span> {commit.subject}
                     </div>
                   ))}
@@ -2461,11 +2941,11 @@ function SyncFeedbackAlert({ feedback }: { feedback: SyncOperationFeedback }) {
       variant={feedback.kind === "error" ? "destructive" : "default"}
       className={cn(
         "rounded-lg",
-        feedback.kind === "success" && "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-500/40 dark:bg-emerald-950/30 dark:text-emerald-100",
+        feedback.kind === "success" && "border-border bg-muted/40 text-foreground",
       )}
     >
       <AlertTitle>{feedback.title}</AlertTitle>
-      <div className={cn("text-sm leading-6", feedback.kind === "error" ? "text-red-800 dark:text-red-100" : "text-emerald-800 dark:text-emerald-100")}>
+      <div className={cn("text-sm leading-6", feedback.kind === "error" ? "text-destructive" : "text-foreground")}>
         {feedback.message}
       </div>
       {hasDetails ? (
@@ -2615,7 +3095,7 @@ export function ReviewModule({ setDetail, onDashboardRefresh }: BaseModuleProps)
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       ) : null}
-      <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
+      <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
         <CardHeader>
           <CardTitle className="text-base">待审队列</CardTitle>
           <CardDescription>当前剩余 {pending} 条。</CardDescription>
@@ -2623,7 +3103,7 @@ export function ReviewModule({ setDetail, onDashboardRefresh }: BaseModuleProps)
         <CardContent>
           {item ? (
             <div className="space-y-4">
-              <div className="rounded-lg border bg-slate-50 p-3 dark:bg-secondary/50">
+              <div className="rounded-lg border bg-muted/40 p-3 dark:bg-secondary/50">
                 <div className="mb-1 text-xs text-muted-foreground">问题</div>
                 <div className="text-sm">{item.question}</div>
               </div>
@@ -2646,7 +3126,7 @@ export function ReviewModule({ setDetail, onDashboardRefresh }: BaseModuleProps)
               </div>
             </div>
           ) : (
-            <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-6 text-center text-sm text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-950/30 dark:text-emerald-100">
+            <div className="rounded-lg border border-border bg-muted/40 p-6 text-center text-sm text-muted-foreground">
               暂无待审内容。
             </div>
           )}
@@ -2714,7 +3194,7 @@ function IntentSettingsPanel({ setDetail }: Pick<BaseModuleProps, "setDetail">) 
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       ) : null}
-      <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
+      <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
         <CardHeader>
           <CardTitle className="text-base">configs/customer_intents.yaml</CardTitle>
           <CardDescription>
@@ -2940,14 +3420,14 @@ export function SettingsModule({ dashboard, onDashboardRefresh, setDetail }: Bas
         </Alert>
       ) : null}
       {saved ? (
-        <Alert className="rounded-lg border-emerald-200 bg-emerald-50 text-emerald-800">
+        <Alert className="rounded-lg border-border bg-muted/40 text-foreground">
           <AlertTitle>已保存</AlertTitle>
           <AlertDescription>运行时配置已保存，相关服务读取新配置即时生效。</AlertDescription>
         </Alert>
       ) : null}
 
       <Tabs>
-        <TabsList className="flex w-full flex-wrap justify-start gap-1 rounded-lg bg-white p-1 dark:bg-card">
+        <TabsList className="flex w-full flex-wrap justify-start gap-1 rounded-lg bg-card p-1 dark:bg-card">
           {settingsTabs.map((item) => {
             const Icon = item.icon;
             return (
@@ -2973,7 +3453,7 @@ export function SettingsModule({ dashboard, onDashboardRefresh, setDetail }: Bas
         {activeTab === "customer-query" ? (
           <TabsContent>
             <div className="grid gap-3">
-              <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
+              <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">
                     <MessageCircle className="h-4 w-4" />
@@ -3132,9 +3612,6 @@ export function SettingsModule({ dashboard, onDashboardRefresh, setDetail }: Bas
 }
 
 function ModuleFrame({
-  title,
-  description,
-  action,
   children,
 }: {
   title: string;
@@ -3144,14 +3621,7 @@ function ModuleFrame({
 }) {
   return (
     <ScrollArea className="h-full">
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-4 lg:p-6">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
-            <p className="mt-1 text-sm text-muted-foreground">{description}</p>
-          </div>
-          {action}
-        </div>
+      <div className="flex w-full flex-col gap-4 px-4 py-4 lg:px-6 2xl:px-8">
         {children}
       </div>
     </ScrollArea>
@@ -3176,7 +3646,7 @@ function MetricCard({
   return (
     <button
       type="button"
-      className="rounded-lg border bg-white p-4 text-left shadow-sm transition hover:border-slate-300 hover:shadow-md dark:bg-card dark:hover:border-border"
+      className="rounded-lg border bg-card p-4 text-left shadow-sm transition hover:border-border hover:shadow-md dark:bg-card dark:hover:border-border"
       onClick={onClick}
     >
       <div className="flex items-center justify-between gap-3">
@@ -3184,9 +3654,9 @@ function MetricCard({
         <div
           className={cn(
             "flex h-8 w-8 items-center justify-center rounded-lg",
-            tone === "success" && "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200",
-            tone === "warning" && "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-200",
-            tone === "neutral" && "bg-slate-100 text-slate-700 dark:bg-secondary dark:text-secondary-foreground",
+            tone === "success" && "bg-muted/40 text-muted-foreground",
+            tone === "warning" && "bg-muted/40 text-muted-foreground",
+            tone === "neutral" && "bg-muted text-foreground dark:bg-secondary dark:text-secondary-foreground",
           )}
         >
           <Icon className="h-4 w-4" />
@@ -3200,10 +3670,10 @@ function MetricCard({
 
 function StatusLine({ label, value, ok }: { label: string; value: string; ok?: boolean }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border bg-white px-3 py-2 text-sm dark:bg-background">
+    <div className="flex items-center justify-between gap-3 rounded-lg border bg-card px-3 py-2 text-sm dark:bg-background">
       <span className="text-muted-foreground">{label}</span>
       <span className="flex min-w-0 items-center gap-2 font-medium">
-        {ok === undefined ? null : ok ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> : <XCircle className="h-3.5 w-3.5 text-amber-600" />}
+        {ok === undefined ? null : ok ? <CheckCircle2 className="h-3.5 w-3.5 text-muted-foreground" /> : <XCircle className="h-3.5 w-3.5 text-muted-foreground" />}
         <span className="truncate">{value}</span>
       </span>
     </div>
@@ -3229,7 +3699,7 @@ function RuntimeLogSettingsPanel({
 }) {
   return (
     <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
-      <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
+      <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <History className="h-4 w-4" />
@@ -3280,7 +3750,7 @@ function RuntimeLogSettingsPanel({
         </CardContent>
       </Card>
 
-      <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
+      <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
         <CardHeader>
           <CardTitle className="text-base">当前摘要</CardTitle>
           <CardDescription>这些值会影响 Dashboard 和用户会话读取。</CardDescription>
@@ -3316,7 +3786,7 @@ function RuntimeKnowledgeSettingsPanel({
 }) {
   return (
     <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
-      <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
+      <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <Database className="h-4 w-4" />
@@ -3358,7 +3828,7 @@ function RuntimeKnowledgeSettingsPanel({
         </CardContent>
       </Card>
 
-      <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
+      <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
         <CardHeader>
           <CardTitle className="text-base">只读状态</CardTitle>
           <CardDescription>路径级配置需要重启服务或修改部署配置。</CardDescription>
@@ -3373,13 +3843,13 @@ function RuntimeKnowledgeSettingsPanel({
           <StatusLine label="仓库 remote" value={dashboard?.sync.remote_url_redacted || "-"} ok={dashboard?.sync.remote_matches_configured} />
           <StatusLine label="凭据" value={dashboard?.sync.auth_configured ? "已配置" : "未配置"} ok={dashboard?.sync.auth_configured} />
           {!dashboard?.sync.remote_matches_configured && dashboard?.sync.configured_url_redacted ? (
-            <Alert className="mt-3 rounded-lg border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-100">
+            <Alert className="mt-3 rounded-lg border-border bg-muted/40 text-foreground">
               <AlertTitle>仓库 remote 还不是环境里的 URL</AlertTitle>
               <AlertDescription>点击知识库同步页的“修复配置”会把仓库 remote 更新成 `.env` 里的 Git URL。</AlertDescription>
             </Alert>
           ) : null}
           {dashboard?.sync.needs_setup ? (
-            <Alert className="mt-3 rounded-lg border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-100">
+            <Alert className="mt-3 rounded-lg border-border bg-muted/40 text-foreground">
               <AlertTitle>同步配置待处理</AlertTitle>
               <AlertDescription>{dashboard.sync.setup_hint || "请到知识库同步页检测或修复。"}</AlertDescription>
             </Alert>
@@ -3401,7 +3871,7 @@ function RuntimeEnvironmentPanel({
 }) {
   return (
     <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
-      <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
+      <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <Settings className="h-4 w-4" />
@@ -3425,7 +3895,7 @@ function RuntimeEnvironmentPanel({
         </CardContent>
       </Card>
 
-      <Card className="rounded-lg border bg-white shadow-sm dark:bg-card">
+      <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
         <CardHeader>
           <CardTitle className="text-base">运行摘要</CardTitle>
           <CardDescription>方便确认当前服务读到的状态。</CardDescription>
@@ -3435,7 +3905,7 @@ function RuntimeEnvironmentPanel({
           <StatusLine label="当前模型" value={dashboard?.active_model?.display_name ?? "未启用"} ok={Boolean(dashboard?.active_model)} />
           <StatusLine label="qmd" value={dashboard?.qmd.ok ? "可用" : "异常"} ok={dashboard?.qmd.ok} />
           <Separator />
-          <div className="rounded-lg border bg-slate-50 p-3 text-sm dark:bg-background">
+          <div className="rounded-lg border bg-muted/40 p-3 text-sm dark:bg-background">
             <div className="text-xs text-muted-foreground">运行时配置最近保存</div>
             <div className="mt-1 break-words font-medium">{updatedAt ? formatDate(updatedAt) : "尚未覆盖默认值"}</div>
           </div>
@@ -3465,7 +3935,7 @@ function RuntimeNumberInput({
   onChange: (value: number) => void;
 }) {
   return (
-    <label className="block space-y-2 rounded-lg border bg-slate-50 p-3 dark:bg-background">
+    <label className="block space-y-2 rounded-lg border bg-muted/40 p-3 dark:bg-background">
       <span className="block text-sm font-medium">{label}</span>
       <span className="block text-xs leading-5 text-muted-foreground">{description}</span>
       <Input
@@ -3477,7 +3947,7 @@ function RuntimeNumberInput({
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
       />
-      {fieldError ? <span className="block text-xs text-red-600">{fieldError}</span> : null}
+      {fieldError ? <span className="block text-xs text-destructive">{fieldError}</span> : null}
     </label>
   );
 }
@@ -3496,11 +3966,11 @@ function RuntimeTextInput({
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="block space-y-2 rounded-lg border bg-slate-50 p-3 dark:bg-background">
+    <label className="block space-y-2 rounded-lg border bg-muted/40 p-3 dark:bg-background">
       <span className="block text-sm font-medium">{label}</span>
       <span className="block text-xs leading-5 text-muted-foreground">{description}</span>
       <Input className="h-9 rounded-lg" value={value} onChange={(event) => onChange(event.target.value)} />
-      {fieldError ? <span className="block text-xs text-red-600">{fieldError}</span> : null}
+      {fieldError ? <span className="block text-xs text-destructive">{fieldError}</span> : null}
     </label>
   );
 }
@@ -3521,7 +3991,7 @@ function RuntimeSelectInput({
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="block space-y-2 rounded-lg border bg-white p-3 text-sm dark:bg-background">
+    <label className="block space-y-2 rounded-lg border bg-card p-3 text-sm dark:bg-background">
       <div className="font-medium">{label}</div>
       <div className="text-xs leading-5 text-muted-foreground">{description}</div>
       <Select value={value} onChange={(event) => onChange(event.target.value)}>
@@ -3558,7 +4028,7 @@ function RoleModelSetting({
   onThinkingChange: (checked: boolean) => void;
 }) {
   return (
-    <div className="rounded-lg border bg-slate-50 p-3 dark:bg-background">
+    <div className="rounded-lg border bg-muted/40 p-3 dark:bg-background">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="text-sm font-medium">{title}</div>
@@ -3596,7 +4066,7 @@ function ToggleSetting({
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 rounded-lg border bg-slate-50 p-3 dark:bg-background">
+    <div className="flex items-start justify-between gap-4 rounded-lg border bg-muted/40 p-3 dark:bg-background">
       <div>
         <div className="text-sm font-medium">{label}</div>
         <div className="mt-1 text-xs leading-5 text-muted-foreground">{description}</div>
@@ -3608,7 +4078,7 @@ function ToggleSetting({
 
 function ReadonlySetting({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border bg-slate-50 p-3 text-sm dark:bg-background">
+    <div className="rounded-lg border bg-muted/40 p-3 text-sm dark:bg-background">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-1 break-all font-medium">{value}</div>
     </div>
@@ -3628,7 +4098,7 @@ function ReadonlyModule({
 }) {
   return (
     <ModuleFrame title={title} description={description}>
-      <Card className="rounded-lg border bg-white shadow-sm">
+      <Card className="rounded-lg border bg-card shadow-sm">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <Icon className="h-4 w-4" />
@@ -3639,7 +4109,7 @@ function ReadonlyModule({
         <CardContent>
           <div className="grid gap-2 md:grid-cols-2">
             {items.map((item) => (
-              <div key={item} className="rounded-lg border bg-slate-50 p-3 text-sm">
+              <div key={item} className="rounded-lg border bg-muted/40 p-3 text-sm">
                 {item}
               </div>
             ))}
@@ -3655,7 +4125,7 @@ function ModelTestDetail({ model, result }: { model: LLMModel; result: LLMModelT
     <div className="space-y-3 text-sm">
       <StatusLine label="模型" value={model.display_name} ok={result.ok} />
       <StatusLine label="耗时" value={`${result.latency_ms}ms`} ok={result.ok} />
-      <div className="rounded-lg border bg-slate-50 p-3">
+      <div className="rounded-lg border bg-muted/40 p-3">
         <div className="mb-1 text-xs text-muted-foreground">结果</div>
         <div>{result.message}</div>
       </div>
@@ -3667,15 +4137,15 @@ function ModelTestDetail({ model, result }: { model: LLMModel; result: LLMModelT
 function ReviewDetail({ item }: { item: ReviewItem }) {
   return (
     <div className="space-y-3 text-sm">
-      <div className="rounded-lg border bg-slate-50 p-3">
+      <div className="rounded-lg border bg-muted/40 p-3">
         <div className="mb-1 text-xs text-muted-foreground">ID</div>
         <div className="break-all">{item.id}</div>
       </div>
-      <div className="rounded-lg border bg-slate-50 p-3">
+      <div className="rounded-lg border bg-muted/40 p-3">
         <div className="mb-1 text-xs text-muted-foreground">来源</div>
         <pre className="whitespace-pre-wrap text-xs">{formatJSON(item.retrieved_pages ?? item.matched_pages)}</pre>
       </div>
-      <div className="rounded-lg border bg-slate-50 p-3">
+      <div className="rounded-lg border bg-muted/40 p-3">
         <div className="mb-1 text-xs text-muted-foreground">对话片段</div>
         <pre className="whitespace-pre-wrap text-xs">{formatJSON(item.conversation_excerpt ?? [])}</pre>
       </div>

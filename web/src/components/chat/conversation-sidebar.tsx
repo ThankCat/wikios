@@ -16,6 +16,7 @@ type Props = {
   title: string;
   subtitle: string;
   variant: "user" | "admin";
+  embedded?: boolean;
   items: ConversationItem[];
   activeId: string;
   onSelect: (id: string) => void;
@@ -23,9 +24,14 @@ type Props = {
   onDelete: (id: string) => void;
 };
 
-export function ConversationSidebar({ title, subtitle, variant, items, activeId, onSelect, onCreate, onDelete }: Props) {
+export function ConversationSidebar({ title, subtitle, variant, embedded = false, items, activeId, onSelect, onCreate, onDelete }: Props) {
   return (
-    <aside className="panel-glass flex h-full min-h-0 flex-col overflow-hidden p-4">
+    <aside
+      className={cn(
+        "flex h-full min-h-0 flex-col overflow-hidden p-4 text-card-foreground",
+        embedded ? "bg-background" : "rounded-lg border bg-card shadow-sm",
+      )}
+    >
       <div className="mb-4 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-semibold">
@@ -44,10 +50,10 @@ export function ConversationSidebar({ title, subtitle, variant, items, activeId,
             <div
               key={item.id}
 	              className={cn(
-	                "flex items-start gap-2 rounded-2xl px-3 py-3 text-left text-sm transition",
+	                "flex items-start gap-2 rounded-lg px-3 py-3 text-left text-sm transition",
 	                item.id === activeId
 	                  ? "bg-foreground text-white dark:bg-secondary dark:text-foreground"
-	                  : "bg-white/60 text-foreground hover:bg-secondary dark:bg-card/60 dark:hover:bg-secondary",
+	                  : "bg-card/60 text-foreground hover:bg-secondary dark:bg-card/60 dark:hover:bg-secondary",
 	              )}
             >
               <button type="button" onClick={() => onSelect(item.id)} className="min-w-0 flex-1 text-left">
@@ -64,7 +70,7 @@ export function ConversationSidebar({ title, subtitle, variant, items, activeId,
                 size="sm"
 	                className={cn(
 	                  "mt-0.5 h-8 w-8 shrink-0 self-start px-0",
-	                  item.id === activeId ? "hover:bg-white/10 dark:hover:bg-background" : "hover:bg-white dark:hover:bg-secondary",
+	                  item.id === activeId ? "hover:bg-primary-foreground/10 dark:hover:bg-background" : "hover:bg-card dark:hover:bg-secondary",
 	                )}
                 onClick={() => onDelete(item.id)}
               >

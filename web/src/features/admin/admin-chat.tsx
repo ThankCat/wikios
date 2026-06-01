@@ -1715,19 +1715,22 @@ export function AdminChat({
   }));
 
   return (
-	    <div
-	      className={cn(
-	        embedded ? "grid h-full min-h-0 grid-cols-1 gap-2 overflow-hidden p-2" : "chat-shell",
-	        embedded && sidebarOpen && "lg:grid-cols-[232px_minmax(0,1fr)]",
-	        embedded && !sidebarOpen && "lg:grid-cols-1",
-	        !embedded && !sidebarOpen && "chat-shell-collapsed",
-	      )}
-	    >
+    <div
+      className={cn(
+        embedded
+          ? "grid h-full min-h-0 grid-cols-1 overflow-hidden rounded-lg border bg-background"
+          : "chat-shell",
+        embedded && sidebarOpen && "grid-rows-[220px_minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)] lg:grid-rows-1",
+        embedded && !sidebarOpen && "lg:grid-cols-1",
+        !embedded && !sidebarOpen && "chat-shell-collapsed",
+      )}
+    >
       {sidebarOpen ? (
         <ConversationSidebar
           title={sidebarTitle}
           subtitle={sidebarSubtitle ?? `已登录：${username}`}
           variant="admin"
+          embedded={embedded}
           items={sidebarItems}
           activeId={activeConversation?.id ?? ""}
           onSelect={setActiveId}
@@ -1735,7 +1738,13 @@ export function AdminChat({
           onDelete={deleteConversation}
         />
       ) : null}
-      <section className={cn("relative flex h-full min-h-0 flex-col overflow-hidden", embedded ? "rounded-2xl border bg-white shadow-sm dark:bg-card dark:shadow-none" : "panel-glass")}>
+      <section
+        className={cn(
+          "relative flex h-full min-h-0 flex-col overflow-hidden text-card-foreground",
+          embedded ? "border-t bg-background lg:border-l lg:border-t-0" : "rounded-lg border bg-card shadow-sm",
+          embedded && !sidebarOpen && "border-t-0 lg:border-l-0",
+        )}
+      >
         <header className={cn("relative z-10", embedded ? "px-4 pb-0 pt-3" : "border-b px-6 py-5")}>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-2">
@@ -1745,7 +1754,7 @@ export function AdminChat({
                   onClick={() => setSidebarOpen((value) => !value)}
                   title="显示或隐藏左侧会话列表"
                   aria-label={sidebarOpen ? "隐藏会话列表" : "显示会话列表"}
-	                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 dark:text-muted-foreground dark:hover:bg-secondary dark:hover:text-foreground dark:focus-visible:ring-ring"
+	                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 dark:text-muted-foreground dark:hover:bg-secondary dark:hover:text-foreground dark:focus-visible:ring-ring"
                 >
                   {sidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeft className="h-4 w-4" />}
                 </button>
@@ -1804,7 +1813,7 @@ export function AdminChat({
                     <ClipboardCheck className="mr-2 h-4 w-4" />
                     问题审查
                     {reviewCount > 0 ? (
-                      <span className="absolute -right-2 -top-2 min-w-5 rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                      <span className="absolute -right-2 -top-2 min-w-5 rounded-md bg-destructive px-1.5 py-0.5 text-[10px] font-semibold leading-none text-primary-foreground">
                         {reviewCount > 99 ? "99+" : reviewCount}
                       </span>
                     ) : null}
@@ -1888,7 +1897,7 @@ export function AdminChat({
             className="bottom-4 right-6"
           />
         </div>
-        <div className={cn("bg-white/85 backdrop-blur dark:bg-card/85", embedded ? "px-4 py-3" : "border-t px-4 py-3")}>
+        <div className={cn("bg-background/95 backdrop-blur dark:bg-card/85", embedded ? "border-t px-4 py-3" : "border-t px-4 py-3")}>
           <div className={cn("mx-auto", embedded ? "max-w-3xl" : "max-w-4xl")}>
             {showKnowledgeTasks ? (
               <input
@@ -1908,7 +1917,7 @@ export function AdminChat({
                 onNewConversation={createNewConversation}
               />
             </div>
-            <div className={cn("rounded-2xl border bg-white px-3 py-2 dark:bg-background", embedded ? "shadow-sm dark:shadow-none" : "shadow-soft dark:shadow-none")}>
+            <div className={cn("rounded-lg border bg-card px-3 py-2 dark:bg-background", embedded ? "shadow-sm dark:shadow-none" : "shadow-sm dark:shadow-none")}>
               <Textarea
                 ref={composerRef}
                 value={composer}
@@ -1930,16 +1939,16 @@ export function AdminChat({
                 <div className="flex items-center gap-2">
                   {!forceStream ? (
                     <div
-	                      className="flex rounded-full border bg-slate-50 p-0.5 dark:bg-secondary"
+	                      className="flex rounded-md border bg-muted/40 p-0.5 dark:bg-secondary"
                       title="选择本次管理员回复方式"
                     >
                       <button
                         type="button"
                         className={cn(
-                          "rounded-full px-3 py-1 text-xs transition",
+                          "rounded-md px-3 py-1 text-xs transition",
                           activeConversation?.stream
-	                            ? "bg-white text-slate-950 shadow-sm dark:bg-background dark:text-foreground dark:shadow-none"
-	                            : "text-muted-foreground hover:text-slate-950 dark:hover:text-foreground",
+	                            ? "bg-card text-foreground shadow-sm dark:bg-background dark:text-foreground dark:shadow-none"
+	                            : "text-muted-foreground hover:text-foreground dark:hover:text-foreground",
                         )}
                         onClick={() => {
                           setConversations((current) =>
@@ -1957,10 +1966,10 @@ export function AdminChat({
                       <button
                         type="button"
                         className={cn(
-                          "rounded-full px-3 py-1 text-xs transition",
+                          "rounded-md px-3 py-1 text-xs transition",
                           !activeConversation?.stream
-	                            ? "bg-white text-slate-950 shadow-sm dark:bg-background dark:text-foreground dark:shadow-none"
-	                            : "text-muted-foreground hover:text-slate-950 dark:hover:text-foreground",
+	                            ? "bg-card text-foreground shadow-sm dark:bg-background dark:text-foreground dark:shadow-none"
+	                            : "text-muted-foreground hover:text-foreground dark:hover:text-foreground",
                         )}
                         onClick={() => {
                           setConversations((current) =>
@@ -1980,7 +1989,7 @@ export function AdminChat({
                   <Button
                     type="button"
                     className={cn(
-                      "rounded-full p-0",
+                      "rounded-md p-0",
                       embedded ? "h-8 w-8" : "h-10 w-10",
                       busy && "bg-secondary text-secondary-foreground hover:bg-secondary/80",
                     )}
@@ -2031,7 +2040,7 @@ export function AdminChat({
         />
         {modelOpen ? (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/35 p-4"
             role="dialog"
             aria-modal="true"
             aria-labelledby="model-title"
@@ -2041,7 +2050,7 @@ export function AdminChat({
               }
             }}
           >
-            <div className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-lg">
               <header className="flex items-start justify-between gap-4 border-b px-5 py-4">
                 <div className="min-w-0">
                   <h2 id="model-title" className="text-sm font-semibold">
@@ -2050,7 +2059,7 @@ export function AdminChat({
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <span>当前：{activeModel?.display_name || "未启用模型"}</span>
                     {activeModel ? (
-                      <span className="font-mono text-slate-500">
+                      <span className="font-mono text-muted-foreground">
                         {activeModel.model_name}
                       </span>
                     ) : null}
@@ -2070,7 +2079,7 @@ export function AdminChat({
               <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-5 py-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
                 <section className="min-h-0">
                   <div className="mb-3 flex items-center justify-between gap-2">
-                    <div className="text-xs font-semibold text-slate-600">
+                    <div className="text-xs font-semibold text-muted-foreground">
                       已添加模型
                     </div>
                     <Button
@@ -2087,11 +2096,11 @@ export function AdminChat({
                   </div>
                   <div className="space-y-3">
                     {modelsLoading ? (
-                      <div className="rounded-xl border border-slate-200 px-4 py-8 text-center text-sm text-muted-foreground">
+                      <div className="rounded-xl border border-border px-4 py-8 text-center text-sm text-muted-foreground">
                         正在读取模型...
                       </div>
                     ) : models.length === 0 ? (
-                      <div className="rounded-xl border border-slate-200 px-4 py-8 text-center text-sm text-muted-foreground">
+                      <div className="rounded-xl border border-border px-4 py-8 text-center text-sm text-muted-foreground">
                         还没有模型。
                       </div>
                     ) : (
@@ -2101,21 +2110,21 @@ export function AdminChat({
                           className={cn(
                             "rounded-xl border p-4",
                             model.is_active
-                              ? "border-emerald-200 bg-emerald-50/50"
-                              : "border-slate-200 bg-white",
+                              ? "border-border bg-muted/40"
+                              : "border-border bg-card",
                           )}
                         >
                           <div className="flex flex-wrap items-start justify-between gap-3">
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-2">
-                                <div className="truncate text-sm font-semibold text-slate-900">
+                                <div className="truncate text-sm font-semibold text-foreground">
                                   {model.display_name}
                                 </div>
                                 {model.is_active ? (
                                   <Badge variant="success">当前</Badge>
                                 ) : null}
                               </div>
-                              <div className="mt-1 truncate font-mono text-xs text-slate-600">
+                              <div className="mt-1 truncate font-mono text-xs text-muted-foreground">
                                 {model.model_name}
                               </div>
                             </div>
@@ -2142,7 +2151,7 @@ export function AdminChat({
                                 <Activity
                                   className={cn(
                                     "mr-2 h-4 w-4",
-                                    modelTestingId === model.id && "animate-pulse text-emerald-600",
+                                    modelTestingId === model.id && "animate-pulse text-muted-foreground",
                                   )}
                                 />
                                 {modelTestingId === model.id ? "测试中" : "测试"}
@@ -2170,7 +2179,7 @@ export function AdminChat({
                               </Button>
                             </div>
                           </div>
-                          <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
+                          <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
                             <div className="truncate">端点：{model.base_url}</div>
                             <div className="truncate">服务商：{model.provider || "-"}</div>
                             <div>请求超时：{model.timeout_sec}s</div>
@@ -2183,10 +2192,10 @@ export function AdminChat({
                     )}
                   </div>
                 </section>
-                <section className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+                <section className="rounded-xl border border-border bg-muted/40 p-4">
                   <div className="mb-3 flex items-center justify-between gap-2">
                     <div>
-                      <div className="text-xs font-semibold text-slate-600">
+                      <div className="text-xs font-semibold text-muted-foreground">
                         {modelForm.id ? "编辑模型" : "新增模型"}
                       </div>
                       {modelForm.id ? (
@@ -2211,7 +2220,7 @@ export function AdminChat({
                     </Button>
                   </div>
                   <div className="space-y-3">
-                    <label className="grid gap-1.5 text-xs font-semibold text-slate-600">
+                    <label className="grid gap-1.5 text-xs font-semibold text-muted-foreground">
                       显示名称
                       <Input
                         value={modelForm.display_name}
@@ -2225,7 +2234,7 @@ export function AdminChat({
                         placeholder="生产客服模型"
                       />
                     </label>
-                    <label className="grid gap-1.5 text-xs font-semibold text-slate-600">
+                    <label className="grid gap-1.5 text-xs font-semibold text-muted-foreground">
                       服务商
                       <Input
                         value={modelForm.provider}
@@ -2239,7 +2248,7 @@ export function AdminChat({
                         placeholder="openai-compatible"
                       />
                     </label>
-                    <label className="grid gap-1.5 text-xs font-semibold text-slate-600">
+                    <label className="grid gap-1.5 text-xs font-semibold text-muted-foreground">
                       端点域名
                       <Input
                         value={modelForm.base_url}
@@ -2253,7 +2262,7 @@ export function AdminChat({
                         placeholder="https://api.example.com/v1"
                       />
                     </label>
-                    <label className="grid gap-1.5 text-xs font-semibold text-slate-600">
+                    <label className="grid gap-1.5 text-xs font-semibold text-muted-foreground">
                       模型名
                       <Input
                         value={modelForm.model_name}
@@ -2267,7 +2276,7 @@ export function AdminChat({
                         placeholder="gpt-4.1-mini"
                       />
                     </label>
-                    <label className="grid gap-1.5 text-xs font-semibold text-slate-600">
+                    <label className="grid gap-1.5 text-xs font-semibold text-muted-foreground">
                       API Key
                       <Input
                         type="password"
@@ -2283,7 +2292,7 @@ export function AdminChat({
                       />
                     </label>
                     <div className="grid gap-3 sm:grid-cols-2">
-                      <label className="grid gap-1.5 text-xs font-semibold text-slate-600">
+                      <label className="grid gap-1.5 text-xs font-semibold text-muted-foreground">
                         请求超时秒数
                         <Input
                           type="number"
@@ -2298,7 +2307,7 @@ export function AdminChat({
                           className="h-10 rounded-md"
                         />
                       </label>
-                      <label className="grid gap-1.5 text-xs font-semibold text-slate-600">
+                      <label className="grid gap-1.5 text-xs font-semibold text-muted-foreground">
                         管理超时秒数
                         <Input
                           type="number"
@@ -2317,12 +2326,12 @@ export function AdminChat({
                   </div>
                 </section>
               </div>
-              <footer className="flex flex-wrap items-center justify-between gap-2 border-t bg-slate-50 px-5 py-4">
+              <footer className="flex flex-wrap items-center justify-between gap-2 border-t bg-muted/40 px-5 py-4">
                 <span
                   className={cn(
                     "text-xs",
                     modelMessage.includes("已") || modelMessage.includes("成功")
-                      ? "text-emerald-700"
+                      ? "text-muted-foreground"
                       : modelMessage
                         ? "text-destructive"
                         : "text-muted-foreground",
@@ -2357,7 +2366,7 @@ export function AdminChat({
         ) : null}
         {reviewOpen ? (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/35 p-4"
             role="dialog"
             aria-modal="true"
             aria-labelledby="review-title"
@@ -2367,7 +2376,7 @@ export function AdminChat({
               }
             }}
           >
-            <div className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-lg">
               <header className="flex items-start justify-between gap-4 border-b px-5 py-4">
                 <div>
                   <h2 id="review-title" className="text-sm font-semibold">
@@ -2396,35 +2405,35 @@ export function AdminChat({
                 ) : reviewItem ? (
                   <div className="space-y-4">
                     <div className="grid gap-2">
-                      <label className="text-xs font-semibold text-slate-600">
+                      <label className="text-xs font-semibold text-muted-foreground">
                         问题
                       </label>
                       <Textarea
                         value={reviewQuestion}
                         onChange={(event) => setReviewQuestion(event.target.value)}
-                        className="min-h-[76px] resize-none bg-white text-sm"
+                        className="min-h-[76px] resize-none bg-card text-sm"
                         title="管理员可以修正问题表述后再通过"
                       />
                     </div>
                     <div className="grid gap-2">
-                      <label className="text-xs font-semibold text-slate-600">
+                      <label className="text-xs font-semibold text-muted-foreground">
                         回答草稿
                       </label>
                       <Textarea
                         value={reviewAnswer}
                         onChange={(event) => setReviewAnswer(event.target.value)}
-                        className="min-h-[180px] resize-y bg-white text-sm leading-relaxed"
+                        className="min-h-[180px] resize-y bg-card text-sm leading-relaxed"
                         title="管理员可以修改回答后再通过"
                       />
                     </div>
                     <div className="grid gap-2">
-                      <label className="text-xs font-semibold text-slate-600">
+                      <label className="text-xs font-semibold text-muted-foreground">
                         目标知识页
                       </label>
                       <select
                         value={reviewTargetPath}
                         onChange={(event) => setReviewTargetPath(event.target.value)}
-                        className="h-10 rounded-md border border-input bg-white px-3 text-sm"
+                        className="h-10 rounded-md border border-input bg-card px-3 text-sm"
                         title="通过后会沉淀到这个知识页或意图页"
                       >
                         {reviewTargets.map((target) => (
@@ -2435,18 +2444,18 @@ export function AdminChat({
                       </select>
                     </div>
                     <div className="grid gap-2">
-                      <label className="text-xs font-semibold text-slate-600">
+                      <label className="text-xs font-semibold text-muted-foreground">
                         驳回原因
                       </label>
                       <input
                         value={reviewRejectReason}
                         onChange={(event) => setReviewRejectReason(event.target.value)}
-                        className="h-10 rounded-md border border-input bg-white px-3 text-sm"
+                        className="h-10 rounded-md border border-input bg-card px-3 text-sm"
                         placeholder="例如：回答不准确或不适合自动回复"
                         title="驳回后会写入禁答记录"
                       />
                     </div>
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+                    <div className="rounded-xl border border-border bg-muted/40 px-3 py-2 text-xs leading-5 text-muted-foreground">
                       <div>置信度：{reviewItem.confidence || 0}</div>
                       <div>证据置信度：{reviewItem.evidence_confidence ?? 0}</div>
                       <div>回答模式：{reviewItem.answer_mode || "-"}</div>
@@ -2478,7 +2487,7 @@ export function AdminChat({
                     className={cn(
                       "mt-3 text-xs",
                       reviewMessage.includes("已")
-                        ? "text-emerald-700"
+                        ? "text-muted-foreground"
                         : "text-destructive",
                     )}
                   >
@@ -2486,7 +2495,7 @@ export function AdminChat({
                   </div>
                 ) : null}
               </div>
-              <footer className="flex flex-wrap items-center justify-between gap-2 border-t bg-slate-50 px-5 py-4">
+              <footer className="flex flex-wrap items-center justify-between gap-2 border-t bg-muted/40 px-5 py-4">
                 <Button
                   type="button"
                   variant="outline"
@@ -2546,7 +2555,7 @@ export function AdminChat({
         ) : null}
         {syncOpen ? (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/35 p-4"
             role="dialog"
             aria-modal="true"
             aria-labelledby="sync-title"
@@ -2556,7 +2565,7 @@ export function AdminChat({
               }
             }}
           >
-            <div className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-lg">
               <header className="flex items-start justify-between gap-4 border-b px-5 py-4">
                 <div>
                   <h2 id="sync-title" className="text-sm font-semibold">
@@ -2585,15 +2594,15 @@ export function AdminChat({
                     {syncStatus?.remote || "-"}；ahead {syncStatus?.ahead ?? 0}{" "}
                     / behind {syncStatus?.behind ?? 0}
                   </span>
-                  <span className="rounded-full bg-slate-100 px-2 py-1 text-slate-700">
+                  <span className="rounded-md bg-muted px-2 py-1 text-foreground">
                     待提交 {syncStatus?.changed_count ?? syncStatus?.files.length ?? 0} 个文件
                   </span>
                   <span
                     className={cn(
-                      "rounded-full px-2 py-1",
+                      "rounded-md px-2 py-1",
                       (syncStatus?.push_count ?? 0) > 0
-                        ? "bg-emerald-50 text-emerald-700"
-                        : "bg-slate-100 text-slate-600",
+                        ? "bg-muted/40 text-muted-foreground"
+                        : "bg-muted text-muted-foreground",
                     )}
                   >
                     待推送 {syncStatus?.push_count ?? 0} 个提交
@@ -2611,19 +2620,19 @@ export function AdminChat({
                   </Button>
                 </div>
                 {(syncStatus?.commits_to_push.length ?? 0) > 0 ? (
-                  <div className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3">
-                    <div className="text-xs font-semibold text-emerald-800">
+                  <div className="mb-3 rounded-xl border border-border bg-muted/40 p-3">
+                    <div className="text-xs font-semibold text-foreground">
                       待推送提交
                     </div>
                     <div className="mt-2 space-y-1">
                       {syncStatus?.commits_to_push.map((commit) => (
                         <div
                           key={commit.hash}
-                          className="flex flex-wrap items-center gap-2 text-xs text-emerald-900"
+                          className="flex flex-wrap items-center gap-2 text-xs text-foreground"
                         >
                           <span className="font-mono">{commit.hash}</span>
                           <span>{commit.subject}</span>
-                          <span className="text-emerald-700">
+                          <span className="text-muted-foreground">
                             {commit.date} · {commit.author}
                           </span>
                         </div>
@@ -2631,7 +2640,7 @@ export function AdminChat({
                     </div>
                   </div>
                 ) : null}
-                <div className="rounded-xl border border-slate-200">
+                <div className="rounded-xl border border-border">
                   {(syncStatus?.files.length ?? 0) === 0 ? (
                     <div className="px-4 py-8 text-center text-sm text-muted-foreground">
                       {syncBusy
@@ -2651,12 +2660,12 @@ export function AdminChat({
                             onChange={() => toggleSyncPath(file.path)}
                             title="选择是否把这个文件加入本次提交"
                           />
-                          <span className="w-14 shrink-0 rounded-full bg-slate-100 px-2 py-1 text-center text-[11px] text-slate-600">
+                          <span className="w-14 shrink-0 rounded-md bg-muted px-2 py-1 text-center text-[11px] text-muted-foreground">
                             {file.status || "?"}
                           </span>
                           <button
                             type="button"
-                            className="min-w-0 flex-1 truncate text-left font-mono text-xs text-slate-900 hover:underline disabled:text-slate-400 disabled:no-underline"
+                            className="min-w-0 flex-1 truncate text-left font-mono text-xs text-foreground hover:underline disabled:text-muted-foreground disabled:no-underline"
                             disabled={file.deleted}
                             title={
                               file.deleted
@@ -2676,7 +2685,7 @@ export function AdminChat({
                             {file.path}
                           </button>
                           {file.deleted ? (
-                            <span className="text-xs text-rose-600">
+                            <span className="text-xs text-destructive">
                               已删除
                             </span>
                           ) : file.preview === "download" ? (
@@ -2684,7 +2693,7 @@ export function AdminChat({
                               href={api.wikiDownloadURL(file.path)}
                               target="_blank"
                               rel="noreferrer"
-                              className="inline-flex items-center gap-1 text-xs text-slate-600 hover:text-slate-900"
+                              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
                               title="下载后查看该格式文件"
                               onClick={(event) => event.stopPropagation()}
                             >
@@ -2692,7 +2701,7 @@ export function AdminChat({
                               下载
                             </a>
                           ) : (
-                            <span className="text-xs text-emerald-700">
+                            <span className="text-xs text-muted-foreground">
                               可查看
                             </span>
                           )}
@@ -2703,7 +2712,7 @@ export function AdminChat({
                 </div>
                 <div className="mt-4 space-y-2">
                   <div className="flex items-center justify-between gap-2">
-                    <label className="text-xs font-semibold text-slate-600">
+                    <label className="text-xs font-semibold text-muted-foreground">
                       提交信息
                     </label>
                     <Button
@@ -2721,7 +2730,7 @@ export function AdminChat({
                   <input
                     value={syncMessage}
                     onChange={(event) => setSyncMessage(event.target.value)}
-                    className="h-10 w-full rounded-md border border-input bg-white px-3 text-sm"
+                    className="h-10 w-full rounded-md border border-input bg-card px-3 text-sm"
                     placeholder="例如：更新 Wiki 内容"
                     title="本次 Git commit 的提交信息"
                   />
@@ -2735,20 +2744,20 @@ export function AdminChat({
                   {syncResult ? `最近提交：${syncResult.hash}` : ""}
                 </div>
                 {(syncStatus?.recent_commits.length ?? 0) > 0 ? (
-                  <div className="mt-4 rounded-xl border border-slate-200 p-3">
-                    <div className="text-xs font-semibold text-slate-600">
+                  <div className="mt-4 rounded-xl border border-border p-3">
+                    <div className="text-xs font-semibold text-muted-foreground">
                       最近提交记录
                     </div>
                     <div className="mt-2 max-h-32 space-y-1 overflow-y-auto">
                       {syncStatus?.recent_commits.map((commit) => (
                         <div
                           key={commit.hash}
-                          className="flex flex-wrap items-center gap-2 text-xs text-slate-600"
+                          className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"
                         >
-                          <span className="font-mono text-slate-900">
+                          <span className="font-mono text-foreground">
                             {commit.hash}
                           </span>
-                          <span className="text-slate-900">
+                          <span className="text-foreground">
                             {commit.subject}
                           </span>
                           <span>
@@ -2764,7 +2773,7 @@ export function AdminChat({
                     className={cn(
                       "mt-2 text-xs",
                       syncError.includes("完成")
-                        ? "text-emerald-700"
+                        ? "text-muted-foreground"
                         : "text-destructive",
                     )}
                   >
@@ -2772,7 +2781,7 @@ export function AdminChat({
                   </div>
                 ) : null}
               </div>
-              <footer className="flex flex-wrap items-center justify-end gap-2 border-t bg-slate-50 px-5 py-4">
+              <footer className="flex flex-wrap items-center justify-end gap-2 border-t bg-muted/40 px-5 py-4">
                 <Button
                   type="button"
                   variant="outline"
@@ -2815,7 +2824,7 @@ export function AdminChat({
         ) : null}
         {intentEditorOpen ? (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/35 p-4"
             role="dialog"
             aria-modal="true"
             aria-labelledby="customer-intents-title"
@@ -2825,7 +2834,7 @@ export function AdminChat({
               }
             }}
           >
-            <div className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-lg">
               <header className="flex items-start justify-between gap-4 border-b px-5 py-4">
                 <div>
                   <h2
@@ -2854,7 +2863,7 @@ export function AdminChat({
                 <Textarea
                   value={intentSource}
                   onChange={(event) => setIntentSource(event.target.value)}
-                  className="min-h-[52vh] resize-none bg-white font-mono text-xs leading-relaxed"
+                  className="min-h-[52vh] resize-none bg-card font-mono text-xs leading-relaxed"
                   spellCheck={false}
                   placeholder={intentLoading ? "正在读取配置..." : "version: 1"}
                 />
@@ -2868,7 +2877,7 @@ export function AdminChat({
                     className={cn(
                       intentMessage.includes("成功") ||
                         intentMessage.includes("重新读取")
-                        ? "text-emerald-700"
+                        ? "text-muted-foreground"
                         : intentMessage
                           ? "text-destructive"
                           : "",
@@ -2878,7 +2887,7 @@ export function AdminChat({
                   </span>
                 </div>
               </div>
-              <footer className="flex flex-wrap items-center justify-end gap-2 border-t bg-slate-50 px-5 py-4">
+              <footer className="flex flex-wrap items-center justify-end gap-2 border-t bg-muted/40 px-5 py-4">
                 <Button
                   type="button"
                   variant="outline"
@@ -3012,9 +3021,9 @@ function CompactContextUsage({
       <span className={cn("text-[11px]", usage.blocked ? "text-destructive" : "text-muted-foreground")}>
         上下文 {usage.used_tokens.toLocaleString()} / {usage.max_tokens.toLocaleString()}
       </span>
-      <span className="h-1.5 min-w-20 flex-1 overflow-hidden rounded-full bg-slate-100">
+      <span className="h-1.5 min-w-20 flex-1 overflow-hidden rounded-md bg-muted">
         <span
-          className={cn("block h-full rounded-full", usage.blocked ? "bg-destructive" : "bg-slate-900")}
+          className={cn("block h-full rounded-md", usage.blocked ? "bg-destructive" : "bg-primary")}
           style={{ width: `${percent}%` }}
         />
       </span>
@@ -3082,7 +3091,7 @@ function KnowledgeTaskButton({
   return (
     <button
       type="button"
-      className="inline-flex h-7 items-center gap-1.5 rounded-md px-1 text-xs font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50 dark:text-muted-foreground dark:hover:bg-secondary dark:hover:text-foreground"
+      className="inline-flex h-7 items-center gap-1.5 rounded-md px-1 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 dark:text-muted-foreground dark:hover:bg-secondary dark:hover:text-foreground"
       title={title}
       disabled={disabled}
       onClick={onClick}

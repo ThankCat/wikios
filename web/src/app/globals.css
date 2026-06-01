@@ -3,46 +3,62 @@
 @tailwind utilities;
 
 @layer base {
-	  :root {
-	    --background: 210 20% 98%;
-	    --foreground: 222 47% 11%;
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 3.9%;
     --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
-    --primary: 222 47% 11%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 214 32% 94%;
-    --secondary-foreground: 222 47% 11%;
-    --muted: 214 32% 92%;
-    --muted-foreground: 215 16% 42%;
-    --accent: 214 95% 93%;
-    --accent-foreground: 222 47% 11%;
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 215 25% 86%;
-    --input: 215 25% 86%;
-    --ring: 222 47% 11%;
-	    --radius: 1rem;
-	  }
+    --card-foreground: 0 0% 3.9%;
+    --primary: 0 0% 9%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 0 0% 96.1%;
+    --secondary-foreground: 0 0% 9%;
+    --muted: 0 0% 96.1%;
+    --muted-foreground: 0 0% 45.1%;
+    --accent: 0 0% 96.1%;
+    --accent-foreground: 0 0% 9%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 89.8%;
+    --input: 0 0% 89.8%;
+    --ring: 0 0% 3.9%;
+    --radius: 0.5rem;
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
 
-	  .dark {
-	    --background: 220 11% 8%;
-	    --foreground: 210 24% 94%;
-	    --card: 220 10% 12%;
-	    --card-foreground: 210 24% 94%;
-	    --primary: 210 24% 94%;
-	    --primary-foreground: 220 14% 9%;
-	    --secondary: 220 9% 18%;
-	    --secondary-foreground: 210 24% 94%;
-	    --muted: 220 9% 17%;
-	    --muted-foreground: 218 12% 68%;
-	    --accent: 190 38% 20%;
-	    --accent-foreground: 190 55% 88%;
-	    --destructive: 0 72% 56%;
-	    --destructive-foreground: 0 0% 100%;
-	    --border: 220 9% 25%;
-	    --input: 220 9% 25%;
-	    --ring: 190 65% 70%;
-	  }
+  .dark {
+    --background: 0 0% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 0 0% 9%;
+    --secondary: 0 0% 14.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 14.9%;
+    --muted-foreground: 0 0% 63.9%;
+    --accent: 0 0% 14.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 14.9%;
+    --input: 0 0% 14.9%;
+    --ring: 0 0% 83.1%;
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
 
   * {
     @apply border-border;
@@ -52,20 +68,6 @@
   body {
     @apply h-full bg-background text-foreground antialiased;
   }
-
-	  body {
-	    background:
-	      radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent 32%),
-	      radial-gradient(circle at bottom right, rgba(15, 23, 42, 0.08), transparent 28%),
-	      linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
-	  }
-
-	  .dark body {
-	    background:
-	      radial-gradient(circle at top left, rgba(20, 184, 166, 0.12), transparent 30%),
-	      radial-gradient(circle at bottom right, rgba(245, 158, 11, 0.08), transparent 28%),
-	      linear-gradient(180deg, #0b0d10 0%, #101216 100%);
-	  }
 
   ::-webkit-scrollbar {
     width: 10px;
@@ -83,14 +85,6 @@
 }
 
 @layer components {
-	  .panel-glass {
-	    @apply rounded-3xl border border-white/60 bg-white/85 shadow-soft backdrop-blur-md;
-	  }
-
-	  .dark .panel-glass {
-	    @apply border-border bg-card/80 shadow-none;
-	  }
-
   .chat-shell {
     @apply grid h-screen w-full grid-cols-[280px_minmax(0,1fr)] gap-4 overflow-hidden p-4;
   }
@@ -99,157 +93,23 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-	  .chat-bubble-user {
-	    @apply ml-auto max-w-[85%] rounded-[24px] rounded-br-md bg-foreground px-4 py-3 text-sm leading-6 text-white shadow-soft;
-	  }
+  .chat-bubble-user {
+    @apply ml-auto max-w-[85%] rounded-lg bg-primary px-4 py-3 text-sm leading-6 text-primary-foreground shadow-sm;
+  }
 
-	  .dark .chat-bubble-user {
-	    @apply bg-secondary text-secondary-foreground shadow-none;
-	  }
-
-	  .chat-bubble-assistant {
-	    @apply max-w-[85%] rounded-[24px] rounded-bl-md bg-white px-4 py-3 text-sm leading-6 text-foreground shadow-soft;
-	  }
-
-	  .dark .chat-bubble-assistant {
-	    @apply border border-border bg-card text-card-foreground shadow-none;
-	  }
+  .chat-bubble-assistant {
+    @apply max-w-[85%] rounded-lg border bg-card px-4 py-3 text-sm leading-6 text-card-foreground shadow-sm;
+  }
 
   .detail-code-scroll {
     scrollbar-width: thin;
     scrollbar-color: rgba(148, 163, 184, 0.95) rgba(15, 23, 42, 0.35);
   }
 
-	  .detail-scroll {
-	    scrollbar-width: thin;
-	    scrollbar-color: rgba(100, 116, 139, 0.7) rgba(226, 232, 240, 0.85);
-	  }
-
-	  .dark .detail-scroll {
-	    scrollbar-color: rgba(148, 163, 184, 0.75) rgba(31, 41, 55, 0.8);
-	  }
-	}
-
-.dark .admin-shell-root {
-  color-scheme: dark;
-}
-
-.dark .admin-shell-root .bg-white {
-  background-color: hsl(var(--card));
-}
-
-.dark .admin-shell-root .bg-white\/95 {
-  background-color: hsl(var(--card) / 0.95);
-}
-
-.dark .admin-shell-root .bg-white\/90 {
-  background-color: hsl(var(--card) / 0.9);
-}
-
-.dark .admin-shell-root .bg-white\/85 {
-  background-color: hsl(var(--card) / 0.85);
-}
-
-.dark .admin-shell-root .bg-white\/80 {
-  background-color: hsl(var(--card) / 0.8);
-}
-
-.dark .admin-shell-root .bg-white\/70 {
-  background-color: hsl(var(--card) / 0.7);
-}
-
-.dark .admin-shell-root .bg-white\/65 {
-  background-color: hsl(var(--card) / 0.65);
-}
-
-.dark .admin-shell-root .bg-white\/60 {
-  background-color: hsl(var(--card) / 0.6);
-}
-
-.dark .admin-shell-root .bg-slate-50,
-.dark .admin-shell-root .bg-slate-50\/60,
-.dark .admin-shell-root .bg-slate-50\/70 {
-  background-color: hsl(var(--muted) / 0.72);
-}
-
-.dark .admin-shell-root .bg-slate-100 {
-  background-color: hsl(var(--secondary));
-}
-
-.dark .admin-shell-root .hover\:bg-slate-50:hover,
-.dark .admin-shell-root .hover\:bg-slate-100:hover,
-.dark .admin-shell-root .hover\:bg-secondary:hover {
-  background-color: hsl(var(--secondary) / 0.82);
-}
-
-.dark .admin-shell-root .border-slate-100,
-.dark .admin-shell-root .border-slate-200,
-.dark .admin-shell-root .border-slate-300 {
-  border-color: hsl(var(--border));
-}
-
-.dark .admin-shell-root .text-slate-950,
-.dark .admin-shell-root .text-slate-900,
-.dark .admin-shell-root .text-slate-800 {
-  color: hsl(var(--foreground));
-}
-
-.dark .admin-shell-root .text-slate-700,
-.dark .admin-shell-root .text-slate-600,
-.dark .admin-shell-root .text-slate-500,
-.dark .admin-shell-root .text-slate-400 {
-  color: hsl(var(--muted-foreground));
-}
-
-.dark .admin-shell-root .hover\:text-slate-950:hover,
-.dark .admin-shell-root .hover\:text-slate-900:hover {
-  color: hsl(var(--foreground));
-}
-
-.dark .admin-shell-root .bg-red-50,
-.dark .admin-shell-root .bg-rose-50,
-.dark .admin-shell-root .bg-rose-100 {
-  background-color: rgba(127, 29, 29, 0.28);
-}
-
-.dark .admin-shell-root .border-red-100,
-.dark .admin-shell-root .border-red-200,
-.dark .admin-shell-root .border-rose-200 {
-  border-color: rgba(248, 113, 113, 0.34);
-}
-
-.dark .admin-shell-root .text-red-600,
-.dark .admin-shell-root .text-red-700,
-.dark .admin-shell-root .text-red-900,
-.dark .admin-shell-root .text-rose-600,
-.dark .admin-shell-root .text-rose-700 {
-  color: rgb(252 165 165);
-}
-
-.dark .admin-shell-root .bg-emerald-50,
-.dark .admin-shell-root .bg-emerald-50\/60,
-.dark .admin-shell-root .bg-emerald-100 {
-  background-color: rgba(6, 78, 59, 0.28);
-}
-
-.dark .admin-shell-root .border-emerald-100,
-.dark .admin-shell-root .border-emerald-200 {
-  border-color: rgba(52, 211, 153, 0.34);
-}
-
-.dark .admin-shell-root .text-emerald-600,
-.dark .admin-shell-root .text-emerald-700,
-.dark .admin-shell-root .text-emerald-800,
-.dark .admin-shell-root .text-emerald-900 {
-  color: rgb(110 231 183);
-}
-
-.dark .admin-shell-root .bg-amber-100 {
-  background-color: rgba(120, 53, 15, 0.32);
-}
-
-.dark .admin-shell-root .text-amber-700 {
-  color: rgb(252 211 77);
+  .detail-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(100, 116, 139, 0.7) rgba(226, 232, 240, 0.85);
+  }
 }
 
 .admin-shell-root .wiki-code-editor .cm-editor {

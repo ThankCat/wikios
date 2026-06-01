@@ -16,24 +16,30 @@ export function ScrollJumpControls({ show, onTop, onBottom, className }: Props) 
     return null;
   }
   return (
-    <div className={cn("pointer-events-none absolute z-20 flex flex-col gap-2", className)}>
+    <div
+      className={cn(
+        "pointer-events-none absolute z-20 flex flex-col overflow-hidden rounded-full border bg-background/85 p-0.5 text-muted-foreground shadow-sm backdrop-blur dark:bg-card/85",
+        className,
+      )}
+    >
       <button
         type="button"
         title="回到顶部"
         aria-label="回到顶部"
         onClick={onTop}
-        className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white/95 text-slate-700 shadow-lg transition hover:bg-slate-50 dark:border-border dark:bg-card/95 dark:text-muted-foreground dark:hover:bg-secondary dark:hover:text-foreground"
+        className="pointer-events-auto inline-flex size-6 items-center justify-center rounded-full transition hover:bg-muted hover:text-foreground"
       >
-        <ArrowUp className="h-4 w-4" />
+        <ArrowUp className="size-3.5" />
       </button>
+      <div className="mx-auto my-0.5 h-px w-3 bg-border" />
       <button
         type="button"
         title="跳到最新"
         aria-label="跳到最新"
         onClick={onBottom}
-        className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-900 bg-slate-900 text-white shadow-lg transition hover:bg-slate-800 dark:border-white dark:bg-white dark:text-slate-950 dark:hover:bg-slate-200"
+        className="pointer-events-auto inline-flex size-6 items-center justify-center rounded-full transition hover:bg-muted hover:text-foreground"
       >
-        <ArrowDown className="h-4 w-4" />
+        <ArrowDown className="size-3.5" />
       </button>
     </div>
   );

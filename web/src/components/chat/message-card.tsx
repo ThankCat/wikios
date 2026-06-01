@@ -34,7 +34,8 @@ export function MessageCard({
   selected,
   onInspect,
 }: Props) {
-  const displayContent = role === "assistant" && content.trim() === "" && pending ? "正在处理..." : content;
+  const showTypingIndicator = role === "assistant" && content.trim() === "" && pending;
+  const displayContent = showTypingIndicator ? "" : content;
   const detailObject = useMemo(() => asObject(details), [details]);
   const modelReasoning = typeof detailObject.reasoning === "string" ? detailObject.reasoning.trim() : "";
   const hasReasoningDetails = role === "assistant" && modelReasoning;
@@ -43,7 +44,7 @@ export function MessageCard({
     <div className={cn("flex w-full", role === "user" ? "justify-end" : "justify-start")}>
       <div className={cn("flex w-full min-w-0 flex-col", role === "user" ? "items-end" : "items-start")}>
         {createdAt ? (
-          <div className="mb-1 px-1 text-[10px] leading-4 text-slate-400">
+          <div className="mb-1 px-1 text-[10px] leading-4 text-muted-foreground">
             {formatMessageTime(createdAt)}
             {durationText ? <span> · 耗时 {durationText}</span> : null}
           </div>
@@ -55,14 +56,18 @@ export function MessageCard({
             </div>
           ) : null}
           {role === "assistant" ? (
-            <MarkdownContent className="prose prose-slate prose-sm max-w-none dark:prose-invert prose-table:my-0 prose-th:p-0 prose-td:p-0">
-              {displayContent}
-            </MarkdownContent>
+            showTypingIndicator ? (
+              <TypingDots />
+            ) : (
+              <MarkdownContent className="prose prose-slate prose-sm max-w-none dark:prose-invert prose-table:my-0 prose-th:p-0 prose-td:p-0">
+                {displayContent}
+              </MarkdownContent>
+            )
           ) : (
             <div className="whitespace-pre-wrap">{displayContent}</div>
           )}
           {statusText ? (
-            <div className={cn("mt-2 text-xs", role === "user" ? "text-white/70" : "text-slate-500")}>{statusText}</div>
+            <div className={cn("mt-2 text-xs", role === "user" ? "text-primary-foreground/70" : "text-muted-foreground")}>{statusText}</div>
           ) : null}
           {details && onInspect ? (
             <div className="mt-3 flex justify-end">
@@ -70,14 +75,14 @@ export function MessageCard({
                 type="button"
                 onClick={() => onInspect?.({ id, role, content, details })}
                 className={cn(
-                  "inline-flex h-8 items-center justify-center rounded-full border px-2.5 text-[11px] font-medium transition",
+                  "inline-flex h-8 items-center justify-center rounded-md border px-2.5 text-[11px] font-medium transition",
                   role === "user"
                     ? selected
-                      ? "border-white/40 bg-white/15 text-white"
-                      : "border-white/20 bg-white/5 text-white/85 hover:bg-white/10"
+                      ? "border-primary-foreground/40 bg-primary-foreground/15 text-primary-foreground"
+                      : "border-primary-foreground/20 bg-primary-foreground/10 text-primary-foreground/85 hover:bg-primary-foreground/10"
                     : selected
-                      ? "border-slate-900 bg-slate-900 text-white dark:border-white dark:bg-white dark:text-slate-950"
-                      : "border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-border dark:bg-secondary dark:text-muted-foreground dark:hover:bg-secondary/80 dark:hover:text-foreground",
+                      ? "border-primary bg-primary text-primary-foreground dark:border-border dark:bg-card dark:text-foreground"
+                      : "border-border bg-muted/40 text-muted-foreground hover:bg-muted dark:border-border dark:bg-secondary dark:text-muted-foreground dark:hover:bg-secondary/80 dark:hover:text-foreground",
                 )}
               >
                 {selected ? "正在查看详情" : "查看详情"}
@@ -91,6 +96,16 @@ export function MessageCard({
           </div>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function TypingDots() {
+  return (
+    <div className="flex h-6 items-center gap-1.5 px-1" aria-label="正在生成回答">
+      <span className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:-0.24s]" />
+      <span className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:-0.12s]" />
+      <span className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground/60" />
     </div>
   );
 }
@@ -146,26 +161,26 @@ function InlineTracePanel({
   const [open, setOpen] = useState(() => (initiallyOpen === undefined ? Boolean(pending || content) : initiallyOpen));
   const traceScroll = useScrollFollow<HTMLPreElement>([content, open]);
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white/80 text-left shadow-sm dark:border-border dark:bg-card/80 dark:shadow-none">
+    <section className="rounded-lg border border-border bg-card/80 text-left shadow-sm dark:border-border dark:bg-card/80 dark:shadow-none">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-xs font-medium text-slate-700 dark:text-foreground"
+        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-xs font-medium text-foreground dark:text-foreground"
         title={open ? `收起${title}` : `展开${title}`}
       >
         <span className="flex min-w-0 items-center gap-2">
-          <BrainCircuit className={cn("h-3.5 w-3.5", pending ? "animate-pulse text-slate-500" : "text-slate-500")} />
+          <BrainCircuit className={cn("h-3.5 w-3.5", pending ? "animate-pulse text-muted-foreground" : "text-muted-foreground")} />
           <span>{title}</span>
-          {pending ? <span className="text-slate-400">生成中</span> : null}
+          {pending ? <span className="text-muted-foreground">生成中</span> : null}
         </span>
-        <ChevronDown className={cn("h-4 w-4 shrink-0 text-slate-400 transition", open ? "rotate-180" : "")} />
+        <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition", open ? "rotate-180" : "")} />
       </button>
       {open ? (
-        <div className="relative border-t border-slate-200 px-3 py-2 dark:border-border">
+        <div className="relative border-t border-border px-3 py-2 dark:border-border">
           {content ? (
             <pre
               ref={traceScroll.viewportRef}
-              className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-3 text-xs leading-5 text-slate-600 dark:bg-secondary/60 dark:text-foreground/85"
+              className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 text-xs leading-5 text-muted-foreground dark:bg-secondary/60 dark:text-foreground/85"
             >
               {content}
             </pre>
@@ -174,7 +189,7 @@ function InlineTracePanel({
             <button
               type="button"
               onClick={() => traceScroll.scrollToBottom()}
-              className="absolute bottom-4 right-5 inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-soft transition hover:bg-slate-50 hover:text-slate-950 dark:border-border dark:bg-card dark:text-muted-foreground dark:shadow-none dark:hover:bg-secondary dark:hover:text-foreground"
+              className="absolute bottom-4 right-5 inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card text-muted-foreground shadow-sm transition hover:bg-muted/40 hover:text-foreground dark:border-border dark:bg-card dark:text-muted-foreground dark:shadow-none dark:hover:bg-secondary dark:hover:text-foreground"
               title={`跳到${title}最新位置`}
             >
               <ArrowDown className="h-4 w-4" />

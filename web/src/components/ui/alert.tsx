@@ -10,8 +10,9 @@ export function Alert({
   return (
     <div
       className={cn(
-        "rounded-lg border bg-card px-4 py-3 text-sm text-card-foreground",
-        variant === "destructive" && "border-red-200 bg-red-50 text-red-900",
+        "relative w-full rounded-lg border px-4 py-3 text-sm",
+        variant === "default" && "bg-background text-foreground",
+        variant === "destructive" && "border-destructive/50 text-destructive",
         className,
       )}
       {...props}

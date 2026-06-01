@@ -40,18 +40,18 @@ web:
 upload:
   max_text_file_kb: 500
 
-public_intents:
+customer_intents:
   enabled: true
-  path: configs/public_intents.yaml
+  path: configs/customer_intents.yaml
 
-public_query:
-  candidate_top_k: ${WIKIOS_PUBLIC_CANDIDATE_TOP_K}
-  max_evidence_chars: ${WIKIOS_PUBLIC_MAX_EVIDENCE_CHARS}
-  response_timeout_sec: ${WIKIOS_PUBLIC_RESPONSE_TIMEOUT_SEC}
+customer_query:
+  candidate_top_k: ${WIKIOS_CUSTOMER_CANDIDATE_TOP_K}
+  max_evidence_chars: ${WIKIOS_CUSTOMER_MAX_EVIDENCE_CHARS}
+  response_timeout_sec: ${WIKIOS_CUSTOMER_RESPONSE_TIMEOUT_SEC}
   answer_log:
-    enabled: ${WIKIOS_PUBLIC_ANSWER_LOG_ENABLED}
-    redact: ${WIKIOS_PUBLIC_ANSWER_LOG_REDACT}
-    retention_days: ${WIKIOS_PUBLIC_ANSWER_LOG_RETENTION_DAYS}
+    enabled: ${WIKIOS_CUSTOMER_CHAT_LOG_ENABLED}
+    redact: ${WIKIOS_CUSTOMER_CHAT_LOG_REDACT}
+    retention_days: ${WIKIOS_CUSTOMER_CHAT_LOG_RETENTION_DAYS}
   confidence:
     direct_min: 0.70
     review_min: 0.25

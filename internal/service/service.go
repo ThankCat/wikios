@@ -111,6 +111,8 @@ func (s *baseService) executeLLM(ctx context.Context, execution *Execution, mode
 
 type LLMTrace struct {
 	Reasoning string `json:"reasoning,omitempty"`
+	ModelID   string `json:"model_id,omitempty"`
+	ModelName string `json:"model_name,omitempty"`
 }
 
 func (s *baseService) executeLLMTrace(ctx context.Context, execution *Execution, model string, messages []llm.Message, stepName string) (string, LLMTrace, error) {
@@ -154,6 +156,7 @@ func (s *baseService) executeLLMTraceWithOptionsAndResponseFormat(ctx context.Co
 	ctx = llm.WithRequestTimeout(ctx, timeout)
 	ctx = llm.WithEnableThinking(ctx, enableThinking)
 	ctx = llm.WithResponseFormat(ctx, responseFormat)
+	ctx, usedModel := contextWithUsedLLMModelRecorder(ctx)
 	var reasoning strings.Builder
 	onDelta := func(delta llm.StreamDelta) {
 		if delta.ReasoningContent != "" {
@@ -189,7 +192,12 @@ func (s *baseService) executeLLMTraceWithOptionsAndResponseFormat(ctx context.Co
 	}
 	end := time.Now()
 	reasoningText := strings.TrimSpace(reasoning.String())
-	trace := LLMTrace{Reasoning: reasoningText}
+	usedModelSnapshot := usedModel()
+	trace := LLMTrace{
+		Reasoning: reasoningText,
+		ModelID:   usedModelSnapshot.ID,
+		ModelName: usedModelSnapshot.Name,
+	}
 	if execution != nil {
 		step := Step{
 			Name:       stepName,
@@ -200,6 +208,7 @@ func (s *baseService) executeLLMTraceWithOptionsAndResponseFormat(ctx context.Co
 			EndedAt:    end,
 			Input: map[string]any{
 				"model":                   displayModel,
+				"model_id":                trace.ModelID,
 				"message_count":           len(messages),
 				"prompt_chars":            promptChars,
 				"prompt_estimated_tokens": promptTokens,
@@ -225,6 +234,8 @@ func (s *baseService) executeLLMTraceWithOptionsAndResponseFormat(ctx context.Co
 	}
 	emitStreamEvent(ctx, "llm_done", map[string]any{
 		"name":            stepName,
+		"model_id":        trace.ModelID,
+		"model_name":      trace.ModelName,
 		"text":            text,
 		"reasoning":       reasoningText,
 		"reasoning_chars": len([]rune(reasoningText)),

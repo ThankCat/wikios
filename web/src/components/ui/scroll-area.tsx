@@ -17,16 +17,16 @@ export const ScrollArea = React.forwardRef<
 	    <ScrollAreaPrimitive.Scrollbar
 	      orientation="vertical"
 	      forceMount
-	      className="flex w-3 touch-none select-none border-l border-slate-200/80 bg-slate-100/80 p-[3px] transition-colors dark:border-border dark:bg-secondary/70"
+	      className="flex w-3 touch-none select-none border-l border-border bg-muted/80 p-[3px] transition-colors dark:border-border dark:bg-secondary/70"
 	    >
-	      <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-slate-400/90 dark:bg-slate-600" />
+	      <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-muted-foreground/60 dark:bg-muted-foreground/60" />
 	    </ScrollAreaPrimitive.Scrollbar>
     <ScrollAreaPrimitive.Scrollbar
       orientation="horizontal"
       forceMount
-	      className="flex h-3 touch-none select-none border-t border-slate-200/80 bg-slate-100/80 p-[3px] transition-colors dark:border-border dark:bg-secondary/70"
+	      className="flex h-3 touch-none select-none border-t border-border bg-muted/80 p-[3px] transition-colors dark:border-border dark:bg-secondary/70"
 	    >
-	      <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-slate-400/90 dark:bg-slate-600" />
+	      <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-muted-foreground/60 dark:bg-muted-foreground/60" />
     </ScrollAreaPrimitive.Scrollbar>
     <ScrollAreaPrimitive.Corner />
   </ScrollAreaPrimitive.Root>

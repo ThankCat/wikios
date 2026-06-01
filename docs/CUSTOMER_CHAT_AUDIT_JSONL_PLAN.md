@@ -203,8 +203,8 @@ Specialist 不负责：
   "simulation": true,
   "git_commit": "15460d9",
   "customer_chat_mode": "routed",
-  "router_model_id": "active",
-  "specialist_model_id": "active",
+  "router_model_id": "llm_qwen_20260528",
+  "specialist_model_id": "llm_qwen_20260528",
   "router_contract_version": "customer_router.v1"
 }
 ```
@@ -215,6 +215,7 @@ Specialist 不负责：
 "request": {
   "message": "静态 IP 怎么卖？",
   "history_turns": 2,
+  "history_message_count": 4,
   "history_summary": "用户之前询问过静态 IP 类型",
   "conversation_context": [
     {
@@ -233,6 +234,7 @@ Specialist 不负责：
 
 - `message`：本轮用户问题，对应 `/api/v1/customer/chat` 请求字段。
 - `history_turns`：历史问答轮数。
+- `history_message_count`：原始历史消息条数，包含 user 和 assistant 消息；通常等于 `history_turns * 2`，但异常/未完成对话可能不同。
 - `history_summary`：Router 生成的必要历史摘要，用于快速审计指代关系。
 - `conversation_context`：本轮之前的完整历史问答列表，只记录每轮的 `question` 和 `answer`。
 
@@ -254,7 +256,7 @@ Specialist 不负责：
 ```json
 "router": {
   "model": {
-    "id": "active",
+    "id": "llm_qwen_20260528",
     "name": "qwen3.6-flash",
     "thinking_enabled": false
   },
@@ -444,7 +446,7 @@ save_full_evidence=true
 "specialist": {
   "name": "pricing",
   "model": {
-    "id": "active",
+    "id": "llm_qwen_20260528",
     "name": "qwen3.6-flash",
     "thinking_enabled": true
   },
@@ -620,13 +622,14 @@ final_response
     "simulation": true,
     "git_commit": "15460d9",
     "customer_chat_mode": "routed",
-    "router_model_id": "active",
-    "specialist_model_id": "active",
+    "router_model_id": "llm_qwen_20260528",
+    "specialist_model_id": "llm_qwen_20260528",
     "router_contract_version": "customer_router.v1"
   },
   "request": {
     "message": "静态 IP 怎么卖？",
     "history_turns": 2,
+    "history_message_count": 4,
     "history_summary": "用户之前询问过静态 IP 类型",
     "conversation_context": [
       {
@@ -641,7 +644,7 @@ final_response
   },
   "router": {
     "model": {
-      "id": "active",
+      "id": "llm_qwen_20260528",
       "name": "qwen3.6-flash",
       "thinking_enabled": false
     },
@@ -711,7 +714,7 @@ final_response
   "specialist": {
     "name": "pricing",
     "model": {
-      "id": "active",
+      "id": "llm_qwen_20260528",
       "name": "qwen3.6-flash",
       "thinking_enabled": true
     },

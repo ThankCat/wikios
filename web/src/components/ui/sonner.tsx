@@ -49,11 +49,11 @@ export function Toaster() {
       {items.map((item) => (
         <div
           key={item.id}
-	          className={cn(
-	            "rounded-lg border bg-white p-3 text-sm shadow-lg dark:bg-card dark:text-card-foreground dark:shadow-none",
-	            item.tone === "success" && "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-700/60 dark:bg-emerald-950/40 dark:text-emerald-200",
-	            item.tone === "error" && "border-red-200 bg-red-50 text-red-900 dark:border-red-700/60 dark:bg-red-950/40 dark:text-red-200",
-	          )}
+          className={cn(
+            "rounded-lg border bg-card p-3 text-sm shadow-lg dark:bg-card dark:text-card-foreground dark:shadow-none",
+            item.tone === "success" && "border-border bg-muted/40 text-foreground",
+            item.tone === "error" && "border-destructive/20 bg-destructive/10 text-destructive",
+          )}
         >
           <div className="font-medium">{item.title}</div>
           {item.description ? <div className="mt-1 text-xs opacity-80">{item.description}</div> : null}

@@ -53,6 +53,7 @@ type customerChatAuditRuntime struct {
 type customerChatAuditRequest struct {
 	Message             string           `json:"message"`
 	HistoryTurns        int              `json:"history_turns"`
+	HistoryMessageCount int              `json:"history_message_count"`
 	HistorySummary      string           `json:"history_summary"`
 	ConversationContext []map[string]any `json:"conversation_context"`
 }
@@ -189,7 +190,7 @@ func (s *CustomerChatService) customerAuditModelName(ctx context.Context, id str
 		return ""
 	}
 	id = strings.TrimSpace(id)
-	if id == "active" {
+	if id == "active" || id == currentLLMModel {
 		id = ""
 	}
 	if s.deps.Store != nil {
@@ -221,6 +222,24 @@ func (s *CustomerChatService) customerAuditModelName(ctx context.Context, id str
 				return strings.TrimSpace(name)
 			}
 		}
+	}
+	return ""
+}
+
+func (s *CustomerChatService) customerAuditModelID(ctx context.Context, id string) string {
+	id = strings.TrimSpace(id)
+	if id != "" && id != "active" && id != currentLLMModel {
+		return id
+	}
+	if s == nil || s.deps.Store == nil {
+		return ""
+	}
+	model, err := s.deps.Store.GetActiveLLMModel(ctx)
+	if err == nil && model != nil {
+		return strings.TrimSpace(model.ID)
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return ""
 	}
 	return ""
 }

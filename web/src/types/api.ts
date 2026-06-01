@@ -414,6 +414,15 @@ export type CustomerConversationSummary = {
   last_question: string;
   last_answer: string;
   last_answer_mode?: string;
+  entrypoints?: string[];
+  last_entrypoint?: "external" | "internal" | string;
+  last_simulation?: boolean;
+  last_specialist?: string;
+  last_total_duration_ms?: number;
+  average_duration_ms?: number;
+  last_source_count?: number;
+  error_count?: number;
+  review_required_count?: number;
   message_count: number;
   turn_count: number;
   started_at: string;
@@ -429,6 +438,13 @@ export type CustomerConversationMessage = {
   trace_id?: string;
   message_id?: string;
   answer_mode?: string;
+  entrypoint?: "external" | "internal" | string;
+  simulation?: boolean;
+  specialist?: string;
+  duration_ms?: number;
+  source_count?: number;
+  review_required?: boolean;
+  error_stage?: string;
   process_summary?: string;
   details?: Record<string, unknown>;
 };
@@ -453,4 +469,12 @@ export type CustomerConversationDetailResponse = {
   conversation: CustomerConversationSummary;
   messages: CustomerConversationMessage[];
   log: CustomerConversationLogSummary;
+};
+
+export type CustomerConversationDeleteResponse = {
+  ok: boolean;
+  id: string;
+  deleted_records: number;
+  touched_files: number;
+  deleted_files: number;
 };

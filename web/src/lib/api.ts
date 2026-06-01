@@ -12,6 +12,7 @@ import type {
   CustomerChatHistoryItem,
   CustomerChatResponse,
   CustomerChatTraceResponse,
+  CustomerConversationDeleteResponse,
   CustomerConversationDetailResponse,
   CustomerConversationsResponse,
   CustomerContextEstimateResponse,
@@ -97,14 +98,6 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message, history, entrypoint: "external" }),
-      signal,
-    });
-  },
-  customerChatAudit(message: string, history?: CustomerChatHistoryItem[], meta?: CustomerChatMeta, signal?: AbortSignal) {
-    return request<CustomerChatResponse>(apiURL("/api/v1/customer/chat"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, history, ...meta, entrypoint: "internal", simulation: true, stream: false }),
       signal,
     });
   },
@@ -297,18 +290,29 @@ export const api = {
   wikiDownloadURL(path: string) {
     return apiURL(`/api/v1/admin/wiki/download?path=${encodeURIComponent(path)}`);
   },
-  customerConversations(params?: { q?: string; page?: number; page_size?: number; from?: string; to?: string }, signal?: AbortSignal) {
+  customerConversations(
+    params?: { q?: string; page?: number; page_size?: number; from?: string; to?: string; entrypoint?: string; simulation?: boolean | string },
+    signal?: AbortSignal,
+  ) {
     const search = new URLSearchParams();
     if (params?.q) search.set("q", params.q);
     if (params?.page) search.set("page", String(params.page));
     if (params?.page_size) search.set("page_size", String(params.page_size));
     if (params?.from) search.set("from", params.from);
     if (params?.to) search.set("to", params.to);
+    if (params?.entrypoint) search.set("entrypoint", params.entrypoint);
+    if (params?.simulation !== undefined && params.simulation !== "") search.set("simulation", String(params.simulation));
     const suffix = search.toString() ? `?${search.toString()}` : "";
     return request<CustomerConversationsResponse>(apiURL(`/api/v1/admin/customer-conversations${suffix}`), { signal });
   },
   customerConversationDetail(id: string, signal?: AbortSignal) {
     return request<CustomerConversationDetailResponse>(apiURL(`/api/v1/admin/customer-conversations/${encodeURIComponent(id)}`), { signal });
+  },
+  deleteCustomerConversation(id: string, signal?: AbortSignal) {
+    return request<CustomerConversationDeleteResponse>(apiURL(`/api/v1/admin/customer-conversations/${encodeURIComponent(id)}`), {
+      method: "DELETE",
+      signal,
+    });
   },
   syncStatus(signal?: AbortSignal) {
     return request<SyncStatusResponse>(apiURL("/api/v1/admin/sync/status"), { signal });

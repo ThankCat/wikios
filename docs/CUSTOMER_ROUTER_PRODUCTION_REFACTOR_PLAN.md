@@ -654,7 +654,7 @@ Server 核心控制字段：
 - `go test ./internal/api`
 - `go test ./internal/llm`
 - `go test ./...`
-- `cd web && npm run check`
+- `cd web && bun run check`
 - trace 中能看到 V1 Router 决策字段。
 - Specialist user prompt 中只出现 V1 字段。
 - 非 V1 字段残留扫描为 0。
@@ -963,7 +963,7 @@ go test ./...
 
 ```bash
 cd web
-npm run check
+bun run check
 ```
 
 V1 字段扫描：

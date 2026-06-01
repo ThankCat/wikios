@@ -11,8 +11,8 @@ export function Dialog({ open, children }: { open: boolean; children: React.Reac
 
 export function DialogContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4">
-      <div className={cn("max-h-[90vh] w-full max-w-2xl overflow-auto rounded-lg border bg-background p-6 shadow-2xl", className)} {...props} />
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/35 p-4">
+      <div className={cn("max-h-[90vh] w-full max-w-2xl overflow-auto rounded-lg border bg-background p-6 shadow-lg", className)} {...props} />
     </div>
   );
 }

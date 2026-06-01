@@ -63,6 +63,7 @@ func NewRouter(cfg *config.Config, handlers *api.Handlers, dataStore *store.Stor
 	admin.PUT("/runtime-settings", handlers.AdminUpdateRuntimeSettings)
 	admin.GET("/customer-conversations", handlers.AdminCustomerConversations)
 	admin.GET("/customer-conversations/:session_id", handlers.AdminCustomerConversationDetail)
+	admin.DELETE("/customer-conversations/:session_id", handlers.AdminDeleteCustomerConversation)
 	admin.GET("/customer-chat/traces/:trace_id", handlers.AdminCustomerChatTrace)
 	admin.GET("/reviews/count", handlers.AdminReviewCount)
 	admin.GET("/reviews/next", handlers.AdminReviewNext)

@@ -19,7 +19,7 @@ export function SheetContent({ className, ...props }: React.HTMLAttributes<HTMLD
   return (
     <div
       className={cn(
-        "fixed inset-y-0 right-0 z-50 w-full max-w-xl border-l bg-background p-6 shadow-2xl",
+        "fixed inset-y-0 right-0 z-50 w-full max-w-xl border-l bg-background p-6 shadow-lg",
         className,
       )}
       {...props}

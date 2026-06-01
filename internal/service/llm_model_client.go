@@ -27,6 +27,13 @@ type DynamicLLMClient struct {
 	clientByID map[string]llm.Client
 }
 
+type usedLLMModelContextKey struct{}
+
+type usedLLMModelSnapshot struct {
+	ID   string
+	Name string
+}
+
 type allLLMModelsUnavailableError struct {
 	failures []llmModelFailure
 }
@@ -76,6 +83,7 @@ func (c *DynamicLLMClient) chat(ctx context.Context, modelToken string, messages
 		if model, err := c.modelByID(ctx, requestedID); err == nil {
 			text, err := c.clientForModel(model).Chat(ctx, model.ModelName, messages)
 			if err == nil {
+				recordUsedLLMModel(ctx, model)
 				return text, nil
 			}
 			if doneErr := llmModelContextError(ctx, err); doneErr != nil {
@@ -97,6 +105,7 @@ func (c *DynamicLLMClient) chat(ctx context.Context, modelToken string, messages
 	for _, model := range models {
 		text, err := c.clientForModel(model).Chat(ctx, model.ModelName, messages)
 		if err == nil {
+			recordUsedLLMModel(ctx, model)
 			c.activateSuccessfulFallback(ctx, model)
 			return text, nil
 		}
@@ -143,6 +152,7 @@ func (c *DynamicLLMClient) streamChatEvents(ctx context.Context, modelToken stri
 				})
 			}
 			if err == nil {
+				recordUsedLLMModel(ctx, model)
 				return text, nil
 			}
 			if emitted {
@@ -185,6 +195,7 @@ func (c *DynamicLLMClient) streamChatEvents(ctx context.Context, modelToken stri
 			})
 		}
 		if err == nil {
+			recordUsedLLMModel(ctx, model)
 			c.activateSuccessfulFallback(ctx, model)
 			return text, nil
 		}
@@ -202,6 +213,30 @@ func (c *DynamicLLMClient) ActiveModelName(ctx context.Context) (string, error) 
 		return "", err
 	}
 	return model.ModelName, nil
+}
+
+func contextWithUsedLLMModelRecorder(ctx context.Context) (context.Context, func() usedLLMModelSnapshot) {
+	var snapshot usedLLMModelSnapshot
+	recorder := func(model usedLLMModelSnapshot) {
+		snapshot = model
+	}
+	return context.WithValue(ctx, usedLLMModelContextKey{}, recorder), func() usedLLMModelSnapshot {
+		return snapshot
+	}
+}
+
+func recordUsedLLMModel(ctx context.Context, model *store.LLMModel) {
+	if model == nil {
+		return
+	}
+	recorder, _ := ctx.Value(usedLLMModelContextKey{}).(func(usedLLMModelSnapshot))
+	if recorder == nil {
+		return
+	}
+	recorder(usedLLMModelSnapshot{
+		ID:   strings.TrimSpace(model.ID),
+		Name: strings.TrimSpace(firstNonEmpty(model.ModelName, model.DisplayName)),
+	})
 }
 
 func (c *DynamicLLMClient) RequestTimeout(ctx context.Context, admin bool) time.Duration {

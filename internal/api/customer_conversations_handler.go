@@ -15,18 +15,27 @@ import (
 )
 
 type customerConversationSummary struct {
-	ID             string `json:"id"`
-	SessionID      string `json:"session_id"`
-	UserID         string `json:"user_id,omitempty"`
-	Title          string `json:"title"`
-	FirstQuestion  string `json:"first_question"`
-	LastQuestion   string `json:"last_question"`
-	LastAnswer     string `json:"last_answer"`
-	LastAnswerMode string `json:"last_answer_mode,omitempty"`
-	MessageCount   int    `json:"message_count"`
-	TurnCount      int    `json:"turn_count"`
-	StartedAt      string `json:"started_at"`
-	UpdatedAt      string `json:"updated_at"`
+	ID                  string   `json:"id"`
+	SessionID           string   `json:"session_id"`
+	UserID              string   `json:"user_id,omitempty"`
+	Title               string   `json:"title"`
+	FirstQuestion       string   `json:"first_question"`
+	LastQuestion        string   `json:"last_question"`
+	LastAnswer          string   `json:"last_answer"`
+	LastAnswerMode      string   `json:"last_answer_mode,omitempty"`
+	Entrypoints         []string `json:"entrypoints"`
+	LastEntrypoint      string   `json:"last_entrypoint"`
+	LastSimulation      bool     `json:"last_simulation"`
+	LastSpecialist      string   `json:"last_specialist"`
+	LastTotalDurationMS int64    `json:"last_total_duration_ms"`
+	AverageDurationMS   int64    `json:"average_duration_ms"`
+	LastSourceCount     int64    `json:"last_source_count"`
+	ErrorCount          int      `json:"error_count"`
+	ReviewRequiredCount int      `json:"review_required_count"`
+	MessageCount        int      `json:"message_count"`
+	TurnCount           int      `json:"turn_count"`
+	StartedAt           string   `json:"started_at"`
+	UpdatedAt           string   `json:"updated_at"`
 }
 
 type customerConversationMessage struct {
@@ -37,6 +46,13 @@ type customerConversationMessage struct {
 	TraceID        string         `json:"trace_id,omitempty"`
 	MessageID      string         `json:"message_id,omitempty"`
 	AnswerMode     string         `json:"answer_mode,omitempty"`
+	Entrypoint     string         `json:"entrypoint"`
+	Simulation     bool           `json:"simulation"`
+	Specialist     string         `json:"specialist,omitempty"`
+	DurationMS     int64          `json:"duration_ms"`
+	SourceCount    int64          `json:"source_count"`
+	ReviewRequired bool           `json:"review_required"`
+	ErrorStage     string         `json:"error_stage,omitempty"`
 	ProcessSummary string         `json:"process_summary,omitempty"`
 	Details        map[string]any `json:"details,omitempty"`
 }
@@ -56,6 +72,14 @@ type customerConversationDetailResponse struct {
 	Log          adminDashboardLogSummary      `json:"log"`
 }
 
+type customerConversationDeleteResponse struct {
+	OK             bool   `json:"ok"`
+	ID             string `json:"id"`
+	DeletedRecords int    `json:"deleted_records"`
+	TouchedFiles   int    `json:"touched_files"`
+	DeletedFiles   int    `json:"deleted_files"`
+}
+
 type customerChatLogRecord struct {
 	ID                  string
 	SessionKey          string
@@ -69,6 +93,13 @@ type customerChatLogRecord struct {
 	Question            string
 	Answer              string
 	AnswerMode          string
+	Entrypoint          string
+	Simulation          bool
+	Specialist          string
+	TotalDurationMS     int64
+	SourceCount         int64
+	ReviewRequired      bool
+	ErrorStage          string
 	ProcessSummary      string
 	Details             map[string]any
 	QuestionMessageID   string
@@ -132,6 +163,24 @@ func (h *Handlers) AdminCustomerConversationDetail(c *gin.Context) {
 	})
 }
 
+func (h *Handlers) AdminDeleteCustomerConversation(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("session_id"))
+	if id == "" {
+		badRequest(c, fmt.Errorf("session_id is required"))
+		return
+	}
+	result, err := h.deleteCustomerConversationLogRecords(id)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	if result.DeletedRecords == 0 {
+		notFound(c, "customer conversation not found")
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 func (h *Handlers) AdminCustomerChatTrace(c *gin.Context) {
 	traceID := strings.TrimSpace(c.Param("trace_id"))
 	if traceID == "" {
@@ -151,11 +200,13 @@ func (h *Handlers) AdminCustomerChatTrace(c *gin.Context) {
 }
 
 type customerConversationQuery struct {
-	Search   string
-	Page     int
-	PageSize int
-	From     time.Time
-	To       time.Time
+	Search     string
+	Page       int
+	PageSize   int
+	From       time.Time
+	To         time.Time
+	Entrypoint string
+	Simulation *bool
 }
 
 func customerConversationQueryFromRequest(c *gin.Context) customerConversationQuery {
@@ -165,9 +216,13 @@ func customerConversationQueryFromRequest(c *gin.Context) customerConversationQu
 		pageSize = 100
 	}
 	query := customerConversationQuery{
-		Search:   strings.ToLower(strings.TrimSpace(c.Query("q"))),
-		Page:     page,
-		PageSize: pageSize,
+		Search:     strings.ToLower(strings.TrimSpace(c.Query("q"))),
+		Page:       page,
+		PageSize:   pageSize,
+		Entrypoint: normalizeCustomerConversationEntrypoint(c.Query("entrypoint")),
+	}
+	if simulation, ok := parseCustomerConversationBool(c.Query("simulation")); ok {
+		query.Simulation = &simulation
 	}
 	query.From = parseCustomerConversationTime(firstNonEmpty(c.Query("from"), c.Query("start")))
 	if to := parseCustomerConversationTime(firstNonEmpty(c.Query("to"), c.Query("end"))); !to.IsZero() {
@@ -197,6 +252,12 @@ func filterCustomerChatLogRecords(records []customerChatLogRecord, query custome
 			continue
 		}
 		if !query.To.IsZero() && !record.ConversationSortKey.Before(query.To) {
+			continue
+		}
+		if query.Entrypoint != "" && record.Entrypoint != query.Entrypoint {
+			continue
+		}
+		if query.Simulation != nil && record.Simulation != *query.Simulation {
 			continue
 		}
 		filtered = append(filtered, record)
@@ -230,6 +291,93 @@ func (h *Handlers) readCustomerChatLogRecords() ([]customerChatLogRecord, error)
 		}
 	}
 	return records, nil
+}
+
+type customerConversationDeletePlan struct {
+	path     string
+	kept     []string
+	deleted  int
+	hasMatch bool
+}
+
+func (h *Handlers) deleteCustomerConversationLogRecords(id string) (customerConversationDeleteResponse, error) {
+	logDir := h.customerChatLogDir()
+	matches, err := filepath.Glob(filepath.Join(logDir, "*.jsonl"))
+	if err != nil {
+		return customerConversationDeleteResponse{}, err
+	}
+	sort.Strings(matches)
+	plans := []customerConversationDeletePlan{}
+	totalDeleted := 0
+	for _, path := range matches {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return customerConversationDeleteResponse{}, err
+		}
+		plan := customerConversationDeletePlan{path: path}
+		for lineIndex, line := range strings.Split(string(raw), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			var entry map[string]any
+			if err := json.Unmarshal([]byte(line), &entry); err != nil {
+				return customerConversationDeleteResponse{}, fmt.Errorf("decode customer chat log %s:%d: %w", path, lineIndex+1, err)
+			}
+			record := customerChatLogRecordFromMap(entry, fmt.Sprintf("%s:%d", filepath.Base(path), lineIndex+1))
+			if record.SessionKey == id {
+				plan.deleted++
+				plan.hasMatch = true
+				continue
+			}
+			plan.kept = append(plan.kept, line)
+		}
+		if plan.hasMatch {
+			plans = append(plans, plan)
+			totalDeleted += plan.deleted
+		}
+	}
+	if totalDeleted == 0 {
+		return customerConversationDeleteResponse{OK: true, ID: id}, nil
+	}
+	deletedFiles := 0
+	for _, plan := range plans {
+		if len(plan.kept) == 0 {
+			if err := os.Remove(plan.path); err != nil {
+				return customerConversationDeleteResponse{}, err
+			}
+			deletedFiles++
+			continue
+		}
+		if err := replaceCustomerConversationJSONL(plan.path, plan.kept); err != nil {
+			return customerConversationDeleteResponse{}, err
+		}
+	}
+	return customerConversationDeleteResponse{
+		OK:             true,
+		ID:             id,
+		DeletedRecords: totalDeleted,
+		TouchedFiles:   len(plans),
+		DeletedFiles:   deletedFiles,
+	}, nil
+}
+
+func replaceCustomerConversationJSONL(path string, lines []string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
+	if _, err := tmp.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func (h *Handlers) readCustomerChatTraceEntry(traceID string) (map[string]any, error) {
@@ -271,9 +419,12 @@ func (h *Handlers) customerChatLogDir() string {
 
 func customerChatLogRecordFromMap(entry map[string]any, fallbackID string) customerChatLogRecord {
 	timeInfo := mapValue(entry["time"])
+	runtimeInfo := mapValue(entry["runtime"])
 	requestInfo := mapValue(entry["request"])
 	finalInfo := mapValue(entry["final"])
-	specialistOutput := mapValue(mapValue(entry["specialist"])["output"])
+	specialistInfo := mapValue(entry["specialist"])
+	specialistOutput := mapValue(specialistInfo["output"])
+	errorInfo := mapValue(entry["error"])
 	sessionID := stringMapValue(entry, "session_id")
 	traceID := stringMapValue(entry, "trace_id")
 	questionMessageID := ""
@@ -283,6 +434,11 @@ func customerChatLogRecordFromMap(entry map[string]any, fallbackID string) custo
 	answeredAt := stringMapValue(timeInfo, "answered_at")
 	questionCreatedAt := receivedAt
 	answerMode := firstNonEmpty(stringMapValue(finalInfo, "answer_mode"), stringMapValue(specialistOutput, "answer_mode"))
+	entrypoint := firstNonEmpty(normalizeCustomerConversationEntrypoint(stringMapValue(runtimeInfo, "entrypoint")), "external")
+	errorStage := stringMapValue(errorInfo, "stage")
+	if errorStage == "" && entry["error"] != nil {
+		errorStage = "unknown"
+	}
 	processSummary := customerConversationProcessSummaryFromStandardTrace(entry)
 	details := customerConversationSafeDetails(entry)
 	sessionKey := strings.TrimSpace(sessionID)
@@ -303,6 +459,13 @@ func customerChatLogRecordFromMap(entry map[string]any, fallbackID string) custo
 		Question:            stringMapValue(requestInfo, "message"),
 		Answer:              stringMapValue(finalInfo, "answer"),
 		AnswerMode:          answerMode,
+		Entrypoint:          entrypoint,
+		Simulation:          boolMapValue(runtimeInfo, "simulation"),
+		Specialist:          firstNonEmpty(stringMapValue(specialistInfo, "name"), stringMapValue(specialistOutput, "specialist")),
+		TotalDurationMS:     int64MapValue(timeInfo, "total_duration_ms"),
+		SourceCount:         int64MapValue(finalInfo, "source_count"),
+		ReviewRequired:      boolMapValue(finalInfo, "review_required"),
+		ErrorStage:          errorStage,
 		ProcessSummary:      processSummary,
 		Details:             details,
 		QuestionMessageID:   questionMessageID,
@@ -317,6 +480,9 @@ func customerChatLogRecordFromMap(entry map[string]any, fallbackID string) custo
 		record.Question,
 		record.Answer,
 		record.AnswerMode,
+		record.Entrypoint,
+		record.Specialist,
+		record.ErrorStage,
 		record.ProcessSummary,
 	}, " "))
 	return record
@@ -343,20 +509,65 @@ func summarizeCustomerConversation(records []customerChatLogRecord) customerConv
 	sortCustomerConversationRecords(records)
 	first := records[0]
 	last := records[len(records)-1]
-	return customerConversationSummary{
-		ID:             first.SessionKey,
-		SessionID:      firstNonEmpty(first.SessionID, "未指定"),
-		UserID:         firstNonEmpty(last.UserID, first.UserID),
-		Title:          truncateCustomerConversationText(firstNonEmpty(first.Question, last.Question, first.SessionKey), 36),
-		FirstQuestion:  truncateCustomerConversationText(first.Question, 120),
-		LastQuestion:   truncateCustomerConversationText(last.Question, 120),
-		LastAnswer:     truncateCustomerConversationText(last.Answer, 160),
-		LastAnswerMode: last.AnswerMode,
-		MessageCount:   len(records) * 2,
-		TurnCount:      len(records),
-		StartedAt:      firstNonEmpty(first.QuestionCreatedAt, first.ReceivedAt, first.LoggedAt),
-		UpdatedAt:      firstNonEmpty(last.AnsweredAt, last.ReceivedAt, last.LoggedAt),
+	entrypoints := customerConversationEntrypoints(records)
+	errorCount := 0
+	reviewRequiredCount := 0
+	totalDurationMS := int64(0)
+	durationCount := int64(0)
+	for _, record := range records {
+		if record.ErrorStage != "" {
+			errorCount++
+		}
+		if record.ReviewRequired {
+			reviewRequiredCount++
+		}
+		if record.TotalDurationMS > 0 {
+			totalDurationMS += record.TotalDurationMS
+			durationCount++
+		}
 	}
+	averageDurationMS := int64(0)
+	if durationCount > 0 {
+		averageDurationMS = totalDurationMS / durationCount
+	}
+	return customerConversationSummary{
+		ID:                  first.SessionKey,
+		SessionID:           firstNonEmpty(first.SessionID, "未指定"),
+		UserID:              firstNonEmpty(last.UserID, first.UserID),
+		Title:               truncateCustomerConversationText(firstNonEmpty(first.Question, last.Question, first.SessionKey), 36),
+		FirstQuestion:       truncateCustomerConversationText(first.Question, 120),
+		LastQuestion:        truncateCustomerConversationText(last.Question, 120),
+		LastAnswer:          truncateCustomerConversationText(last.Answer, 160),
+		LastAnswerMode:      last.AnswerMode,
+		Entrypoints:         entrypoints,
+		LastEntrypoint:      last.Entrypoint,
+		LastSimulation:      last.Simulation,
+		LastSpecialist:      last.Specialist,
+		LastTotalDurationMS: last.TotalDurationMS,
+		AverageDurationMS:   averageDurationMS,
+		LastSourceCount:     last.SourceCount,
+		ErrorCount:          errorCount,
+		ReviewRequiredCount: reviewRequiredCount,
+		MessageCount:        len(records) * 2,
+		TurnCount:           len(records),
+		StartedAt:           firstNonEmpty(first.QuestionCreatedAt, first.ReceivedAt, first.LoggedAt),
+		UpdatedAt:           firstNonEmpty(last.AnsweredAt, last.ReceivedAt, last.LoggedAt),
+	}
+}
+
+func customerConversationEntrypoints(records []customerChatLogRecord) []string {
+	seen := map[string]bool{}
+	entrypoints := []string{}
+	for _, record := range records {
+		entrypoint := strings.TrimSpace(record.Entrypoint)
+		if entrypoint == "" || seen[entrypoint] {
+			continue
+		}
+		seen[entrypoint] = true
+		entrypoints = append(entrypoints, entrypoint)
+	}
+	sort.Strings(entrypoints)
+	return entrypoints
 }
 
 func customerConversationMessages(records []customerChatLogRecord) []customerConversationMessage {
@@ -365,12 +576,19 @@ func customerConversationMessages(records []customerChatLogRecord) []customerCon
 		questionID := customerConversationMessageID(record.SessionKey, index, "question")
 		answerID := customerConversationMessageID(record.SessionKey, index, "answer")
 		messages = append(messages, customerConversationMessage{
-			ID:        questionID,
-			Role:      "user",
-			Content:   record.Question,
-			CreatedAt: firstNonEmpty(record.QuestionCreatedAt, record.ReceivedAt, record.LoggedAt),
-			TraceID:   record.TraceID,
-			MessageID: record.QuestionMessageID,
+			ID:             questionID,
+			Role:           "user",
+			Content:        record.Question,
+			CreatedAt:      firstNonEmpty(record.QuestionCreatedAt, record.ReceivedAt, record.LoggedAt),
+			TraceID:        record.TraceID,
+			MessageID:      record.QuestionMessageID,
+			Entrypoint:     record.Entrypoint,
+			Simulation:     record.Simulation,
+			Specialist:     record.Specialist,
+			DurationMS:     record.TotalDurationMS,
+			SourceCount:    record.SourceCount,
+			ReviewRequired: record.ReviewRequired,
+			ErrorStage:     record.ErrorStage,
 		})
 		messages = append(messages, customerConversationMessage{
 			ID:             answerID,
@@ -380,6 +598,13 @@ func customerConversationMessages(records []customerChatLogRecord) []customerCon
 			TraceID:        record.TraceID,
 			MessageID:      record.AnswerMessageID,
 			AnswerMode:     record.AnswerMode,
+			Entrypoint:     record.Entrypoint,
+			Simulation:     record.Simulation,
+			Specialist:     record.Specialist,
+			DurationMS:     record.TotalDurationMS,
+			SourceCount:    record.SourceCount,
+			ReviewRequired: record.ReviewRequired,
+			ErrorStage:     record.ErrorStage,
 			ProcessSummary: record.ProcessSummary,
 			Details:        record.Details,
 		})
@@ -469,11 +694,78 @@ func stringMapValue(record map[string]any, key string) string {
 	}
 }
 
+func boolMapValue(record map[string]any, key string) bool {
+	if record == nil {
+		return false
+	}
+	value, ok := record[key]
+	if !ok || value == nil {
+		return false
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		parsed, ok := parseCustomerConversationBool(typed)
+		return ok && parsed
+	default:
+		return false
+	}
+}
+
+func int64MapValue(record map[string]any, key string) int64 {
+	if record == nil {
+		return 0
+	}
+	value, ok := record[key]
+	if !ok || value == nil {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		return int64(typed)
+	case int64:
+		return typed
+	case float64:
+		return int64(typed)
+	case json.Number:
+		parsed, _ := typed.Int64()
+		return parsed
+	case string:
+		parsed, _ := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
+		return parsed
+	default:
+		return 0
+	}
+}
+
 func mapValue(value any) map[string]any {
 	if typed, ok := value.(map[string]any); ok {
 		return typed
 	}
 	return nil
+}
+
+func normalizeCustomerConversationEntrypoint(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "external":
+		return "external"
+	case "internal":
+		return "internal"
+	default:
+		return ""
+	}
+}
+
+func parseCustomerConversationBool(value string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "1", "yes", "y":
+		return true, true
+	case "false", "0", "no", "n":
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 func parseCustomerConversationTime(value string) time.Time {

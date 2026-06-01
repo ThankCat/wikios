@@ -895,6 +895,20 @@ func TestCustomerContextEstimateIsAvailableWithoutAdminAuth(t *testing.T) {
 
 func TestCustomerChatWritesQuestionAnswerJSONAndThinkingLog(t *testing.T) {
 	fixture := newAPITestFixture(t, apiStreamingMockLLM{})
+	activeModel := &store.LLMModel{
+		ID:              "audit-active-model",
+		DisplayName:     "Audit Active Model",
+		Provider:        "test",
+		BaseURL:         "https://llm.example.test",
+		ModelName:       "audit-model-name",
+		APIKey:          "test-key",
+		IsActive:        true,
+		TimeoutSec:      5,
+		AdminTimeoutSec: 5,
+	}
+	if err := fixture.deps.Store.CreateLLMModel(context.Background(), activeModel); err != nil {
+		t.Fatalf("create active model: %v", err)
+	}
 	body, _ := json.Marshal(map[string]any{
 		"message":    "静态 IP 适合什么？",
 		"session_id": "s-log",
@@ -921,10 +935,14 @@ func TestCustomerChatWritesQuestionAnswerJSONAndThinkingLog(t *testing.T) {
 	}
 	runtimeInfo := apiTestMapValue(entry["runtime"])
 	if apiTestStringValue(runtimeInfo, "customer_chat_mode") != "routed" ||
-		apiTestStringValue(runtimeInfo, "router_model_id") != "active" ||
-		apiTestStringValue(runtimeInfo, "specialist_model_id") != "active" ||
+		apiTestStringValue(runtimeInfo, "router_model_id") != activeModel.ID ||
+		apiTestStringValue(runtimeInfo, "specialist_model_id") != activeModel.ID ||
 		apiTestStringValue(runtimeInfo, "router_contract_version") != "customer_router.v1" {
 		t.Fatalf("expected runtime model and contract snapshot, got %#v", runtimeInfo)
+	}
+	if apiTestStringValue(runtimeInfo, "router_model_id") == "active" ||
+		apiTestStringValue(runtimeInfo, "specialist_model_id") == "active" {
+		t.Fatalf("runtime model ids must snapshot concrete model ids, got %#v", runtimeInfo)
 	}
 	timeInfo := apiTestMapValue(entry["time"])
 	for _, key := range []string{"logged_at", "received_at", "answered_at", "total_duration_ms"} {
@@ -947,6 +965,9 @@ func TestCustomerChatWritesQuestionAnswerJSONAndThinkingLog(t *testing.T) {
 	if routerModel["thinking_enabled"] != false {
 		t.Fatalf("expected router thinking disabled in model snapshot, got %#v", routerModel)
 	}
+	if apiTestStringValue(routerModel, "id") != activeModel.ID || apiTestStringValue(routerModel, "name") != activeModel.ModelName {
+		t.Fatalf("expected concrete router model snapshot, got %#v", routerModel)
+	}
 	specialist := apiTestMapValue(entry["specialist"])
 	if _, ok := specialist["duration_ms"]; !ok {
 		t.Fatalf("expected specialist.duration_ms, got %#v", specialist)
@@ -954,6 +975,9 @@ func TestCustomerChatWritesQuestionAnswerJSONAndThinkingLog(t *testing.T) {
 	specialistModel := apiTestMapValue(specialist["model"])
 	if specialistModel["thinking_enabled"] != true {
 		t.Fatalf("expected specialist thinking enabled in model snapshot, got %#v", specialistModel)
+	}
+	if apiTestStringValue(specialistModel, "id") != activeModel.ID || apiTestStringValue(specialistModel, "name") != activeModel.ModelName {
+		t.Fatalf("expected concrete specialist model snapshot, got %#v", specialistModel)
 	}
 	input := apiTestMapValue(specialist["input"])
 	if apiTestStringValue(input, "user_message") != "静态 IP 适合什么？" ||
@@ -1218,6 +1242,266 @@ func TestAdminCustomerConversationsSearchAndEmptyDisabledLog(t *testing.T) {
 	}
 	if empty.Total != 0 || empty.Log.Enabled {
 		t.Fatalf("expected empty disabled log response, got %+v", empty)
+	}
+}
+
+func TestAdminCustomerConversationsFiltersAndMetadata(t *testing.T) {
+	fixture := newAPITestFixture(t, apiMockLLM{})
+	postCustomerChat(t, fixture.router, map[string]any{
+		"message":    "静态 IP 价格怎么卖？",
+		"session_id": "s-filter-external",
+		"entrypoint": "external",
+		"simulation": false,
+	})
+	postCustomerChat(t, fixture.router, map[string]any{
+		"message":    "白名单怎么配置？",
+		"session_id": "s-filter-internal-test",
+		"entrypoint": "internal",
+		"simulation": true,
+	})
+	postCustomerChat(t, fixture.router, map[string]any{
+		"message":    "怎么购买静态 IP？",
+		"session_id": "s-filter-internal-formal",
+		"entrypoint": "internal",
+		"simulation": false,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/customer-conversations?page_size=10", nil)
+	rec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list customer conversations failed: %d %s", rec.Code, rec.Body.String())
+	}
+	var list struct {
+		Conversations []struct {
+			ID                  string   `json:"id"`
+			SessionID           string   `json:"session_id"`
+			Entrypoints         []string `json:"entrypoints"`
+			LastEntrypoint      string   `json:"last_entrypoint"`
+			LastSimulation      bool     `json:"last_simulation"`
+			LastSpecialist      string   `json:"last_specialist"`
+			LastTotalDurationMS int64    `json:"last_total_duration_ms"`
+			AverageDurationMS   *int64   `json:"average_duration_ms"`
+			LastSourceCount     int64    `json:"last_source_count"`
+			ErrorCount          int      `json:"error_count"`
+			ReviewRequiredCount int      `json:"review_required_count"`
+		} `json:"conversations"`
+		Total int `json:"total"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode customer conversations: %v", err)
+	}
+	if list.Total != 3 {
+		t.Fatalf("expected three conversations, got %+v", list)
+	}
+	var internalTestID string
+	for _, item := range list.Conversations {
+		if len(item.Entrypoints) != 1 || item.Entrypoints[0] != item.LastEntrypoint {
+			t.Fatalf("expected entrypoint summary for item, got %+v", item)
+		}
+		if item.ErrorCount != 0 || item.ReviewRequiredCount != 0 {
+			t.Fatalf("expected no errors or review-required records, got %+v", item)
+		}
+		if item.AverageDurationMS == nil {
+			t.Fatalf("expected average_duration_ms in summary, got %+v", item)
+		}
+		if item.SessionID == "s-filter-internal-test" {
+			internalTestID = item.ID
+			if item.LastEntrypoint != "internal" || !item.LastSimulation || item.LastSpecialist != "technical" {
+				t.Fatalf("unexpected internal simulation metadata: %+v", item)
+			}
+			if item.LastSourceCount != 1 {
+				t.Fatalf("expected last_source_count from final.source_count, got %+v", item)
+			}
+		}
+	}
+	if internalTestID == "" {
+		t.Fatalf("expected internal simulation conversation in list: %+v", list.Conversations)
+	}
+
+	for _, tc := range []struct {
+		path      string
+		wantTotal int
+		wantID    string
+	}{
+		{path: "/api/v1/admin/customer-conversations?entrypoint=internal&page_size=10", wantTotal: 2},
+		{path: "/api/v1/admin/customer-conversations?entrypoint=external&page_size=10", wantTotal: 1, wantID: "s-filter-external"},
+		{path: "/api/v1/admin/customer-conversations?simulation=true&page_size=10", wantTotal: 1, wantID: "s-filter-internal-test"},
+		{path: "/api/v1/admin/customer-conversations?simulation=false&page_size=10", wantTotal: 2},
+	} {
+		filterRec := httptest.NewRecorder()
+		fixture.router.ServeHTTP(filterRec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+		if filterRec.Code != http.StatusOK {
+			t.Fatalf("filter %s failed: %d %s", tc.path, filterRec.Code, filterRec.Body.String())
+		}
+		var filtered struct {
+			Conversations []struct {
+				SessionID string `json:"session_id"`
+			} `json:"conversations"`
+			Total int `json:"total"`
+		}
+		if err := json.Unmarshal(filterRec.Body.Bytes(), &filtered); err != nil {
+			t.Fatalf("decode filtered conversations: %v", err)
+		}
+		if filtered.Total != tc.wantTotal {
+			t.Fatalf("filter %s expected total %d, got %+v", tc.path, tc.wantTotal, filtered)
+		}
+		if tc.wantID != "" && (len(filtered.Conversations) != 1 || filtered.Conversations[0].SessionID != tc.wantID) {
+			t.Fatalf("filter %s expected session %s, got %+v", tc.path, tc.wantID, filtered)
+		}
+	}
+
+	detailRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(detailRec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/customer-conversations/"+internalTestID, nil))
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("detail customer conversation failed: %d %s", detailRec.Code, detailRec.Body.String())
+	}
+	var detail struct {
+		Messages []struct {
+			Role           string `json:"role"`
+			Entrypoint     string `json:"entrypoint"`
+			Simulation     bool   `json:"simulation"`
+			Specialist     string `json:"specialist"`
+			DurationMS     int64  `json:"duration_ms"`
+			SourceCount    int64  `json:"source_count"`
+			ReviewRequired bool   `json:"review_required"`
+			ErrorStage     string `json:"error_stage"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(detailRec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode customer conversation detail: %v", err)
+	}
+	if len(detail.Messages) != 2 {
+		t.Fatalf("expected one turn in detail, got %+v", detail.Messages)
+	}
+	assistant := detail.Messages[1]
+	if assistant.Role != "assistant" || assistant.Entrypoint != "internal" || !assistant.Simulation || assistant.Specialist != "technical" || assistant.SourceCount != 1 || assistant.ReviewRequired || assistant.ErrorStage != "" || assistant.DurationMS < 0 {
+		t.Fatalf("unexpected assistant metadata: %+v", assistant)
+	}
+}
+
+func TestAdminDeleteCustomerConversationRemovesOnlyTargetJSONLLines(t *testing.T) {
+	fixture := newAPITestFixture(t, apiMockLLM{})
+	firstTargetRec := postCustomerChat(t, fixture.router, map[string]any{
+		"message":    "静态 IP 价格怎么卖？",
+		"session_id": "s-delete-target",
+	})
+	secondTargetRec := postCustomerChat(t, fixture.router, map[string]any{
+		"message":    "继续说说价格",
+		"session_id": "s-delete-target",
+	})
+	otherRec := postCustomerChat(t, fixture.router, map[string]any{
+		"message":    "白名单怎么配置？",
+		"session_id": "s-delete-other",
+	})
+	firstTargetTraceID := strings.TrimSpace(firstTargetRec.Header().Get("X-Trace-ID"))
+	secondTargetTraceID := strings.TrimSpace(secondTargetRec.Header().Get("X-Trace-ID"))
+	otherTraceID := strings.TrimSpace(otherRec.Header().Get("X-Trace-ID"))
+	if firstTargetTraceID == "" || secondTargetTraceID == "" || otherTraceID == "" {
+		t.Fatalf("expected trace ids, target1=%q target2=%q other=%q", firstTargetTraceID, secondTargetTraceID, otherTraceID)
+	}
+
+	deleteRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(deleteRec, httptest.NewRequest(http.MethodDelete, "/api/v1/admin/customer-conversations/s-delete-target", nil))
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete customer conversation failed: %d %s", deleteRec.Code, deleteRec.Body.String())
+	}
+	var deleted struct {
+		OK             bool   `json:"ok"`
+		ID             string `json:"id"`
+		DeletedRecords int    `json:"deleted_records"`
+		TouchedFiles   int    `json:"touched_files"`
+		DeletedFiles   int    `json:"deleted_files"`
+	}
+	if err := json.Unmarshal(deleteRec.Body.Bytes(), &deleted); err != nil {
+		t.Fatalf("decode delete response: %v", err)
+	}
+	if !deleted.OK || deleted.ID != "s-delete-target" || deleted.DeletedRecords != 2 || deleted.TouchedFiles != 1 || deleted.DeletedFiles != 0 {
+		t.Fatalf("unexpected delete response: %+v", deleted)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(fixture.deps.WorkspaceDir, "customer_chat_logs", "*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob customer chat logs: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected one remaining jsonl file, got %#v", matches)
+	}
+	raw, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read remaining jsonl: %v", err)
+	}
+	if strings.Contains(string(raw), "s-delete-target") || !strings.Contains(string(raw), "s-delete-other") {
+		t.Fatalf("expected only other session to remain, got %s", string(raw))
+	}
+
+	for _, traceID := range []string{firstTargetTraceID, secondTargetTraceID} {
+		traceRec := httptest.NewRecorder()
+		fixture.router.ServeHTTP(traceRec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/customer-chat/traces/"+traceID, nil))
+		if traceRec.Code != http.StatusNotFound {
+			t.Fatalf("expected deleted trace %s to return 404, got %d %s", traceID, traceRec.Code, traceRec.Body.String())
+		}
+	}
+	otherTraceRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(otherTraceRec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/customer-chat/traces/"+otherTraceID, nil))
+	if otherTraceRec.Code != http.StatusOK {
+		t.Fatalf("expected other trace to remain, got %d %s", otherTraceRec.Code, otherTraceRec.Body.String())
+	}
+
+	listRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(listRec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/customer-conversations?page_size=10", nil))
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list after delete failed: %d %s", listRec.Code, listRec.Body.String())
+	}
+	var list struct {
+		Conversations []struct {
+			SessionID string `json:"session_id"`
+		} `json:"conversations"`
+		Total int `json:"total"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list after delete: %v", err)
+	}
+	if list.Total != 1 || list.Conversations[0].SessionID != "s-delete-other" {
+		t.Fatalf("expected only other session after delete, got %+v", list)
+	}
+
+	missingRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(missingRec, httptest.NewRequest(http.MethodDelete, "/api/v1/admin/customer-conversations/not-found", nil))
+	if missingRec.Code != http.StatusNotFound {
+		t.Fatalf("expected missing delete to return 404, got %d %s", missingRec.Code, missingRec.Body.String())
+	}
+}
+
+func TestAdminDeleteCustomerConversationRemovesEmptyJSONLFile(t *testing.T) {
+	fixture := newAPITestFixture(t, apiMockLLM{})
+	postCustomerChat(t, fixture.router, map[string]any{
+		"message":    "静态 IP 价格怎么卖？",
+		"session_id": "s-delete-only",
+	})
+
+	deleteRec := httptest.NewRecorder()
+	fixture.router.ServeHTTP(deleteRec, httptest.NewRequest(http.MethodDelete, "/api/v1/admin/customer-conversations/s-delete-only", nil))
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete only customer conversation failed: %d %s", deleteRec.Code, deleteRec.Body.String())
+	}
+	var deleted struct {
+		DeletedRecords int `json:"deleted_records"`
+		TouchedFiles   int `json:"touched_files"`
+		DeletedFiles   int `json:"deleted_files"`
+	}
+	if err := json.Unmarshal(deleteRec.Body.Bytes(), &deleted); err != nil {
+		t.Fatalf("decode delete response: %v", err)
+	}
+	if deleted.DeletedRecords != 1 || deleted.TouchedFiles != 1 || deleted.DeletedFiles != 1 {
+		t.Fatalf("expected empty file removal, got %+v", deleted)
+	}
+	matches, err := filepath.Glob(filepath.Join(fixture.deps.WorkspaceDir, "customer_chat_logs", "*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob customer chat logs: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected jsonl file to be removed, got %#v", matches)
 	}
 }
 
@@ -1955,7 +2239,7 @@ func assertNoCustomerChatLogs(t *testing.T, workspaceDir string) {
 	}
 }
 
-func postCustomerChat(t *testing.T, router http.Handler, payload map[string]any) {
+func postCustomerChat(t *testing.T, router http.Handler, payload map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
 	body, _ := json.Marshal(payload)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/customer/chat", bytes.NewReader(body))
@@ -1965,6 +2249,7 @@ func postCustomerChat(t *testing.T, router http.Handler, payload map[string]any)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("customer chat failed: %d %s", rec.Code, rec.Body.String())
 	}
+	return rec
 }
 
 func readCustomerChatTraceByHeader(t *testing.T, router http.Handler, rec *httptest.ResponseRecorder) map[string]any {
