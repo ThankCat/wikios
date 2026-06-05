@@ -101,6 +101,8 @@ func (s *CustomerChatService) customerRoutedPreflight(ctx context.Context, trace
 }
 
 func (s *CustomerChatService) customerRouterAuditDetails(ctx context.Context, traceID string, req CustomerChatRequest, receivedAt string, runtimeSettings RuntimeSettings, routerOutput *CustomerRouterOutput, routerRaw string, routerTrace LLMTrace, routerDurationMs int64) map[string]any {
+	routerModelID := firstNonEmpty(s.customerAuditModelID(ctx, runtimeSettings.CustomerChat.RouterModelID), customerConfiguredModelIDForLog(runtimeSettings.CustomerChat.RouterModelID))
+	specialistModelID := firstNonEmpty(s.customerAuditModelID(ctx, runtimeSettings.CustomerChat.SpecialistModelID), customerConfiguredModelIDForLog(runtimeSettings.CustomerChat.SpecialistModelID))
 	return map[string]any{
 		"trace_id":                    strings.TrimSpace(traceID),
 		"received_at":                 receivedAt,
@@ -110,12 +112,12 @@ func (s *CustomerChatService) customerRouterAuditDetails(ctx context.Context, tr
 		"question_chars":              len([]rune(strings.TrimSpace(req.Question))),
 		"router":                      customerRouterTraceMap(customerRouterTraceSummary(routerOutput, routerRaw, len([]rune(customerRouterUserPrompt(req, receivedAt))), nil)),
 		"router_duration_ms":          routerDurationMs,
-		"router_model_id":             customerConfiguredModelIDForLog(runtimeSettings.CustomerChat.RouterModelID),
+		"router_model_id":             routerModelID,
 		"router_model_name":           s.customerAuditModelName(ctx, runtimeSettings.CustomerChat.RouterModelID),
 		"router_thinking_enabled":     customerAuditBoolPtrValue(runtimeSettings.CustomerChat.RouterEnableThinking, false),
 		"router_thinking":             customerAuditThinking(runtimeSettings.CustomerChat.RouterEnableThinking, routerTrace.Reasoning),
 		"router_raw":                  routerRaw,
-		"specialist_model_id":         customerConfiguredModelIDForLog(runtimeSettings.CustomerChat.SpecialistModelID),
+		"specialist_model_id":         specialistModelID,
 		"specialist_model_name":       s.customerAuditModelName(ctx, runtimeSettings.CustomerChat.SpecialistModelID),
 		"specialist_thinking_enabled": customerAuditBoolPtrValue(runtimeSettings.CustomerChat.SpecialistEnableThinking, true),
 	}
@@ -127,6 +129,8 @@ func (s *CustomerChatService) answerWithSpecialist(ctx context.Context, traceID 
 	}
 	req.ReceivedAt = receivedAt
 	execution := NewExecution("customer-routed-answer")
+	routerAuditModelID := firstNonEmpty(s.customerAuditModelID(ctx, runtimeSettings.CustomerChat.RouterModelID), customerConfiguredModelIDForLog(runtimeSettings.CustomerChat.RouterModelID))
+	specialistAuditModelID := firstNonEmpty(s.customerAuditModelID(ctx, runtimeSettings.CustomerChat.SpecialistModelID), customerConfiguredModelIDForLog(runtimeSettings.CustomerChat.SpecialistModelID))
 	debugTrace := map[string]any{
 		"trace_id":                    strings.TrimSpace(traceID),
 		"received_at":                 receivedAt,
@@ -136,12 +140,12 @@ func (s *CustomerChatService) answerWithSpecialist(ctx context.Context, traceID 
 		"question_chars":              len([]rune(strings.TrimSpace(req.Question))),
 		"router":                      customerRouterTraceMap(customerRouterTraceSummary(routerOutput, routerRaw, len([]rune(customerRouterUserPrompt(req, receivedAt))), nil)),
 		"router_duration_ms":          routerDurationMs,
-		"router_model_id":             customerConfiguredModelIDForLog(runtimeSettings.CustomerChat.RouterModelID),
+		"router_model_id":             routerAuditModelID,
 		"router_model_name":           s.customerAuditModelName(ctx, runtimeSettings.CustomerChat.RouterModelID),
 		"router_thinking_enabled":     customerAuditBoolPtrValue(runtimeSettings.CustomerChat.RouterEnableThinking, false),
 		"router_thinking":             customerAuditThinking(runtimeSettings.CustomerChat.RouterEnableThinking, routerTrace.Reasoning),
 		"router_raw":                  routerRaw,
-		"specialist_model_id":         customerConfiguredModelIDForLog(runtimeSettings.CustomerChat.SpecialistModelID),
+		"specialist_model_id":         specialistAuditModelID,
 		"specialist_model_name":       s.customerAuditModelName(ctx, runtimeSettings.CustomerChat.SpecialistModelID),
 		"specialist_thinking_enabled": customerAuditBoolPtrValue(runtimeSettings.CustomerChat.SpecialistEnableThinking, true),
 	}
@@ -199,19 +203,18 @@ func (s *CustomerChatService) answerWithSpecialist(ctx context.Context, traceID 
 	debugTrace["sources"] = customerSourceSummaries(evidence.Sources)
 	debugTrace["retrieved_paths"] = customerSpecialistRetrievedPaths(evidence)
 	debugTrace["retrieval_cache"] = cacheSummary
-	debugTrace["specialist_input"] = map[string]any{
-		"user_message":             strings.TrimSpace(req.Question),
-		"router_output_ref":        "router.output",
-		"candidate_page_paths_ref": "retrieval.candidate_page_paths",
-	}
-
-	systemPrompt, err := s.loadPrompt(evidence.Profile.PromptFile)
+	systemPrompt, err := s.loadCustomerSpecialistSystemPrompt(evidence.Profile)
 	if err != nil {
 		s.maybeWriteCustomerChatErrorLog(traceID, req, "specialist_call", err, debugTrace)
 		return nil, err
 	}
-	systemPrompt += "\n\n你必须只返回一个 JSON 对象，不要输出代码块。"
-	userPrompt := s.customerSpecialistDecisionPrompt(req, receivedAt, routerOutput, evidence, runtimeSettings.Support)
+	boundaryPrompt, err := s.loadCustomerSpecialistBoundary()
+	if err != nil {
+		s.maybeWriteCustomerChatErrorLog(traceID, req, "specialist_call", err, debugTrace)
+		return nil, err
+	}
+	userPrompt := s.customerSpecialistDecisionPrompt(req, receivedAt, routerOutput, evidence, runtimeSettings.Support, boundaryPrompt)
+	debugTrace["specialist_input"] = customerSpecialistAuditLLMInput(req.Question, systemPrompt, userPrompt)
 	debugTrace["prompt"] = map[string]any{
 		"system_chars":   len([]rune(systemPrompt)),
 		"user_chars":     len([]rune(userPrompt)),
@@ -224,14 +227,18 @@ func (s *CustomerChatService) answerWithSpecialist(ctx context.Context, traceID 
 	if stream != nil && stream.debug {
 		hooks.Content = stream.feedLLMContent
 	}
-	specialistLLMStart := time.Now()
 	specialistModelID := runtimeSettings.CustomerChat.SpecialistModelID
 	specialistThinking := runtimeSettings.CustomerChat.SpecialistEnableThinking
-	llmText, trace, err := s.executeLLMTraceWithOptionsAndResponseFormat(ctx, execution, llmModelIDToken(specialistModelID), []llm.Message{
+	specialistMessages := []llm.Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userPrompt},
-	}, "llm customer specialist "+evidence.Profile.Name, hooks, specialistThinking, customerSpecialistResponseFormat())
-	specialistDurationMs := time.Since(specialistLLMStart).Milliseconds()
+	}
+	callSpecialist := func(enableThinking *bool, stepName string) (string, LLMTrace, int64, error) {
+		start := time.Now()
+		text, trace, err := s.executeLLMTraceWithOptionsAndResponseFormat(ctx, execution, llmModelIDToken(specialistModelID), specialistMessages, stepName, hooks, enableThinking, customerSpecialistResponseFormat())
+		return text, trace, time.Since(start).Milliseconds(), err
+	}
+	llmText, trace, specialistDurationMs, err := callSpecialist(specialistThinking, "llm customer specialist "+evidence.Profile.Name)
 	debugTrace["specialist_duration_ms"] = specialistDurationMs
 	debugTrace["specialist_thinking"] = customerAuditThinking(specialistThinking, trace.Reasoning)
 	if err != nil {
@@ -251,17 +258,72 @@ func (s *CustomerChatService) answerWithSpecialist(ctx context.Context, traceID 
 		len([]rune(systemPrompt))+len([]rune(userPrompt)),
 	)
 
+	parseSpecialist := func(raw string) (customerChatLLMOutput, string, error) {
+		parsed, err := s.parseCustomerRoutedSpecialistOutput(raw)
+		if err != nil {
+			return parsed, "", err
+		}
+		parsed, answerRecoveredFrom := recoverCustomerSpecialistMisplacedAnswer(parsed)
+		parsed.Sources = filterCustomerChatSources(parsed.Sources, evidence.Sources)
+		answer := strings.TrimSpace(parsed.AnswerText)
+		if answer == "" {
+			return parsed, answerRecoveredFrom, fmt.Errorf(
+				"specialist returned empty answer (answer_mode=%s review_required=%v)",
+				normalizedAnswerMode(parsed.AnswerMode),
+				parsed.ReviewRequired,
+			)
+		}
+		parsed.AnswerText = answer
+		return parsed, answerRecoveredFrom, nil
+	}
+	parsed, answerRecoveredFrom, parseErr := parseSpecialist(llmText)
+	if shouldRetryCustomerSpecialistParseWithoutThinking(specialistThinking, parseErr) {
+		debugTrace["specialist_first_attempt"] = map[string]any{
+			"raw_output":         strings.TrimSpace(llmText),
+			"error":              parseErr.Error(),
+			"thinking_enabled":   customerAuditBoolPtrValue(specialistThinking, true),
+			"thinking_chars":     len([]rune(strings.TrimSpace(trace.Reasoning))),
+			"duration_ms":        specialistDurationMs,
+			"response_raw_chars": len([]rune(llmText)),
+		}
+		noThinking := false
+		retryText, retryTrace, retryDurationMs, retryErr := callSpecialist(&noThinking, "llm customer specialist "+evidence.Profile.Name+" retry without thinking")
+		debugTrace["specialist_retry"] = map[string]any{
+			"trigger":          "parse_error",
+			"thinking_enabled": false,
+			"duration_ms":      retryDurationMs,
+		}
+		if retryErr != nil {
+			if customerChatRequestCanceled(ctx, retryErr) {
+				return nil, retryErr
+			}
+			s.maybeWriteCustomerChatErrorLog(traceID, req, "specialist_call", retryErr, debugTrace)
+			return nil, retryErr
+		}
+		llmText = retryText
+		trace = retryTrace
+		specialistDurationMs += retryDurationMs
+		debugTrace["specialist_duration_ms"] = specialistDurationMs
+		debugTrace["specialist_thinking_enabled"] = false
+		debugTrace["specialist_thinking"] = customerAuditThinking(&noThinking, trace.Reasoning)
+		parsed, answerRecoveredFrom, parseErr = parseSpecialist(llmText)
+	}
+
 	parseStart := customerTraceStepStart(ctx, "解析 Specialist JSON 输出", "customer.specialist.parse", map[string]any{
 		"raw_chars": len([]rune(llmText)),
 	})
-	parsed, err := s.parseCustomerRoutedSpecialistOutput(llmText)
-	if err != nil {
-		customerTraceStepFinish(ctx, execution, "解析 Specialist JSON 输出", "customer.specialist.parse", parseStart, nil, nil, err)
+	if parseErr != nil {
+		customerTraceStepFinish(ctx, execution, "解析 Specialist JSON 输出", "customer.specialist.parse", parseStart, nil, nil, parseErr)
 		debugTrace["model_json_raw"] = llmText
-		s.maybeWriteCustomerChatErrorLog(traceID, req, "specialist_parse", err, debugTrace)
-		return nil, err
+		if strings.TrimSpace(parsed.AnswerMode) != "" || strings.TrimSpace(parsed.AnswerText) != "" {
+			debugTrace["model_json_parsed"] = parsed
+		}
+		s.maybeWriteCustomerChatErrorLog(traceID, req, "specialist_parse", parseErr, debugTrace)
+		return nil, parseErr
 	}
-	parsed.Sources = filterCustomerChatSources(parsed.Sources, evidence.Sources)
+	if answerRecoveredFrom != "" {
+		debugTrace["answer_recovered_from"] = answerRecoveredFrom
+	}
 	modelParsedForLog := parsed
 	debugTrace["model_json_raw"] = llmText
 	debugTrace["model_json_parsed"] = parsed
@@ -275,7 +337,11 @@ func (s *CustomerChatService) answerWithSpecialist(ctx context.Context, traceID 
 
 	answer := strings.TrimSpace(parsed.AnswerText)
 	if answer == "" {
-		err := errors.New("specialist returned empty answer")
+		err := fmt.Errorf(
+			"specialist returned empty answer (answer_mode=%s review_required=%v)",
+			normalizedAnswerMode(parsed.AnswerMode),
+			parsed.ReviewRequired,
+		)
 		s.maybeWriteCustomerChatErrorLog(traceID, req, "specialist_parse", err, debugTrace)
 		return nil, err
 	}
@@ -334,7 +400,7 @@ func (s *CustomerChatService) answerWithSpecialist(ctx context.Context, traceID 
 	return resp, nil
 }
 
-func (s *CustomerChatService) customerSpecialistDecisionPrompt(req CustomerChatRequest, receivedAt string, routerOutput *CustomerRouterOutput, evidence customerSpecialistEvidenceResult, support RuntimeSupportSettings) string {
+func (s *CustomerChatService) customerSpecialistDecisionPrompt(req CustomerChatRequest, receivedAt string, routerOutput *CustomerRouterOutput, evidence customerSpecialistEvidenceResult, support RuntimeSupportSettings, boundaryPrompt string) string {
 	candidateText := strings.TrimSpace(strings.Join(evidence.ContentBlocks, "\n\n"))
 	if candidateText == "" {
 		candidateText = "[]"
@@ -356,7 +422,7 @@ func (s *CustomerChatService) customerSpecialistDecisionPrompt(req CustomerChatR
 		s.supportContactPrompt(support),
 		"",
 		"hard_boundary:",
-		formatCustomerHardBoundary(),
+		strings.TrimSpace(boundaryPrompt),
 		"",
 		"candidate_page_paths:",
 		formatSourceRefList(evidence.Sources),
@@ -403,11 +469,54 @@ func formatCustomerRouterOutputForSpecialist(output *CustomerRouterOutput) strin
 }
 
 func (s *CustomerChatService) parseCustomerRoutedSpecialistOutput(llmText string) (customerChatLLMOutput, error) {
+	fields := map[string]any{}
+	if err := llm.DecodeJSONObject(llmText, &fields); err != nil {
+		return customerChatLLMOutput{}, fmt.Errorf("decode routed specialist output: %w", err)
+	}
+	if missing := missingCustomerSpecialistRequiredFields(fields); len(missing) > 0 {
+		return customerChatLLMOutput{}, fmt.Errorf("invalid routed specialist output: missing required fields: %s", strings.Join(missing, ", "))
+	}
 	var parsed customerChatLLMOutput
 	if err := llm.DecodeJSONObject(llmText, &parsed); err != nil {
 		return customerChatLLMOutput{}, fmt.Errorf("decode routed specialist output: %w", err)
 	}
 	return normalizeCustomerChatOutput(parsed), nil
+}
+
+func missingCustomerSpecialistRequiredFields(fields map[string]any) []string {
+	required := []string{
+		"answer_mode",
+		"answer",
+		"review_question",
+		"confidence",
+		"evidence_confidence",
+		"review_required",
+		"review_reason",
+		"suggested_target_path",
+		"sources",
+		"notes",
+	}
+	missing := make([]string, 0)
+	for _, key := range required {
+		if _, ok := fields[key]; !ok {
+			missing = append(missing, key)
+		}
+	}
+	return missing
+}
+
+func shouldRetryCustomerSpecialistParseWithoutThinking(enableThinking *bool, err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "missing required fields") {
+		return true
+	}
+	if !customerAuditBoolPtrValue(enableThinking, true) {
+		return false
+	}
+	return strings.Contains(text, "empty answer")
 }
 
 func customerSpecialistRetrievedPaths(evidence customerSpecialistEvidenceResult) []string {

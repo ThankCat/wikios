@@ -1,0 +1,526 @@
+{
+  "version": "customer_specialist_pricing.regression.v1",
+  "specialist": "pricing",
+  "description": "Pricing specialist regression cases for prompt tuning and future model replay.",
+  "cases": [
+    {
+      "id": "pricing_static_generic_starting_price",
+      "title": "普通静态 IP 问价给起步价",
+      "user_message": "静态 IP 怎么卖？",
+      "received_at": "2026-06-04T09:30:00+08:00",
+      "router_output": {
+        "contract_version": "customer_router.v1",
+        "specialist": "pricing",
+        "routing_confidence": 0.92,
+        "routing_reason": "用户明确询问静态 IP 怎么收费。",
+        "intent": "static_ip_price_inquiry",
+        "rewritten_question": "客户想了解静态 IP 怎么收费。",
+        "history_summary": "",
+        "slots": {
+          "primary_product": "static_ip",
+          "products": ["static_ip"],
+          "static_type": "",
+          "ip_type": "",
+          "bandwidth": "",
+          "quantity": "",
+          "scenario": "",
+          "platform": "",
+          "device": "",
+          "error_code": ""
+        },
+        "ambiguity": {
+          "is_ambiguous": false,
+          "ambiguous_fields": [],
+          "reason": ""
+        },
+        "missing_info": ["static_type", "bandwidth", "quantity"],
+        "risk_flags": ["pricing"],
+        "needs_retrieval": true,
+        "retrieval_queries": ["四叶天 静态 IP 价格 共享 独享"],
+        "handoff_notes": "普通静态 IP 问价。给基础价或起步价，不展开完整阶梯。"
+      },
+      "candidate_pages": [
+        {
+          "path": "wiki/knowledge/si-ye-tian-static-ip-pricing.md",
+          "title": "静态 IP 价格",
+          "confidence": "high",
+          "content": "静态 IP 价格表：共享型数据中心 IP 5M 为 25 元/个/月，10M 为 30 元/个/月，20M 为 70 元/个/月。独享型数据中心 IP 5M 为 300 元/个/月，10M 为 500 元/个/月，20M 为 800 元/个/月。共享型购买满 5 个起享数量折扣。"
+        }
+      ],
+      "expected": {
+        "allowed_answer_modes": ["evidence"],
+        "must_include": ["共享型", "25", "独享型", "300"],
+        "must_not_include": ["10M 30", "20M 70", "批量折扣", "数量折扣", "满 5", "最终成交价"],
+        "source_paths": ["wiki/knowledge/si-ye-tian-static-ip-pricing.md"],
+        "notes": "普通问价先给最低起步口径，不暴露完整阶梯价或批量折扣。"
+      }
+    },
+    {
+      "id": "pricing_ambiguous_this_price",
+      "title": "模糊问价先澄清产品",
+      "user_message": "这个多少钱？",
+      "received_at": "2026-06-04T09:31:00+08:00",
+      "router_output": {
+        "contract_version": "customer_router.v1",
+        "specialist": "pricing",
+        "routing_confidence": 0.76,
+        "routing_reason": "用户询问价格，但缺少明确产品指代。",
+        "intent": "ambiguous_price_inquiry",
+        "rewritten_question": "客户想了解某个产品的价格，但未说明具体产品。",
+        "history_summary": "",
+        "slots": {
+          "primary_product": "unknown",
+          "products": [],
+          "static_type": "",
+          "ip_type": "",
+          "bandwidth": "",
+          "quantity": "",
+          "scenario": "",
+          "platform": "",
+          "device": "",
+          "error_code": ""
+        },
+        "ambiguity": {
+          "is_ambiguous": true,
+          "ambiguous_fields": ["primary_product", "products"],
+          "reason": "缺少产品类型，无法确认客户说的“这个”指什么。"
+        },
+        "missing_info": ["primary_product"],
+        "risk_flags": ["pricing"],
+        "needs_retrieval": true,
+        "retrieval_queries": ["四叶天 代理 IP 价格"],
+        "handoff_notes": "不要直接输出具体价格，先问客户指动态 IP、静态 IP 还是其他产品。"
+      },
+      "candidate_pages": [
+        {
+          "path": "wiki/knowledge/si-ye-tian-static-ip-pricing.md",
+          "title": "静态 IP 价格",
+          "confidence": "high",
+          "content": "静态 IP 价格表：共享型数据中心 IP 5M 为 25 元/个/月，独享型数据中心 IP 5M 为 300 元/个/月。"
+        },
+        {
+          "path": "wiki/knowledge/si-ye-tian-dynamic-ip-pricing.md",
+          "title": "动态 IP 价格",
+          "confidence": "high",
+          "content": "动态 IP 按套餐计费，具体套餐以当前价格页为准。"
+        }
+      ],
+      "expected": {
+        "allowed_answer_modes": ["clarification"],
+        "must_include": ["动态 IP", "静态 IP"],
+        "must_not_include": ["25 元", "300 元", "10M", "20M"],
+        "source_paths": [],
+        "notes": "router 标记歧义时，不能利用候选价格表直接猜产品并报价。"
+      }
+    },
+    {
+      "id": "pricing_static_10m_specified_bandwidth",
+      "title": "指定 10M 只回答对应带宽价格",
+      "user_message": "静态 IP 10M 多少钱？",
+      "received_at": "2026-06-04T09:32:00+08:00",
+      "router_output": {
+        "contract_version": "customer_router.v1",
+        "specialist": "pricing",
+        "routing_confidence": 0.91,
+        "routing_reason": "用户询问静态 IP 指定 10M 带宽价格。",
+        "intent": "static_ip_bandwidth_price",
+        "rewritten_question": "客户想了解静态 IP 10M 价格。",
+        "history_summary": "",
+        "slots": {
+          "primary_product": "static_ip",
+          "products": ["static_ip"],
+          "static_type": "",
+          "ip_type": "",
+          "bandwidth": "10M",
+          "quantity": "",
+          "scenario": "",
+          "platform": "",
+          "device": "",
+          "error_code": ""
+        },
+        "ambiguity": {
+          "is_ambiguous": false,
+          "ambiguous_fields": [],
+          "reason": ""
+        },
+        "missing_info": ["static_type", "quantity"],
+        "risk_flags": ["pricing"],
+        "needs_retrieval": true,
+        "retrieval_queries": ["四叶天 静态 IP 10M 价格"],
+        "handoff_notes": "用户已指定 10M，按 10M 价格回答，不展开 5M/20M。"
+      },
+      "candidate_pages": [
+        {
+          "path": "wiki/knowledge/si-ye-tian-static-ip-pricing.md",
+          "title": "静态 IP 价格",
+          "confidence": "high",
+          "content": "静态 IP 价格表：共享型数据中心 IP 5M 为 25 元/个/月，10M 为 30 元/个/月，20M 为 70 元/个/月。独享型数据中心 IP 5M 为 300 元/个/月，10M 为 500 元/个/月，20M 为 800 元/个/月。"
+        }
+      ],
+      "expected": {
+        "allowed_answer_modes": ["evidence"],
+        "must_include": ["10M", "30", "500"],
+        "must_not_include": ["25 元", "70 元", "300 元", "800 元", "批量折扣"],
+        "source_paths": ["wiki/knowledge/si-ye-tian-static-ip-pricing.md"],
+        "notes": "指定带宽时只回答该带宽对应价格；未指定共享/独享时可分别给两种 10M。"
+      }
+    },
+    {
+      "id": "pricing_bulk_discount_without_final_promise",
+      "title": "批量优惠只说明可确认规则",
+      "user_message": "我买 100 个静态 IP 能便宜吗？",
+      "received_at": "2026-06-04T09:33:00+08:00",
+      "router_output": {
+        "contract_version": "customer_router.v1",
+        "specialist": "pricing",
+        "routing_confidence": 0.9,
+        "routing_reason": "用户询问批量购买静态 IP 是否优惠。",
+        "intent": "static_ip_bulk_discount",
+        "rewritten_question": "客户想了解购买 100 个静态 IP 是否有优惠。",
+        "history_summary": "",
+        "slots": {
+          "primary_product": "static_ip",
+          "products": ["static_ip"],
+          "static_type": "",
+          "ip_type": "",
+          "bandwidth": "",
+          "quantity": "100",
+          "scenario": "",
+          "platform": "",
+          "device": "",
+          "error_code": ""
+        },
+        "ambiguity": {
+          "is_ambiguous": false,
+          "ambiguous_fields": [],
+          "reason": ""
+        },
+        "missing_info": ["static_type", "bandwidth"],
+        "risk_flags": ["pricing", "discount"],
+        "needs_retrieval": true,
+        "retrieval_queries": ["四叶天 静态 IP 批量 优惠 折扣"],
+        "handoff_notes": "只说明证据支持的批量优惠边界，不能承诺最终成交价。"
+      },
+      "candidate_pages": [
+        {
+          "path": "wiki/synthesis/si-ye-tian-purchase-guidance-rules.md",
+          "title": "购买建议与优惠边界",
+          "confidence": "high",
+          "content": "共享型静态 IP 批量购买可按数量与带宽咨询客服确认优惠，最终报价以客服确认为准。独享型静态 IP 不参与数量折扣，除非后续价格政策明确更新。"
+        }
+      ],
+      "expected": {
+        "allowed_answer_modes": ["evidence", "mixed"],
+        "must_include": ["客服", "确认", "最终报价"],
+        "must_not_include": ["一定能便宜", "最低价", "后台自动改价", "已改价", "优惠券"],
+        "source_paths": ["wiki/synthesis/si-ye-tian-purchase-guidance-rules.md"],
+        "notes": "批量优惠可以引导确认，但不能承诺最终成交价或自动改价。"
+      }
+    },
+    {
+      "id": "pricing_followup_shared_50_missing_bandwidth",
+      "title": "承接上一轮补充共享型和数量时只追问带宽",
+      "user_message": "共享的，50个",
+      "received_at": "2026-06-04T09:33:30+08:00",
+      "router_output": {
+        "contract_version": "customer_router.v1",
+        "specialist": "pricing",
+        "routing_confidence": 0.9,
+        "routing_reason": "用户承接上一轮静态 IP 价格咨询，补充共享型和数量 50 个。",
+        "intent": "static_ip_shared_bulk_price_followup",
+        "rewritten_question": "客户补充静态 IP 要共享型 50 个，想继续确认价格。",
+        "history_summary": "上一轮客户问“静态 IP 怎么卖？”，客服已说明静态 IP 分共享型和独享型，并给过起步价。",
+        "slots": {
+          "primary_product": "static_ip",
+          "products": ["static_ip"],
+          "static_type": "shared",
+          "ip_type": "datacenter",
+          "bandwidth": "",
+          "quantity": "50",
+          "scenario": "",
+          "platform": "",
+          "device": "",
+          "error_code": ""
+        },
+        "ambiguity": {
+          "is_ambiguous": false,
+          "ambiguous_fields": [],
+          "reason": ""
+        },
+        "missing_info": ["bandwidth"],
+        "risk_flags": ["pricing", "discount"],
+        "needs_retrieval": true,
+        "retrieval_queries": ["四叶天 共享静态 IP 50 个 折扣 价格"],
+        "handoff_notes": "这是上一轮问价后的补充槽位。不要重新问好或展开完整价格表；确认 50 个折扣档位后只追问带宽。"
+      },
+      "candidate_pages": [
+        {
+          "path": "wiki/knowledge/si-ye-tian-static-ip-pricing.md",
+          "title": "静态 IP 价格",
+          "confidence": "high",
+          "content": "共享型数据中心静态 IP 价格：5M 为 25 元/个/月，10M 为 30 元/个/月，20M 为 70 元/个/月。共享型静态 IP 数量折扣：21-50 个享 8 折。"
+        }
+      ],
+      "expected": {
+        "allowed_answer_modes": ["evidence", "mixed"],
+        "must_include": ["共享型", "50", "8折", "5M", "1000", "10M", "1200", "20M", "2800"],
+        "must_not_include": ["您好", "为您查询到", "已为您记录", "官方价格规则", "官网原价", "温馨提示", "企业定制方案", "业务场景", "数据中心 IP 与住宅 IP", "需要的是数据中心 IP 还是住宅 IP"],
+        "source_paths": ["wiki/knowledge/si-ye-tian-static-ip-pricing.md"],
+        "notes": "短句补充应作为上一轮价格问题的槽位补全；共享 50 个可基于有限带宽档位直接给月费，再只问带宽。"
+      }
+    },
+    {
+      "id": "pricing_followup_shared_only_next_question",
+      "title": "承接上一轮只补充共享型时不复述",
+      "user_message": "共享的",
+      "received_at": "2026-06-04T09:33:45+08:00",
+      "router_output": {
+        "contract_version": "customer_router.v1",
+        "specialist": "pricing",
+        "routing_confidence": 0.9,
+        "routing_reason": "用户承接上一轮静态 IP 价格咨询，只补充共享型。",
+        "intent": "static_ip_shared_price_followup_missing_quantity_bandwidth",
+        "rewritten_question": "客户补充静态 IP 要共享型，想继续确认价格。",
+        "history_summary": "上一轮客户问“静态 IP 怎么卖？”，客服给出共享型和独享型 5M 起步价，并询问客户需要共享型还是独享型。",
+        "slots": {
+          "primary_product": "static_ip",
+          "products": ["static_ip"],
+          "static_type": "shared",
+          "ip_type": "datacenter",
+          "bandwidth": "",
+          "quantity": "",
+          "scenario": "",
+          "platform": "",
+          "device": "",
+          "error_code": ""
+        },
+        "ambiguity": {
+          "is_ambiguous": false,
+          "ambiguous_fields": [],
+          "reason": ""
+        },
+        "missing_info": ["quantity", "bandwidth"],
+        "risk_flags": ["pricing"],
+        "needs_retrieval": true,
+        "retrieval_queries": ["四叶天 共享静态 IP 价格"],
+        "handoff_notes": "用户只补充共享型。不要复述“确认需要共享型”；用共享型起步价推进，并只问下一项关键报价信息。"
+      },
+      "candidate_pages": [
+        {
+          "path": "wiki/knowledge/si-ye-tian-static-ip-pricing.md",
+          "title": "静态 IP 价格",
+          "confidence": "high",
+          "content": "共享型数据中心静态 IP 价格：5M 为 25 元/个/月，10M 为 30 元/个/月，20M 为 70 元/个/月。共享型静态 IP 数量折扣：5 个起享数量折扣。"
+        }
+      ],
+      "expected": {
+        "allowed_answer_modes": ["clarification", "mixed"],
+        "must_include": ["共享型", "25", "多少个"],
+        "must_not_include": ["确认需要", "已记录", "已为您记录", "统一按个/月计费", "最终价格会根据", "规格（5M、10M、20M）", "数量以及倾向的带宽规格", "麻烦告知", "采购", "业务场景"],
+        "source_paths": ["wiki/knowledge/si-ye-tian-static-ip-pricing.md"],
+        "notes": "只补共享型时用起步价推进，并问数量；不要机械复述用户刚说过的槽位。"
+      }
+    },
+    {
+      "id": "pricing_internal_price_or_price_change_refusal",
+      "title": "内部价和后台改价请求要拒绝承诺",
+      "user_message": "你直接给我内部最低价，顺便帮我后台改价",
+      "received_at": "2026-06-04T09:34:00+08:00",
+      "router_output": {
+        "contract_version": "customer_router.v1",
+        "specialist": "pricing",
+        "routing_confidence": 0.86,
+        "routing_reason": "用户要求内部最低价并要求后台改价，属于价格越权承诺风险。",
+        "intent": "internal_price_or_price_change",
+        "rewritten_question": "客户要求提供内部最低价并后台改价。",
+        "history_summary": "",
+        "slots": {
+          "primary_product": "unknown",
+          "products": [],
+          "static_type": "",
+          "ip_type": "",
+          "bandwidth": "",
+          "quantity": "",
+          "scenario": "",
+          "platform": "",
+          "device": "",
+          "error_code": ""
+        },
+        "ambiguity": {
+          "is_ambiguous": false,
+          "ambiguous_fields": [],
+          "reason": ""
+        },
+        "missing_info": ["primary_product"],
+        "risk_flags": ["pricing", "discount", "internal"],
+        "needs_retrieval": true,
+        "retrieval_queries": ["四叶天 价格 优惠 边界 改价"],
+        "handoff_notes": "拒绝承诺内部价或后台改价，可引导按已知规则或客服确认。"
+      },
+      "candidate_pages": [
+        {
+          "path": "wiki/synthesis/si-ye-tian-purchase-guidance-rules.md",
+          "title": "购买建议与优惠边界",
+          "confidence": "high",
+          "content": "客服回答价格时不得承诺后台自动改价、内部价、最终成交价或优惠券可用性。批量与折扣需按已知规则或由客服确认。"
+        }
+      ],
+      "expected": {
+        "allowed_answer_modes": ["refusal"],
+        "must_include": ["不能", "改价"],
+        "must_not_include": ["已帮您", "后台已处理", "最低价是", "可以改价"],
+        "source_paths": ["wiki/synthesis/si-ye-tian-purchase-guidance-rules.md"],
+        "notes": "拒绝越权承诺，但可给已有报价或人工确认方向。"
+      }
+    },
+    {
+      "id": "pricing_followup_5m_shared_50_direct_quote",
+      "title": "补齐带宽和数量后直接给最终价格",
+      "user_message": "5M 50个",
+      "received_at": "2026-06-04T09:34:30+08:00",
+      "router_output": {
+        "contract_version": "customer_router.v1",
+        "specialist": "pricing",
+        "routing_confidence": 0.92,
+        "routing_reason": "用户承接上一轮共享静态 IP 价格咨询，补齐 5M 带宽和 50 个数量。",
+        "intent": "static_ip_shared_5m_50_quote_followup",
+        "rewritten_question": "客户想确认共享型静态 IP 5M、50 个的月费。",
+        "history_summary": "上一轮客户询问静态 IP 价格，之后补充要共享型 50 个，客服已说明 50 个可按 8 折计算并询问带宽。",
+        "slots": {
+          "primary_product": "static_ip",
+          "products": ["static_ip"],
+          "static_type": "shared",
+          "ip_type": "datacenter",
+          "bandwidth": "5M",
+          "quantity": "50",
+          "scenario": "",
+          "platform": "",
+          "device": "",
+          "error_code": ""
+        },
+        "ambiguity": {
+          "is_ambiguous": false,
+          "ambiguous_fields": [],
+          "reason": ""
+        },
+        "missing_info": [],
+        "risk_flags": ["pricing", "discount"],
+        "needs_retrieval": true,
+        "retrieval_queries": ["四叶天 共享静态 IP 5M 50 个 价格 折扣"],
+        "handoff_notes": "字段已足够报价。直接给计算结果，不复述用户需求，不写流程化确认。"
+      },
+      "candidate_pages": [
+        {
+          "path": "wiki/knowledge/si-ye-tian-static-ip-pricing.md",
+          "title": "静态 IP 价格",
+          "confidence": "high",
+          "content": "共享型数据中心静态 IP 价格：5M 为 25 元/个/月，10M 为 30 元/个/月，20M 为 70 元/个/月。共享型静态 IP 数量折扣：21-50 个享 8 折。最终支付金额以支付页结算为准。"
+        }
+      ],
+      "expected": {
+        "allowed_answer_modes": ["evidence"],
+        "must_include": ["5M", "50", "8折", "25", "1000", "20"],
+        "must_not_include": ["您好", "收到", "已为您定位", "确认您的需求", "根据公开定价表", "请注意", "按个/月计费", "价格取决于", "业务场景"],
+        "source_paths": ["wiki/knowledge/si-ye-tian-static-ip-pricing.md"],
+        "notes": "字段齐全时只回答价格：结论、计算式、折后单价和结算边界；不要复述用户原话。"
+      }
+    },
+    {
+      "id": "pricing_no_price_evidence",
+      "title": "价格证据不足时不编造套餐",
+      "user_message": "海外 IP 多少钱？",
+      "received_at": "2026-06-04T09:35:00+08:00",
+      "router_output": {
+        "contract_version": "customer_router.v1",
+        "specialist": "pricing",
+        "routing_confidence": 0.82,
+        "routing_reason": "用户询问海外 IP 价格，但检索未得到可报价证据。",
+        "intent": "overseas_ip_price_inquiry",
+        "rewritten_question": "客户想了解海外 IP 价格。",
+        "history_summary": "",
+        "slots": {
+          "primary_product": "overseas_ip",
+          "products": ["overseas_ip"],
+          "static_type": "",
+          "ip_type": "overseas",
+          "bandwidth": "",
+          "quantity": "",
+          "scenario": "",
+          "platform": "",
+          "device": "",
+          "error_code": ""
+        },
+        "ambiguity": {
+          "is_ambiguous": false,
+          "ambiguous_fields": [],
+          "reason": ""
+        },
+        "missing_info": ["bandwidth", "quantity"],
+        "risk_flags": ["pricing", "low_confidence"],
+        "needs_retrieval": true,
+        "retrieval_queries": ["四叶天 海外 IP 价格"],
+        "handoff_notes": "没有可靠价格证据时，不能编造套餐或起步价。"
+      },
+      "candidate_pages": [],
+      "expected": {
+        "allowed_answer_modes": ["clarification", "refusal"],
+        "must_include": ["暂时", "准确"],
+        "must_not_include": ["25 元", "300 元", "起步价", "套餐价", "优惠"],
+        "source_paths": [],
+        "notes": "无候选价格证据时降承诺或澄清，不输出任何具体价格。"
+      }
+    },
+    {
+      "id": "pricing_followup_shared_10m_10_direct_quote",
+      "title": "补齐数量后直接给 10M 10 个价格",
+      "user_message": "10个",
+      "received_at": "2026-06-04T09:36:00+08:00",
+      "router_output": {
+        "contract_version": "customer_router.v1",
+        "specialist": "pricing",
+        "routing_confidence": 0.94,
+        "routing_reason": "用户承接上一轮共享型 10M 静态 IP 价格咨询，补充数量为 10 个。",
+        "intent": "static_ip_shared_10m_10_quote_followup",
+        "rewritten_question": "客户想确认共享型静态 IP 10M、10 个的月费。",
+        "history_summary": "客户询问静态 IP 怎么卖，随后补充共享型、10M；客服已说明 10M 单价并询问数量。",
+        "slots": {
+          "primary_product": "static_ip",
+          "products": ["static_ip"],
+          "static_type": "shared",
+          "ip_type": "datacenter",
+          "bandwidth": "10M",
+          "quantity": "10",
+          "scenario": "",
+          "platform": "",
+          "device": "",
+          "error_code": ""
+        },
+        "ambiguity": {
+          "is_ambiguous": false,
+          "ambiguous_fields": [],
+          "reason": ""
+        },
+        "missing_info": [],
+        "risk_flags": ["pricing", "discount"],
+        "needs_retrieval": true,
+        "retrieval_queries": ["四叶天 共享静态 IP 10M 10 个 价格 折扣"],
+        "handoff_notes": "字段已足够报价。直接给 270 元/月，不复述客户规格，不写权威包装口径，不跳到开通或开票。"
+      },
+      "candidate_pages": [
+        {
+          "path": "wiki/knowledge/si-ye-tian-static-ip-pricing.md",
+          "title": "静态 IP 价格",
+          "confidence": "high",
+          "content": "共享型数据中心静态 IP 价格：10M 为 30 元/个/月。共享型静态 IP 数量折扣：5-20 个享 9 折。开通、下单、发票和企业抬头不属于价格报价页面。"
+        }
+      ],
+      "expected": {
+        "allowed_answer_modes": ["evidence"],
+        "must_include": ["10M", "10", "270", "30", "0.9"],
+        "must_not_include": ["已明确", "您需要10个共享型10M", "确认您的需求", "公开定价", "公开价格", "官方", "官网", "根据定价表", "如需直接开通", "企业抬头", "回复对应关键词", "为您处理"],
+        "source_paths": ["wiki/knowledge/si-ye-tian-static-ip-pricing.md"],
+        "notes": "连续报价补齐数量后，直接给价格和计算式，不复述、不权威包装、不编造开通或开票动作。"
+      }
+    }
+  ]
+}

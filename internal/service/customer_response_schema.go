@@ -131,7 +131,10 @@ func customerSpecialistResponseFormat() *llm.ResponseFormat {
 						"type": "string",
 						"enum": []any{"evidence", "mixed", "self_answer", "clarification", "refusal"},
 					},
-					"answer":                map[string]any{"type": "string"},
+					"answer": map[string]any{
+						"type":      "string",
+						"minLength": 1,
+					},
 					"review_question":       map[string]any{"type": "string"},
 					"confidence":            map[string]any{"type": "number"},
 					"evidence_confidence":   map[string]any{"type": "number"},

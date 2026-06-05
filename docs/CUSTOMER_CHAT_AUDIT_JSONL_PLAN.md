@@ -460,7 +460,13 @@ save_full_evidence=true
   "input": {
     "user_message": "静态 IP 怎么卖？",
     "router_output_ref": "router.output",
-    "candidate_page_paths_ref": "retrieval.candidate_page_paths"
+    "candidate_page_paths_ref": "retrieval.candidate_page_paths",
+    "message_count": 2,
+    "prompt_chars": { "system": 4181, "user": 1391 },
+    "messages": [
+      { "role": "system", "content": "完整 system prompt（base + 专家 + check + 后缀）" },
+      { "role": "user", "content": "完整 user prompt（含 router_output、candidate_pages、hard_boundary 等）" }
+    ]
   },
   "raw_output": "...",
   "output": {

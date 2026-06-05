@@ -78,6 +78,8 @@
 - “付款后没有 IP 怎么办？”分到 `troubleshooting`，并标记 `after_sales` 和 `troubleshooting`。
 - “407 是什么意思 / 407 怎么办？”分到 `troubleshooting`。
 - “海外 IP 能打开 Google 吗？”分到 `safety`。
+- 如果最近对话正在问价格/报价，客户追问“有哪些带宽/规格/档位”“5M/10M/20M 有哪些”“住宅有哪些带宽”等，是为了补齐报价槽位，分到 `pricing`，不要分到 `product` 做选型推荐。
+- 如果客户只是在产品介绍上下文里问带宽含义、共享/独享差异、住宅/数据中心差异，才分到 `product`。
 
 ## 产品枚举
 
@@ -119,6 +121,12 @@
 - `platform`：第三方平台，如 `Google`、`ChatGPT`。
 - `device`：设备、工具、SDK 或客户端，如 `Postern`、`SSTap`、`Python`。
 - `error_code`：错误码，如 `407`、`503`、`10010`。
+
+## 错别字与上下文归一
+
+- 若本轮短句里出现明显错别字，但最近上下文能唯一确定含义，不要把错字原样交给专家解释，直接在 `rewritten_question`、槽位和检索 query 中按上下文归一。
+- 例如最近在问住宅 IP 价格/规格，用户写“住宅都有哪些贷款”，应理解为“住宅 IP 都有哪些带宽”，`slots.ip_type=residential`，`intent=residential_ip_bandwidth_options_for_pricing`，不要要求专家解释“贷款”。
+- 只有无法从上下文确定错字含义时，才设置 `ambiguity.is_ambiguous=true` 并交给 `reception` 或相应专家澄清。
 
 ## 歧义与缺失信息
 

@@ -985,6 +985,18 @@ func TestCustomerChatWritesQuestionAnswerJSONAndThinkingLog(t *testing.T) {
 		apiTestStringValue(input, "candidate_page_paths_ref") != "retrieval.candidate_page_paths" {
 		t.Fatalf("expected specialist input refs, got %#v", input)
 	}
+	messages := apiTestSliceValue(input["messages"])
+	if len(messages) != 2 {
+		t.Fatalf("expected specialist input messages with system and user, got %#v", input["messages"])
+	}
+	systemMsg := apiTestMapValue(messages[0])
+	userMsg := apiTestMapValue(messages[1])
+	if apiTestStringValue(systemMsg, "role") != "system" || !strings.Contains(apiTestStringValue(systemMsg, "content"), "专家客服") {
+		t.Fatalf("expected full system prompt in specialist input, got %#v", systemMsg)
+	}
+	if apiTestStringValue(userMsg, "role") != "user" || !strings.Contains(apiTestStringValue(userMsg, "content"), "user_message:") {
+		t.Fatalf("expected full user prompt in specialist input, got %#v", userMsg)
+	}
 	finalInfo := apiTestMapValue(entry["final"])
 	specialistOutput := apiTestMapValue(specialist["output"])
 	if apiTestInt64Value(finalInfo, "source_count") != int64(len(apiTestSliceValue(specialistOutput["sources"]))) {

@@ -4,6 +4,21 @@
 
 ## 1. 基本原则
 
+### 1.1 Prompt 分层（代码拼接，Prompt 里勿教模型拼接）
+
+| 层级 | 文件 | 注入位置 | 职责 |
+| --- | --- | --- | --- |
+| L1 | `customer_specialist_boundary.md` | user 的 `hard_boundary:` | 服务端行为、JSON 格式、事实底线 |
+| L2 | `customer_specialist_base.md` | system 第 1 段 | 共用字段说明、证据/回答规则、JSON schema |
+| L3 | `customer_specialist_<专家>.md` | system 第 2 段 | 该专家职责与领域规则 |
+| L4 | `customer_specialist_check.md` | system 第 3 段 | 输出前自检清单（同一次模型调用内完成，不另起对话） |
+
+代码：`system = base + --- + 专家 + --- + check + JSON 后缀`；`user` 含 `user_message`、`router_output`、`candidate_pages`、`hard_boundary` 等块。
+
+L4 不是第二次 LLM：模型先按 L2/L3 构思答案，再对照 L4 逐项核对并修正，最后只输出 JSON。若后续线上仍漏检，再考虑独立「校验 Specialist」二次调用。
+
+### 1.2 业务原则
+
 - 顶层专家按客户任务划分，不按产品划分。
 - 产品只作为 Router V1 slots、检索 query 和证据上下文。
 - 服务端只认识稳定目录和通用证据结构，不写死具体知识页路径。
@@ -46,7 +61,7 @@
 
 ## 输入
 
-说明 user_message、router_output、candidate_pages、current_customer_contacts、hard_boundary。
+不写。user 字段见 `customer_specialist_base.md`；专家文件只写本专家 `candidate_pages` 范围（放在证据或回答规则里）。
 
 ## 证据规则
 
@@ -73,7 +88,7 @@
 
 ## 输出 JSON
 
-固定 JSON schema。
+不写。字段含义、枚举与示例只在 `customer_specialist_base.md` 的「输出 JSON」一节维护一份。
 ```
 
 ## 4. 测试和问题归因

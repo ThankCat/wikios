@@ -212,6 +212,27 @@ func TestCustomerRouterResponseFormatRequiresV1Fields(t *testing.T) {
 	}
 }
 
+func TestCustomerRouterPromptCoversPricingBandwidthAndTypoNormalization(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", customerRouterPromptFile))
+	if err != nil {
+		t.Fatalf("read router prompt: %v", err)
+	}
+	prompt := string(raw)
+	for _, want := range []string{
+		"最近对话正在问价格/报价",
+		"有哪些带宽/规格/档位",
+		"分到 `pricing`",
+		"错别字与上下文归一",
+		"住宅都有哪些贷款",
+		"住宅 IP 都有哪些带宽",
+		"不要把错字原样交给专家解释",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected router prompt to include %q, got:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestRouteCustomerQuestionPromptUsesRecentConversationOnly(t *testing.T) {
 	llmClient := &customerRouterTestLLM{text: `{
 		"contract_version": "customer_router.v1",

@@ -20,6 +20,7 @@ type customerRoutedPipelineTestLLM struct {
 	routerText               string
 	routerErr                error
 	specialistText           string
+	specialistTexts          []string
 	specialistErr            error
 	specialistWaitForContext bool
 	calls                    []string
@@ -56,10 +57,23 @@ func (m *customerRoutedPipelineTestLLM) StreamChat(ctx context.Context, model st
 	if m.specialistErr != nil {
 		return "", m.specialistErr
 	}
-	if onDelta != nil {
-		onDelta(m.specialistText)
+	specialistText := m.specialistText
+	if len(m.specialistTexts) > 0 {
+		specialistIndex := 0
+		for _, call := range m.calls {
+			if call == "specialist" {
+				specialistIndex++
+			}
+		}
+		if specialistIndex > len(m.specialistTexts) {
+			specialistIndex = len(m.specialistTexts)
+		}
+		specialistText = m.specialistTexts[specialistIndex-1]
 	}
-	return m.specialistText, nil
+	if onDelta != nil {
+		onDelta(specialistText)
+	}
+	return specialistText, nil
 }
 
 func TestAnswerRoutedPricingUsesSpecialistAnswer(t *testing.T) {
@@ -292,6 +306,7 @@ func TestCustomerSpecialistDecisionPromptDoesNotIncludeDerivedEvidence(t *testin
 			},
 		},
 		RuntimeSupportSettings{},
+		"## 服务端行为\n\n- 客户可见正文只来自 JSON 的 answer。",
 	)
 	if strings.Contains(prompt, "derived_evidence_summary") || strings.Contains(prompt, "共享型最低官网原价") || strings.Contains(prompt, "独享型最低官网原价") {
 		t.Fatalf("specialist prompt must not include service-derived evidence, got:\n%s", prompt)
@@ -299,9 +314,17 @@ func TestCustomerSpecialistDecisionPromptDoesNotIncludeDerivedEvidence(t *testin
 	if !strings.Contains(prompt, "candidate_pages:") {
 		t.Fatalf("expected specialist prompt to include candidate pages, got:\n%s", prompt)
 	}
-	for _, want := range []string{"contract_version: customer_router.v1", "routing_reason:", "primary_product: static_ip", "ambiguity:", "handoff_notes:"} {
+	for _, want := range []string{
+		"hard_boundary:",
+		"服务端行为",
+		"contract_version: customer_router.v1",
+		"routing_reason:",
+		"primary_product: static_ip",
+		"ambiguity:",
+		"handoff_notes:",
+	} {
 		if !strings.Contains(prompt, want) {
-			t.Fatalf("expected specialist prompt to include Router V1 field %q, got:\n%s", want, prompt)
+			t.Fatalf("expected specialist prompt to include %q, got:\n%s", want, prompt)
 		}
 	}
 	for _, forbidden := range []string{"answer_" + "policy:", "product_" + "resolution:", "  product:"} {
@@ -351,18 +374,96 @@ func TestAnswerRoutedSpecialistFailureReturnsErrorWithoutFallback(t *testing.T) 
 	}
 }
 
+func TestAnswerRoutedSpecialistRecoversAnswerFromReviewQuestion(t *testing.T) {
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":true,"ambiguous_fields":["primary_product"],"reason":"未说明动态或静态"},"missing_info":["static_type"],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户问价但未指明产品。"}`,
+		specialistText: `{"answer_mode":"clarification","answer":"","review_question":"您这边是想了解动态 IP 还是静态 IP 的价格？","confidence":0.7,"evidence_confidence":0.5,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[],"notes":""}`,
+	}
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	resp, err := svc.answerRouted(context.Background(), "trace-routed-recover-answer", CustomerChatRequest{
+		Question:   "这个多少钱？",
+		PersistLog: boolPtr(false),
+	}, nil, DefaultRuntimeSettings(svc.deps.Config))
+	if err != nil {
+		t.Fatalf("answerRouted: %v", err)
+	}
+	if resp == nil || !strings.Contains(resp.Answer, "动态 IP") {
+		t.Fatalf("expected recovered clarification answer, got %#v", resp)
+	}
+}
+
+func TestAnswerRoutedSpecialistRetriesMissingSchemaOutputWithoutThinking(t *testing.T) {
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText: `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry_with_specs","rewritten_question":"客户希望了解共享型、5M 带宽、10 个静态 IP 的具体价格。","history_summary":"用户询问静态 IP 价格后选定共享型。","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"shared","ip_type":"datacenter","bandwidth":"5M","quantity":"10","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 共享型 静态 IP 数据中心 5M 10个 价格"],"handoff_notes":"用户已明确需求：共享型静态 IP，5M 带宽，数量 10 个。"}`,
+		specialistTexts: []string{
+			`{}`,
+			`{"answer_mode":"evidence","answer":"5M 10 个是 225 元/月。\n25 × 10 × 0.9 = 225，折后 22.5 元/个/月。","review_question":"","confidence":0.95,"evidence_confidence":0.95,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
+		},
+	}
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	settings := DefaultRuntimeSettings(svc.deps.Config)
+	settings.CustomerChat.SpecialistEnableThinking = boolPtr(true)
+	resp, err := svc.answerRouted(context.Background(), "trace-routed-retry-schema", CustomerChatRequest{
+		Question:   "10个, 5M的",
+		PersistLog: boolPtr(false),
+	}, nil, settings)
+	if err != nil {
+		t.Fatalf("answerRouted: %v", err)
+	}
+	if resp == nil || !strings.Contains(resp.Answer, "225 元/月") {
+		t.Fatalf("expected retry answer, got %#v", resp)
+	}
+	if got := strings.Join(llmClient.calls, ","); got != "router,specialist,specialist" {
+		t.Fatalf("expected router and specialist retry, got %s", got)
+	}
+	if resp.Details == nil || resp.Details["specialist_first_attempt"] == nil || resp.Details["specialist_retry"] == nil {
+		t.Fatalf("expected retry details, got %#v", resp.Details)
+	}
+}
+
+func TestAnswerRoutedSpecialistRetriesMissingAnswerModeWhenThinkingDisabled(t *testing.T) {
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText: `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.95,"routing_reason":"用户补充数量，字段已足够报价。","intent":"static_ip_price_inquiry","rewritten_question":"客户询问共享型静态 IP 10M，购买 20 个的价格。","history_summary":"用户询问静态 IP 价格，选定共享型、10M 带宽，现回答数量为 20 个。","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"shared","ip_type":"datacenter","bandwidth":"10M","quantity":"20","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 共享型 10M 带宽 20个 价格 折扣"],"handoff_notes":"用户已确认静态 IP、共享型、10M 带宽、数量 20 个，需根据批量折扣规则计算报价。"}`,
+		specialistTexts: []string{
+			`{"answer":"10M 20 个是 540 元/月。\n30 × 20 × 0.9 = 540，折后 27 元/个/月。","review_question":"","confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
+			`{"answer_mode":"evidence","answer":"10M 20 个是 540 元/月。\n30 × 20 × 0.9 = 540，折后 27 元/个/月。","review_question":"","confidence":0.95,"evidence_confidence":0.95,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
+		},
+	}
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	settings := DefaultRuntimeSettings(svc.deps.Config)
+	settings.CustomerChat.SpecialistEnableThinking = boolPtr(false)
+	resp, err := svc.answerRouted(context.Background(), "trace-routed-retry-missing-mode", CustomerChatRequest{
+		Question:   "20个",
+		PersistLog: boolPtr(false),
+	}, nil, settings)
+	if err != nil {
+		t.Fatalf("answerRouted: %v", err)
+	}
+	if resp == nil || !strings.Contains(resp.Answer, "540 元/月") {
+		t.Fatalf("expected retry answer, got %#v", resp)
+	}
+	if got := strings.Join(llmClient.calls, ","); got != "router,specialist,specialist" {
+		t.Fatalf("expected router and specialist retry, got %s", got)
+	}
+}
+
 func TestAnswerRoutedSpecialistEmptyAnswerReturnsErrorWithoutFallback(t *testing.T) {
 	llmClient := &customerRoutedPipelineTestLLM{
 		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户是普通静态 IP 问价。"}`,
 		specialistText: `{"answer_mode":"evidence","answer":"","review_question":"","confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
 	}
 	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	settings := DefaultRuntimeSettings(svc.deps.Config)
+	settings.CustomerChat.SpecialistEnableThinking = boolPtr(false)
 	resp, err := svc.answerRouted(context.Background(), "trace-routed-empty-answer", CustomerChatRequest{
 		Question:   "静态IP 怎么卖的?",
 		PersistLog: boolPtr(false),
-	}, nil, DefaultRuntimeSettings(svc.deps.Config))
+	}, nil, settings)
 	if err == nil {
 		t.Fatalf("expected empty answer error, got response %#v", resp)
+	}
+	if !strings.Contains(err.Error(), "empty answer") {
+		t.Fatalf("expected empty answer error message, got %v", err)
 	}
 	if len(llmClient.calls) != 2 || llmClient.calls[0] != "router" || llmClient.calls[1] != "specialist" {
 		t.Fatalf("expected router and specialist only, got %+v", llmClient.calls)
@@ -452,7 +553,7 @@ func newCustomerRoutedPipelineTestService(t *testing.T, llmClient llm.Client, pr
 			pages := map[string]string{
 				"wiki/knowledge/si-ye-tian-static-ip-pricing.md":               "---\ntitle: 静态 IP 价格\n---\n共享型数据中心 IP：5M 25元/个/月，10M 30元/个/月，20M 70元/个/月起。独享型数据中心 IP：5M 300元/个/月，10M 500元/个/月，20M 800元/个/月。",
 				"wiki/knowledge/si-ye-tian-proxy-ip-pricing.md":                "---\ntitle: 代理 IP 价格\n---\n动态代理按套餐计费。",
-				"wiki/synthesis/si-ye-tian-purchase-guidance-rules.md":         "---\ntitle: 购买建议\n---\n普通问价只回答公开基础价。",
+				"wiki/synthesis/si-ye-tian-purchase-guidance-rules.md":         "---\ntitle: 购买建议\n---\n普通问价只回答基础价。",
 				"wiki/knowledge/si-ye-tian-proxy-ip-products.md":               "---\ntitle: 产品说明\n---\n动态 IP 适合更换出口，静态 IP 适合固定账号环境。",
 				"wiki/policies/si-ye-tian-safety-boundaries.md":                "---\ntitle: 安全边界\n---\n不能承诺特定网站一定可访问。",
 				"wiki/procedures/si-ye-tian-purchase-procedure.md":             "---\ntitle: 购买流程\n---\n客户可通过官方入口登录后台，选择产品后按页面提示购买。",
@@ -494,6 +595,9 @@ func writeCustomerRoutedTestPrompts(t *testing.T, root string, promptDir string)
 	}
 	prompts := map[string]string{
 		customerRouterPromptFile:                     "你是四叶天 customer chat 的“客服经理 Router”。",
+		customerSpecialistBasePromptFile:             "以下规则适用于所有专家客服。\n\n## user 消息字段\n\n- user_message：客户本轮原话。\n\n## 回答规则\n\n- 不要机械复述客户刚说过的话。\n- 不要使用制式回答骨架，不要写“月费参考”。\n- 不要用“官方/官网/公开/公开定价”包装答案来源。\n- 不要编造服务动作或指令。",
+		customerSpecialistBoundaryPromptFile:         "你是客户对话链路上的专家客服。\n\n## 服务端行为\n\n- 客户可见正文只来自 JSON 的 answer。",
+		customerSpecialistCheckPromptFile:            "## 输出前自检（L4）\n\n- 检查 answer 是否符合证据。",
 		"customer_specialist_pricing.md":             "你是四叶天代理 IP 的价格套餐客服。",
 		"customer_specialist_product.md":             "你是四叶天代理 IP 的产品选型客服。",
 		"customer_specialist_safety.md":              "你是四叶天代理 IP 的安全边界客服。",

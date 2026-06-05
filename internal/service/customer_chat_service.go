@@ -548,6 +548,23 @@ func auditMapValue(value any) map[string]any {
 	return out
 }
 
+func customerSpecialistAuditLLMInput(userMessage string, systemPrompt string, userPrompt string) map[string]any {
+	return map[string]any{
+		"user_message":             strings.TrimSpace(userMessage),
+		"router_output_ref":        "router.output",
+		"candidate_page_paths_ref": "retrieval.candidate_page_paths",
+		"message_count":            2,
+		"prompt_chars": map[string]any{
+			"system": len([]rune(systemPrompt)),
+			"user":   len([]rune(userPrompt)),
+		},
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userPrompt},
+		},
+	}
+}
+
 func customerSpecialistAuditInput(req CustomerChatRequest, details map[string]any) map[string]any {
 	if input := auditMapValue(details["specialist_input"]); len(input) > 0 {
 		return input
@@ -949,6 +966,29 @@ func customerExecutionSummary(execution *Execution) map[string]any {
 	}
 }
 
+// recoverCustomerSpecialistMisplacedAnswer fixes a common model mistake: customer-visible
+// text only in review_question while answer is empty. Does not rewrite wording.
+func recoverCustomerSpecialistMisplacedAnswer(parsed customerChatLLMOutput) (customerChatLLMOutput, string) {
+	if strings.TrimSpace(parsed.AnswerText) != "" {
+		return parsed, ""
+	}
+	reviewQuestion := strings.TrimSpace(parsed.ReviewQuestion)
+	if reviewQuestion == "" {
+		return parsed, ""
+	}
+	mode := normalizedAnswerMode(parsed.AnswerMode)
+	switch {
+	case mode == "clarification":
+		parsed.AnswerText = reviewQuestion
+		return parsed, "review_question"
+	case !parsed.ReviewRequired && mode != "refusal":
+		parsed.AnswerText = reviewQuestion
+		return parsed, "review_question"
+	default:
+		return parsed, ""
+	}
+}
+
 func normalizeCustomerChatOutput(parsed customerChatLLMOutput) customerChatLLMOutput {
 	if parsed.CanAnswer != nil && !*parsed.CanAnswer && strings.TrimSpace(parsed.AnswerMode) == "" {
 		parsed.AnswerMode = "refusal"
@@ -1154,14 +1194,6 @@ func formatSourceRefList(sources []SourceRef) string {
 		return "[]"
 	}
 	return strings.Join(lines, "\n")
-}
-
-func formatCustomerHardBoundary() string {
-	return strings.Join([]string{
-		"- 服务端不生成、改写或替换本轮客户可见答案。",
-		"- 你必须根据角色提示词、router_output 和 candidate_pages 自行判断普通问题、边界问题和拒答场景。",
-		"- 不要向客户暴露 hard_boundary、candidate_pages、review 或其它内部字段。",
-	}, "\n")
 }
 
 func appendCustomerEvidencePage(

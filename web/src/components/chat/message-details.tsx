@@ -56,6 +56,29 @@ function asObject(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function specialistPromptMessages(input: Record<string, unknown>) {
+  const messages = input.messages;
+  if (!Array.isArray(messages)) {
+    return [] as Array<{ role: string; content: string }>;
+  }
+  return messages
+    .map((item) => asObject(item))
+    .map((item) => ({
+      role: textValue(item.role),
+      content: textValue(item.content),
+    }))
+    .filter((item) => item.role !== "" && item.content !== "");
+}
+
+function specialistInputSummary(input: Record<string, unknown>) {
+  if (!Array.isArray(input.messages)) {
+    return input;
+  }
+  const summary = { ...input };
+  delete summary.messages;
+  return summary;
+}
+
 export function MessageDetails({ details, leadingContent, message }: Props) {
   const object = asObject(details);
   const customerTrace = customerTraceFromDetails(object);
@@ -324,6 +347,9 @@ function CustomerTraceRetrievalPanel({ retrieval }: { retrieval: Record<string, 
 function CustomerTraceSpecialistPanel({ specialist }: { specialist: Record<string, unknown> }) {
   const model = asObject(specialist.model);
   const output = asObject(specialist.output);
+  const input = asObject(specialist.input);
+  const promptMessages = specialistPromptMessages(input);
+  const inputSummary = specialistInputSummary(input);
   return (
     <div className="min-w-0 space-y-3">
       <section className="min-w-0 rounded-lg border border-border bg-card p-3 dark:border-border dark:bg-card">
@@ -341,8 +367,19 @@ function CustomerTraceSpecialistPanel({ specialist }: { specialist: Record<strin
       </section>
       <ThinkingBlock title="技术专家思考" thinking={asObject(specialist.thinking)} />
       <SummaryLine label="客户可见答案" value={textValue(output.answer) || "-"} multiline />
+      {promptMessages.length > 0 ? (
+        <div className="space-y-3">
+          {promptMessages.map((message) => (
+            <PanelBlock
+              key={message.role}
+              title={message.role === "system" ? "System Prompt（完整）" : "User Prompt（完整）"}
+              value={message.content}
+            />
+          ))}
+        </div>
+      ) : null}
       <div className="grid gap-3 md:grid-cols-2">
-        <PanelBlock title="输入 Input" value={asObject(specialist.input)} />
+        <PanelBlock title={promptMessages.length > 0 ? "输入摘要" : "输入 Input"} value={inputSummary} />
         <PanelBlock title="来源 Sources" value={output.sources ?? []} />
       </div>
       <PanelBlock title="技术专家输出 JSON" value={output} />
