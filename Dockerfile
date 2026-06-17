@@ -8,6 +8,10 @@ COPY web ./
 RUN bun run build
 
 FROM golang:1.25-bookworm AS go-build
+ARG GOPROXY=https://goproxy.cn,https://goproxy.io,direct
+ARG GOSUMDB=sum.golang.google.cn
+ENV GOPROXY=${GOPROXY}
+ENV GOSUMDB=${GOSUMDB}
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
