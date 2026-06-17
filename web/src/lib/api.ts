@@ -16,14 +16,17 @@ import type {
   CustomerConversationDetailResponse,
   CustomerConversationsResponse,
   CustomerContextEstimateResponse,
-  CustomerIntentsResponse,
+  CustomerSafetyTermsConfig,
+  CustomerSafetyTermsResponse,
   ReviewActionResponse,
   ReviewCountResponse,
   ReviewNextResponse,
+  CustomerClientChannel,
   CustomerStreamEvent,
   SyncCommitResponse,
   SyncDiagnosticResponse,
   SyncGenerateMessageResponse,
+  SyncPullResponse,
   SyncPushResponse,
   SyncStatusResponse,
   UploadResponse,
@@ -34,6 +37,7 @@ import type {
   WikiSaveFileResponse,
   WikiTreeResponse,
 } from "@/types/api";
+import { compactCustomerHistoryForRouter } from "@/lib/customer-history";
 
 export class APIError extends Error {
   status: number;
@@ -53,16 +57,66 @@ export type CustomerChatMeta = {
   answer_message_id?: string;
   message_created_at?: string;
   user_id?: string;
+  client_channel?: CustomerClientChannel;
+  simulation?: boolean;
   context?: Record<string, unknown>;
 };
 
+declare global {
+  interface Window {
+    __WIKIOS_API_BASE_URL__?: string;
+    __WIKIOS_APP_CONFIG_PROMISE__?: Promise<AppConfig>;
+  }
+}
+
+export type AppConfig = {
+  mountedWikiName?: string;
+  apiBaseURL?: string;
+  webEnabled?: boolean;
+};
+
+export async function loadAppConfig(): Promise<AppConfig> {
+  if (typeof window === "undefined") {
+    return {};
+  }
+  if (!window.__WIKIOS_APP_CONFIG_PROMISE__) {
+    window.__WIKIOS_APP_CONFIG_PROMISE__ = fetch(resolveAppConfigURL(), {
+      cache: "no-store",
+      credentials: "include",
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`app config request failed: ${response.status}`);
+        }
+        return (await response.json()) as AppConfig;
+      })
+      .then((config) => {
+        const runtimeBase = sanitizeURLBase(config.apiBaseURL);
+        if (runtimeBase) {
+          window.__WIKIOS_API_BASE_URL__ = runtimeBase;
+        }
+        return config;
+      })
+      .catch((error) => {
+        window.__WIKIOS_APP_CONFIG_PROMISE__ = undefined;
+        throw error;
+      });
+  }
+  return window.__WIKIOS_APP_CONFIG_PROMISE__;
+}
+
 async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const normalizedInput = normalizeInput(input);
-  const response = await fetch(normalizedInput, {
-    credentials: "include",
-    ...init,
-    headers: init?.headers,
-  });
+  let response: Response;
+  try {
+    response = await fetch(normalizedInput, {
+      credentials: "include",
+      ...init,
+      headers: init?.headers,
+    });
+  } catch (error) {
+    throw normalizeFetchError(error, normalizedInput);
+  }
   if (!response.ok) {
     const text = await response.text();
     let payload: unknown = text;
@@ -86,18 +140,20 @@ async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
 
 export const api = {
   customerChat(message: string, history?: CustomerChatHistoryItem[], meta?: CustomerChatMeta, signal?: AbortSignal) {
+    const compactedHistory = compactCustomerHistoryForRouter(history);
     return request<CustomerChatResponse>(apiURL("/api/v1/customer/chat"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, history, ...meta, entrypoint: "external", stream: false }),
+      body: JSON.stringify({ message, history: compactedHistory, ...meta, entrypoint: "external", stream: false }),
       signal,
     });
   },
   estimateCustomerContext(message: string, history?: CustomerChatHistoryItem[], signal?: AbortSignal) {
+    const compactedHistory = compactCustomerHistoryForRouter(history);
     return request<CustomerContextEstimateResponse>(apiURL("/api/v1/customer/context/estimate"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, history, entrypoint: "external" }),
+      body: JSON.stringify({ message, history: compactedHistory, entrypoint: "external" }),
       signal,
     });
   },
@@ -108,11 +164,13 @@ export const api = {
     onEvent: (event: CustomerStreamEvent) => void,
     signal?: AbortSignal,
   ): Promise<string> {
+    const simulation = meta?.simulation ?? true;
+    const compactedHistory = compactCustomerHistoryForRouter(history);
     const response = await fetch(apiURL("/api/v1/customer/chat"), {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, history, ...meta, entrypoint: "internal", simulation: true, stream: true }),
+      body: JSON.stringify({ message, history: compactedHistory, ...meta, entrypoint: "internal", simulation, stream: true }),
       signal,
     });
     if (!response.ok) {
@@ -132,17 +190,6 @@ export const api = {
   adminDashboard(signal?: AbortSignal) {
     return request<AdminDashboardResponse>(apiURL("/api/v1/admin/dashboard"), { signal });
   },
-  getCustomerIntents() {
-    return request<CustomerIntentsResponse>(apiURL("/api/v1/admin/customer-intents"));
-  },
-  updateCustomerIntents(source: string, signal?: AbortSignal) {
-    return request<CustomerIntentsResponse>(apiURL("/api/v1/admin/customer-intents"), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source }),
-      signal,
-    });
-  },
   getRuntimeSettings(signal?: AbortSignal) {
     return request<AdminRuntimeSettingsResponse>(apiURL("/api/v1/admin/runtime-settings"), { signal });
   },
@@ -151,6 +198,17 @@ export const api = {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(settings),
+      signal,
+    });
+  },
+  getCustomerSafetyTerms(signal?: AbortSignal) {
+    return request<CustomerSafetyTermsResponse>(apiURL("/api/v1/admin/customer-safety-terms"), { signal });
+  },
+  updateCustomerSafetyTerms(config: CustomerSafetyTermsConfig, signal?: AbortSignal) {
+    return request<CustomerSafetyTermsResponse>(apiURL("/api/v1/admin/customer-safety-terms"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config }),
       signal,
     });
   },
@@ -291,7 +349,7 @@ export const api = {
     return apiURL(`/api/v1/admin/wiki/download?path=${encodeURIComponent(path)}`);
   },
   customerConversations(
-    params?: { q?: string; page?: number; page_size?: number; from?: string; to?: string; entrypoint?: string; simulation?: boolean | string },
+    params?: { q?: string; page?: number; page_size?: number; from?: string; to?: string; entrypoint?: string; client_channel?: string; simulation?: boolean | string },
     signal?: AbortSignal,
   ) {
     const search = new URLSearchParams();
@@ -301,6 +359,7 @@ export const api = {
     if (params?.from) search.set("from", params.from);
     if (params?.to) search.set("to", params.to);
     if (params?.entrypoint) search.set("entrypoint", params.entrypoint);
+    if (params?.client_channel) search.set("client_channel", params.client_channel);
     if (params?.simulation !== undefined && params.simulation !== "") search.set("simulation", String(params.simulation));
     const suffix = search.toString() ? `?${search.toString()}` : "";
     return request<CustomerConversationsResponse>(apiURL(`/api/v1/admin/customer-conversations${suffix}`), { signal });
@@ -351,6 +410,14 @@ export const api = {
   },
   syncPush(remote: string, branch: string, signal?: AbortSignal) {
     return request<SyncPushResponse>(apiURL("/api/v1/admin/sync/push"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ remote, branch }),
+      signal,
+    });
+  },
+  syncPull(remote: string, branch: string, signal?: AbortSignal) {
+    return request<SyncPullResponse>(apiURL("/api/v1/admin/sync/pull"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ remote, branch }),
@@ -412,9 +479,13 @@ export function isAbortError(error: unknown) {
 function apiURL(path: string) {
   const base = resolveAPIBaseURL();
   if (!base) {
-    return path;
+    return resolveRelativeAPIURL(path);
   }
-  return `${base}${path}`;
+  try {
+    return new URL(path, `${base}/`).toString();
+  } catch {
+    throw new Error(`API 地址无效：${base}。请配置为 http(s) 绝对地址。`);
+  }
 }
 
 function normalizeInput(input: RequestInfo) {
@@ -425,11 +496,62 @@ function normalizeInput(input: RequestInfo) {
 }
 
 function resolveAPIBaseURL() {
-  const envBase = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
+  if (typeof window !== "undefined") {
+    const runtimeBase = sanitizeURLBase(window.__WIKIOS_API_BASE_URL__);
+    if (runtimeBase) {
+      return runtimeBase;
+    }
+  }
+  const envBase = sanitizeURLBase(process.env.NEXT_PUBLIC_API_BASE_URL);
   if (envBase) {
-    return envBase.replace(/\/$/, "");
+    return envBase;
   }
   return "";
+}
+
+function resolveRelativeAPIURL(path: string) {
+  if (typeof window === "undefined") {
+    return path;
+  }
+  if (!window.location.origin || window.location.origin === "null") {
+    throw new Error("无法确定 API 地址：WebView 页面没有有效 origin，请配置 WIKIOS_WEB_API_BASE_URL 为后台服务的 http(s) 地址。");
+  }
+  return new URL(path, window.location.origin).toString();
+}
+
+function resolveAppConfigURL() {
+  if (typeof window === "undefined") {
+    return "/app-config.json";
+  }
+  const base = resolveAPIBaseURL();
+  if (base) {
+    return new URL("/app-config.json", `${base}/`).toString();
+  }
+  if (!window.location.origin || window.location.origin === "null") {
+    return "/app-config.json";
+  }
+  return new URL("/app-config.json", window.location.origin).toString();
+}
+
+function sanitizeURLBase(value?: string) {
+  const cleaned = value?.trim().replace(/[\u0000-\u001F\u007F]/g, "") ?? "";
+  return cleaned.replace(/\/+$/, "");
+}
+
+function normalizeFetchError(error: unknown, input: RequestInfo) {
+  const label = requestInfoLabel(input);
+  if (error instanceof Error) {
+    const message = error.message || "请求失败";
+    return new Error(`${message} (${label})`);
+  }
+  return new Error(`请求失败 (${label})`);
+}
+
+function requestInfoLabel(input: RequestInfo) {
+  if (typeof input === "string") {
+    return input;
+  }
+  return input.url || "request";
 }
 
 function normalizeWikiFileResponse(response: WikiFileResponse): WikiFileResponse {

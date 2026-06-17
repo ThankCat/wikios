@@ -23,14 +23,18 @@ type RuntimeSettings struct {
 }
 
 type RuntimeCustomerQuerySettings struct {
-	DirectMin                float64 `json:"direct_min"`
-	ReviewMin                float64 `json:"review_min"`
-	CandidateTopK            int     `json:"candidate_top_k"`
-	MaxEvidenceChars         int     `json:"max_evidence_chars"`
-	RouterModelID            string  `json:"router_model_id,omitempty"`
-	SpecialistModelID        string  `json:"specialist_model_id,omitempty"`
-	RouterEnableThinking     *bool   `json:"router_enable_thinking,omitempty"`
-	SpecialistEnableThinking *bool   `json:"specialist_enable_thinking,omitempty"`
+	DirectMin                float64  `json:"direct_min"`
+	ReviewMin                float64  `json:"review_min"`
+	CandidateTopK            int      `json:"candidate_top_k"`
+	MaxEvidenceChars         int      `json:"max_evidence_chars"`
+	AppChannelEnabled        bool     `json:"app_channel_enabled"`
+	RouterModelID            string   `json:"router_model_id,omitempty"`
+	SpecialistModelID        string   `json:"specialist_model_id,omitempty"`
+	RouterEnableThinking     *bool    `json:"router_enable_thinking,omitempty"`
+	SpecialistEnableThinking *bool    `json:"specialist_enable_thinking,omitempty"`
+	PersistThinking          bool     `json:"persist_thinking"`
+	RouterTemperature        *float64 `json:"router_temperature,omitempty"`
+	SpecialistTemperature    *float64 `json:"specialist_temperature,omitempty"`
 }
 
 type RuntimeSupportSettings struct {
@@ -54,16 +58,15 @@ type RuntimeSyncSettings struct {
 }
 
 type RuntimeEnvironmentSettings struct {
-	ServerPort          int    `json:"server_port"`
-	ServerMode          string `json:"server_mode"`
-	WikiRoot            string `json:"wiki_root"`
-	WikiName            string `json:"wiki_name"`
-	QMDIndex            string `json:"qmd_index"`
-	WorkspaceDir        string `json:"workspace_dir"`
-	SQLitePath          string `json:"sqlite_path"`
-	WebDistDir          string `json:"web_dist_dir"`
-	WebEnabled          bool   `json:"web_enabled"`
-	CustomerIntentsPath string `json:"customer_intents_path"`
+	ServerPort   int    `json:"server_port"`
+	ServerMode   string `json:"server_mode"`
+	WikiRoot     string `json:"wiki_root"`
+	WikiName     string `json:"wiki_name"`
+	QMDIndex     string `json:"qmd_index"`
+	WorkspaceDir string `json:"workspace_dir"`
+	SQLitePath   string `json:"sqlite_path"`
+	WebDistDir   string `json:"web_dist_dir"`
+	WebEnabled   bool   `json:"web_enabled"`
 }
 
 type RuntimeSettingsSnapshot struct {
@@ -76,14 +79,20 @@ type RuntimeSettingsSnapshot struct {
 func DefaultRuntimeSettings(cfg *config.Config) RuntimeSettings {
 	routerThinking := false
 	specialistThinking := true
+	routerTemp := 0.0
+	specialistTemp := 0.3
 	settings := RuntimeSettings{
 		CustomerChat: RuntimeCustomerQuerySettings{
 			DirectMin:                0.70,
 			ReviewMin:                0.25,
 			CandidateTopK:            6,
 			MaxEvidenceChars:         2400,
+			AppChannelEnabled:        true,
 			RouterEnableThinking:     &routerThinking,
 			SpecialistEnableThinking: &specialistThinking,
+			PersistThinking:          false,
+			RouterTemperature:        &routerTemp,
+			SpecialistTemperature:    &specialistTemp,
 		},
 		Support: RuntimeSupportSettings{
 			Phone: "400-1080-106",
@@ -116,6 +125,12 @@ func DefaultRuntimeSettings(cfg *config.Config) RuntimeSettings {
 	}
 	if cfg.CustomerChat.MaxEvidenceChars > 0 {
 		settings.CustomerChat.MaxEvidenceChars = cfg.CustomerChat.MaxEvidenceChars
+	}
+	if cfg.LLM.Temperature != nil {
+		routerT := *cfg.LLM.Temperature
+		specialistT := *cfg.LLM.Temperature
+		settings.CustomerChat.RouterTemperature = &routerT
+		settings.CustomerChat.SpecialistTemperature = &specialistT
 	}
 	if strings.TrimSpace(cfg.Support.Phone) != "" {
 		settings.Support.Phone = strings.TrimSpace(cfg.Support.Phone)
@@ -153,16 +168,15 @@ func RuntimeEnvironmentFromConfig(cfg *config.Config) RuntimeEnvironmentSettings
 		webEnabled = *cfg.Web.Enabled
 	}
 	return RuntimeEnvironmentSettings{
-		ServerPort:          cfg.Server.Port,
-		ServerMode:          cfg.Server.Mode,
-		WikiRoot:            cfg.MountedWiki.Root,
-		WikiName:            cfg.MountedWiki.Name,
-		QMDIndex:            cfg.MountedWiki.QMDIndex,
-		WorkspaceDir:        cfg.Workspace.BaseDir,
-		SQLitePath:          cfg.Storage.SQLitePath,
-		WebDistDir:          cfg.Web.DistDir,
-		WebEnabled:          webEnabled,
-		CustomerIntentsPath: cfg.CustomerIntents.Path,
+		ServerPort:   cfg.Server.Port,
+		ServerMode:   cfg.Server.Mode,
+		WikiRoot:     cfg.MountedWiki.Root,
+		WikiName:     cfg.MountedWiki.Name,
+		QMDIndex:     cfg.MountedWiki.QMDIndex,
+		WorkspaceDir: cfg.Workspace.BaseDir,
+		SQLitePath:   cfg.Storage.SQLitePath,
+		WebDistDir:   cfg.Web.DistDir,
+		WebEnabled:   webEnabled,
 	}
 }
 
@@ -195,6 +209,15 @@ func LoadRuntimeSettings(ctx context.Context, dataStore *store.Store, cfg *confi
 				var legacySettings RuntimeCustomerQuerySettings
 				if err := json.Unmarshal(legacyRaw, &legacySettings); err == nil {
 					parsed.CustomerChat = legacySettings
+					parsed.CustomerChat.AppChannelEnabled = defaults.CustomerChat.AppChannelEnabled
+				}
+			}
+		}
+		if customerRaw := raw["customer_query"]; len(customerRaw) > 0 {
+			var customerFields map[string]json.RawMessage
+			if err := json.Unmarshal(customerRaw, &customerFields); err == nil {
+				if _, ok := customerFields["app_channel_enabled"]; !ok {
+					parsed.CustomerChat.AppChannelEnabled = defaults.CustomerChat.AppChannelEnabled
 				}
 			}
 		}
@@ -257,6 +280,7 @@ func MergeRuntimeSettings(defaults RuntimeSettings, override RuntimeSettings) Ru
 	if override.CustomerChat.MaxEvidenceChars != 0 {
 		settings.CustomerChat.MaxEvidenceChars = override.CustomerChat.MaxEvidenceChars
 	}
+	settings.CustomerChat.AppChannelEnabled = override.CustomerChat.AppChannelEnabled
 	if strings.TrimSpace(override.CustomerChat.RouterModelID) != "" {
 		settings.CustomerChat.RouterModelID = override.CustomerChat.RouterModelID
 	}
@@ -270,6 +294,15 @@ func MergeRuntimeSettings(defaults RuntimeSettings, override RuntimeSettings) Ru
 	if override.CustomerChat.SpecialistEnableThinking != nil {
 		value := *override.CustomerChat.SpecialistEnableThinking
 		settings.CustomerChat.SpecialistEnableThinking = &value
+	}
+	settings.CustomerChat.PersistThinking = override.CustomerChat.PersistThinking
+	if override.CustomerChat.RouterTemperature != nil {
+		value := *override.CustomerChat.RouterTemperature
+		settings.CustomerChat.RouterTemperature = &value
+	}
+	if override.CustomerChat.SpecialistTemperature != nil {
+		value := *override.CustomerChat.SpecialistTemperature
+		settings.CustomerChat.SpecialistTemperature = &value
 	}
 	if strings.TrimSpace(override.Support.Phone) != "" {
 		settings.Support.Phone = override.Support.Phone
@@ -306,10 +339,15 @@ func NormalizeRuntimeSettings(settings RuntimeSettings, defaults RuntimeSettings
 	if settings.CustomerChat.MaxEvidenceChars == 0 {
 		settings.CustomerChat.MaxEvidenceChars = defaults.CustomerChat.MaxEvidenceChars
 	}
+	// Runtime settings are persisted as a whole object. A missing legacy boolean
+	// decodes as false, so callers that need the historical default should rely on
+	// MergeRuntimeSettings before NormalizeRuntimeSettings.
 	settings.CustomerChat.RouterModelID = strings.TrimSpace(settings.CustomerChat.RouterModelID)
 	settings.CustomerChat.SpecialistModelID = strings.TrimSpace(settings.CustomerChat.SpecialistModelID)
 	settings.CustomerChat.RouterEnableThinking = cloneBoolPtr(settings.CustomerChat.RouterEnableThinking)
 	settings.CustomerChat.SpecialistEnableThinking = cloneBoolPtr(settings.CustomerChat.SpecialistEnableThinking)
+	settings.CustomerChat.RouterTemperature = cloneFloatPtr(settings.CustomerChat.RouterTemperature)
+	settings.CustomerChat.SpecialistTemperature = cloneFloatPtr(settings.CustomerChat.SpecialistTemperature)
 	if strings.TrimSpace(settings.Support.Phone) == "" {
 		settings.Support.Phone = defaults.Support.Phone
 	} else {
@@ -344,6 +382,8 @@ func TrimRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	settings.CustomerChat.SpecialistModelID = strings.TrimSpace(settings.CustomerChat.SpecialistModelID)
 	settings.CustomerChat.RouterEnableThinking = cloneBoolPtr(settings.CustomerChat.RouterEnableThinking)
 	settings.CustomerChat.SpecialistEnableThinking = cloneBoolPtr(settings.CustomerChat.SpecialistEnableThinking)
+	settings.CustomerChat.RouterTemperature = cloneFloatPtr(settings.CustomerChat.RouterTemperature)
+	settings.CustomerChat.SpecialistTemperature = cloneFloatPtr(settings.CustomerChat.SpecialistTemperature)
 	settings.Support.Phone = strings.TrimSpace(settings.Support.Phone)
 	settings.Support.WeCom = strings.TrimSpace(settings.Support.WeCom)
 	settings.Sync.Remote = strings.TrimSpace(settings.Sync.Remote)
@@ -352,6 +392,14 @@ func TrimRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 }
 
 func cloneBoolPtr(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func cloneFloatPtr(value *float64) *float64 {
 	if value == nil {
 		return nil
 	}
@@ -375,6 +423,12 @@ func ValidateRuntimeSettings(settings RuntimeSettings) map[string]string {
 	}
 	if settings.CustomerChat.MaxEvidenceChars < 200 || settings.CustomerChat.MaxEvidenceChars > 20000 {
 		fields["customer_query.max_evidence_chars"] = "must be between 200 and 20000"
+	}
+	if settings.CustomerChat.RouterTemperature != nil && (*settings.CustomerChat.RouterTemperature < 0 || *settings.CustomerChat.RouterTemperature > 2) {
+		fields["customer_query.router_temperature"] = "must be between 0 and 2"
+	}
+	if settings.CustomerChat.SpecialistTemperature != nil && (*settings.CustomerChat.SpecialistTemperature < 0 || *settings.CustomerChat.SpecialistTemperature > 2) {
+		fields["customer_query.specialist_temperature"] = "must be between 0 and 2"
 	}
 	if settings.AnswerLog.RetentionDays < 1 || settings.AnswerLog.RetentionDays > 365 {
 		fields["answer_log.retention_days"] = "must be between 1 and 365"

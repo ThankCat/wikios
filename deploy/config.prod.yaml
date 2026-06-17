@@ -10,9 +10,24 @@ mounted_wiki:
 llm:
   timeout_sec: ${WIKIOS_LLM_TIMEOUT_SEC}
   admin_timeout_sec: ${WIKIOS_LLM_ADMIN_TIMEOUT_SEC}
+  # Lower = more stable/deterministic answers (recommended for grounded chat).
+  # Empty leaves the provider default. Override via WIKIOS_LLM_TEMPERATURE.
+  temperature: ${WIKIOS_LLM_TEMPERATURE}
 
 retrieval:
   top_k: 5
+  # Warm `qmd mcp --http` daemon (started by docker-entrypoint.sh) keeps the
+  # embedding/rerank models resident so customer-chat retrieval is sub-second
+  # instead of paying the qmd CLI cold-load (~15s) per query. If the daemon is
+  # down, retrieval transparently falls back to the qmd CLI path.
+  qmd_http:
+    enabled: ${WIKIOS_QMD_HTTP_ENABLED}
+    url: http://localhost:8181/mcp
+    timeout_sec: 30
+    # rerank adds ~8s of fixed cost per cold query without improving in-scope
+    # ranking here; keep it off for speed. Set true to restore LLM reranking.
+    rerank: false
+    rerank_candidates: 8
 
 workspace:
   base_dir: .workspace
@@ -36,13 +51,10 @@ sync:
 web:
   enabled: true
   dist_dir: web/dist
+  api_base_url: ${WIKIOS_WEB_API_BASE_URL}
 
 upload:
   max_text_file_kb: 500
-
-customer_intents:
-  enabled: true
-  path: configs/customer_intents.yaml
 
 customer_query:
   candidate_top_k: ${WIKIOS_CUSTOMER_CANDIDATE_TOP_K}
@@ -55,6 +67,10 @@ customer_query:
   confidence:
     direct_min: 0.70
     review_min: 0.25
+
+customer_safety_terms:
+  enabled: true
+  path: configs/customer_safety_terms.yaml
 
 support:
   phone: ${WIKIOS_SUPPORT_PHONE}

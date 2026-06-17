@@ -23,6 +23,8 @@ type customerConversationSummary struct {
 	LastQuestion        string   `json:"last_question"`
 	LastAnswer          string   `json:"last_answer"`
 	LastAnswerMode      string   `json:"last_answer_mode,omitempty"`
+	ClientChannels      []string `json:"client_channels"`
+	LastClientChannel   string   `json:"last_client_channel"`
 	Entrypoints         []string `json:"entrypoints"`
 	LastEntrypoint      string   `json:"last_entrypoint"`
 	LastSimulation      bool     `json:"last_simulation"`
@@ -46,6 +48,7 @@ type customerConversationMessage struct {
 	TraceID        string         `json:"trace_id,omitempty"`
 	MessageID      string         `json:"message_id,omitempty"`
 	AnswerMode     string         `json:"answer_mode,omitempty"`
+	ClientChannel  string         `json:"client_channel"`
 	Entrypoint     string         `json:"entrypoint"`
 	Simulation     bool           `json:"simulation"`
 	Specialist     string         `json:"specialist,omitempty"`
@@ -93,12 +96,14 @@ type customerChatLogRecord struct {
 	Question            string
 	Answer              string
 	AnswerMode          string
+	ClientChannel       string
 	Entrypoint          string
 	Simulation          bool
 	Specialist          string
 	TotalDurationMS     int64
 	SourceCount         int64
 	ReviewRequired      bool
+	ReviewQueued        bool
 	ErrorStage          string
 	ProcessSummary      string
 	Details             map[string]any
@@ -200,13 +205,14 @@ func (h *Handlers) AdminCustomerChatTrace(c *gin.Context) {
 }
 
 type customerConversationQuery struct {
-	Search     string
-	Page       int
-	PageSize   int
-	From       time.Time
-	To         time.Time
-	Entrypoint string
-	Simulation *bool
+	Search        string
+	Page          int
+	PageSize      int
+	From          time.Time
+	To            time.Time
+	Entrypoint    string
+	ClientChannel string
+	Simulation    *bool
 }
 
 func customerConversationQueryFromRequest(c *gin.Context) customerConversationQuery {
@@ -216,10 +222,11 @@ func customerConversationQueryFromRequest(c *gin.Context) customerConversationQu
 		pageSize = 100
 	}
 	query := customerConversationQuery{
-		Search:     strings.ToLower(strings.TrimSpace(c.Query("q"))),
-		Page:       page,
-		PageSize:   pageSize,
-		Entrypoint: normalizeCustomerConversationEntrypoint(c.Query("entrypoint")),
+		Search:        strings.ToLower(strings.TrimSpace(c.Query("q"))),
+		Page:          page,
+		PageSize:      pageSize,
+		Entrypoint:    normalizeCustomerConversationEntrypoint(c.Query("entrypoint")),
+		ClientChannel: normalizeCustomerConversationClientChannel(c.Query("client_channel")),
 	}
 	if simulation, ok := parseCustomerConversationBool(c.Query("simulation")); ok {
 		query.Simulation = &simulation
@@ -255,6 +262,9 @@ func filterCustomerChatLogRecords(records []customerChatLogRecord, query custome
 			continue
 		}
 		if query.Entrypoint != "" && record.Entrypoint != query.Entrypoint {
+			continue
+		}
+		if query.ClientChannel != "" && record.ClientChannel != query.ClientChannel {
 			continue
 		}
 		if query.Simulation != nil && record.Simulation != *query.Simulation {
@@ -422,6 +432,7 @@ func customerChatLogRecordFromMap(entry map[string]any, fallbackID string) custo
 	runtimeInfo := mapValue(entry["runtime"])
 	requestInfo := mapValue(entry["request"])
 	finalInfo := mapValue(entry["final"])
+	reviewDecisionInfo := mapValue(entry["review_decision"])
 	specialistInfo := mapValue(entry["specialist"])
 	specialistOutput := mapValue(specialistInfo["output"])
 	errorInfo := mapValue(entry["error"])
@@ -435,6 +446,7 @@ func customerChatLogRecordFromMap(entry map[string]any, fallbackID string) custo
 	questionCreatedAt := receivedAt
 	answerMode := firstNonEmpty(stringMapValue(finalInfo, "answer_mode"), stringMapValue(specialistOutput, "answer_mode"))
 	entrypoint := firstNonEmpty(normalizeCustomerConversationEntrypoint(stringMapValue(runtimeInfo, "entrypoint")), "external")
+	clientChannel := firstNonEmpty(normalizeCustomerConversationClientChannel(stringMapValue(runtimeInfo, "client_channel")), "web")
 	errorStage := stringMapValue(errorInfo, "stage")
 	if errorStage == "" && entry["error"] != nil {
 		errorStage = "unknown"
@@ -459,12 +471,14 @@ func customerChatLogRecordFromMap(entry map[string]any, fallbackID string) custo
 		Question:            stringMapValue(requestInfo, "message"),
 		Answer:              stringMapValue(finalInfo, "answer"),
 		AnswerMode:          answerMode,
+		ClientChannel:       clientChannel,
 		Entrypoint:          entrypoint,
 		Simulation:          boolMapValue(runtimeInfo, "simulation"),
 		Specialist:          firstNonEmpty(stringMapValue(specialistInfo, "name"), stringMapValue(specialistOutput, "specialist")),
 		TotalDurationMS:     int64MapValue(timeInfo, "total_duration_ms"),
 		SourceCount:         int64MapValue(finalInfo, "source_count"),
 		ReviewRequired:      boolMapValue(finalInfo, "review_required"),
+		ReviewQueued:        boolMapValue(reviewDecisionInfo, "create_review"),
 		ErrorStage:          errorStage,
 		ProcessSummary:      processSummary,
 		Details:             details,
@@ -480,6 +494,7 @@ func customerChatLogRecordFromMap(entry map[string]any, fallbackID string) custo
 		record.Question,
 		record.Answer,
 		record.AnswerMode,
+		record.ClientChannel,
 		record.Entrypoint,
 		record.Specialist,
 		record.ErrorStage,
@@ -510,6 +525,7 @@ func summarizeCustomerConversation(records []customerChatLogRecord) customerConv
 	first := records[0]
 	last := records[len(records)-1]
 	entrypoints := customerConversationEntrypoints(records)
+	clientChannels := customerConversationClientChannels(records)
 	errorCount := 0
 	reviewRequiredCount := 0
 	totalDurationMS := int64(0)
@@ -518,7 +534,11 @@ func summarizeCustomerConversation(records []customerChatLogRecord) customerConv
 		if record.ErrorStage != "" {
 			errorCount++
 		}
-		if record.ReviewRequired {
+		// Count turns that actually entered the human review queue
+		// (review_decision.create_review), not the model's raw review_required
+		// flag, so the badge matches the 审查 queue. Simulation runs and other
+		// non-queued cases (boundary_refusal, high-confidence answers) are excluded.
+		if record.ReviewQueued {
 			reviewRequiredCount++
 		}
 		if record.TotalDurationMS > 0 {
@@ -539,6 +559,8 @@ func summarizeCustomerConversation(records []customerChatLogRecord) customerConv
 		LastQuestion:        truncateCustomerConversationText(last.Question, 120),
 		LastAnswer:          truncateCustomerConversationText(last.Answer, 160),
 		LastAnswerMode:      last.AnswerMode,
+		ClientChannels:      clientChannels,
+		LastClientChannel:   firstNonEmpty(last.ClientChannel, "web"),
 		Entrypoints:         entrypoints,
 		LastEntrypoint:      last.Entrypoint,
 		LastSimulation:      last.Simulation,
@@ -553,6 +575,21 @@ func summarizeCustomerConversation(records []customerChatLogRecord) customerConv
 		StartedAt:           firstNonEmpty(first.QuestionCreatedAt, first.ReceivedAt, first.LoggedAt),
 		UpdatedAt:           firstNonEmpty(last.AnsweredAt, last.ReceivedAt, last.LoggedAt),
 	}
+}
+
+func customerConversationClientChannels(records []customerChatLogRecord) []string {
+	seen := map[string]bool{}
+	channels := []string{}
+	for _, record := range records {
+		channel := firstNonEmpty(normalizeCustomerConversationClientChannel(record.ClientChannel), "web")
+		if seen[channel] {
+			continue
+		}
+		seen[channel] = true
+		channels = append(channels, channel)
+	}
+	sort.Strings(channels)
+	return channels
 }
 
 func customerConversationEntrypoints(records []customerChatLogRecord) []string {
@@ -582,6 +619,7 @@ func customerConversationMessages(records []customerChatLogRecord) []customerCon
 			CreatedAt:      firstNonEmpty(record.QuestionCreatedAt, record.ReceivedAt, record.LoggedAt),
 			TraceID:        record.TraceID,
 			MessageID:      record.QuestionMessageID,
+			ClientChannel:  record.ClientChannel,
 			Entrypoint:     record.Entrypoint,
 			Simulation:     record.Simulation,
 			Specialist:     record.Specialist,
@@ -598,6 +636,7 @@ func customerConversationMessages(records []customerChatLogRecord) []customerCon
 			TraceID:        record.TraceID,
 			MessageID:      record.AnswerMessageID,
 			AnswerMode:     record.AnswerMode,
+			ClientChannel:  record.ClientChannel,
 			Entrypoint:     record.Entrypoint,
 			Simulation:     record.Simulation,
 			Specialist:     record.Specialist,
@@ -752,6 +791,17 @@ func normalizeCustomerConversationEntrypoint(value string) string {
 		return "external"
 	case "internal":
 		return "internal"
+	default:
+		return ""
+	}
+}
+
+func normalizeCustomerConversationClientChannel(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "web":
+		return "web"
+	case "mobile_app":
+		return "mobile_app"
 	default:
 		return ""
 	}

@@ -1,7 +1,7 @@
 "use client";
 
 import { ReactNode, useMemo, useState } from "react";
-import { AlertTriangle, Bot, Braces, BrainCircuit, Cog, Database, FileJson2, GitBranch, MessageSquareQuote, Route, Search } from "lucide-react";
+import { Activity, AlertTriangle, Bot, Braces, BrainCircuit, Cog, Database, FileJson2, GitBranch, MessageSquareQuote, Route, Search } from "lucide-react";
 
 import { ScrollJumpControls } from "@/components/ui/scroll-jump-controls";
 import { TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -21,7 +21,7 @@ type Props = {
 };
 
 type DetailTab = "reasoning" | "model" | "prompt" | "tools" | "execution" | "result";
-type CustomerTraceTab = "summary" | "request" | "router" | "retrieval" | "specialist" | "final" | "review" | "error";
+type CustomerTraceTab = "summary" | "request" | "router" | "observability" | "retrieval" | "specialist" | "final" | "review" | "error";
 
 type TabConfig<T extends string = DetailTab> = {
   id: T;
@@ -42,8 +42,9 @@ const customerTraceTabs: TabConfig<CustomerTraceTab>[] = [
   { id: "summary", label: "摘要", icon: FileJson2 },
   { id: "request", label: "请求", icon: MessageSquareQuote },
   { id: "router", label: "路由", icon: Route },
+  { id: "observability", label: "观测", icon: Activity },
   { id: "retrieval", label: "检索", icon: Search },
-  { id: "specialist", label: "技术专家", icon: Bot },
+  { id: "specialist", label: "模型", icon: Bot },
   { id: "final", label: "最终", icon: FileJson2 },
   { id: "review", label: "审查", icon: BrainCircuit },
   { id: "error", label: "错误", icon: AlertTriangle },
@@ -192,6 +193,7 @@ function CustomerChatTraceDetails({ trace, leadingContent }: { trace: Record<str
       {resolvedTab === "summary" ? <CustomerTraceSummaryPanel trace={trace} /> : null}
       {resolvedTab === "request" ? <CustomerTraceRequestPanel request={asObject(trace.request)} /> : null}
       {resolvedTab === "router" ? <CustomerTraceRouterPanel router={asObject(trace.router)} /> : null}
+      {resolvedTab === "observability" ? <CustomerTraceObservabilityPanel observability={asObject(trace.observability)} router={asObject(trace.router)} retrieval={asObject(trace.retrieval)} /> : null}
       {resolvedTab === "retrieval" ? <CustomerTraceRetrievalPanel retrieval={asObject(trace.retrieval)} /> : null}
       {resolvedTab === "specialist" ? <CustomerTraceSpecialistPanel specialist={asObject(trace.specialist)} /> : null}
       {resolvedTab === "final" ? <CustomerTraceFinalPanel final={asObject(trace.final)} /> : null}
@@ -204,10 +206,13 @@ function CustomerChatTraceDetails({ trace, leadingContent }: { trace: Record<str
 function CustomerTraceSummaryPanel({ trace }: { trace: Record<string, unknown> }) {
   const time = asObject(trace.time);
   const runtime = asObject(trace.runtime);
-  const knownKeys = new Set(["schema_version", "record_type", "trace_id", "session_id", "time", "runtime", "request", "router", "retrieval", "specialist", "final", "error", "review"]);
+  const knownKeys = new Set(["schema_version", "record_type", "trace_id", "session_id", "time", "runtime", "request", "router", "observability", "retrieval", "specialist", "final", "error", "review"]);
   const extra = Object.fromEntries(Object.entries(trace).filter(([key]) => !knownKeys.has(key)));
   const errorObject = trace.error == null ? null : asObject(trace.error);
   const final = asObject(trace.final);
+  const observability = asObject(trace.observability);
+  const decision = asObject(observability.decision);
+  const qualitySignals = Array.isArray(observability.quality_signals) ? observability.quality_signals : [];
 
   return (
     <div className="min-w-0 space-y-3">
@@ -220,9 +225,14 @@ function CustomerTraceSummaryPanel({ trace }: { trace: Record<string, unknown> }
           <SummaryLine label="Trace ID" value={textValue(trace.trace_id) || "-"} />
           <SummaryLine label="会话" value={textValue(trace.session_id) || "-"} />
           <SummaryLine label="入口" value={textValue(runtime.entrypoint) || "-"} />
+          <SummaryLine label="渠道" value={textValue(runtime.client_channel) || "web"} />
           <SummaryLine label="测试请求" value={simulationText(runtime.simulation)} />
           <SummaryLine label="模式" value={textValue(runtime.customer_chat_mode) || "-"} />
           <SummaryLine label="回答模式" value={textValue(final.answer_mode) || "-"} />
+          <SummaryLine label="用户意图" value={userIntentLabel(textValue(asObject(final.user_intent).type))} />
+          <SummaryLine label="问题阶段" value={stageLabel(textValue(decision.question_stage))} />
+          <SummaryLine label="回答策略" value={strategyLabel(textValue(decision.answer_strategy))} />
+          <SummaryLine label="质量信号" value={qualitySignals.length ? `${qualitySignals.length} 条` : "无"} />
           <SummaryLine label="总耗时" value={durationText(time.total_duration_ms)} />
           <SummaryLine label="错误状态" value={errorObject ? textValue(errorObject.stage) || "有错误" : "无错误"} />
           <SummaryLine label="接收时间" value={dateText(time.received_at)} />
@@ -287,7 +297,14 @@ function CustomerTraceRouterPanel({ router }: { router: Record<string, unknown> 
         <div className="grid gap-2 md:grid-cols-2">
           <SummaryLine label="模型" value={modelLabel(model)} />
           <SummaryLine label="耗时" value={durationText(router.duration_ms)} />
-          <SummaryLine label="技术专家" value={textValue(output.specialist) || "-"} />
+          <SummaryLine label="目标角色" value={textValue(output.specialist) || "-"} />
+          <SummaryLine label="问题阶段" value={stageLabel(textValue(output.question_stage))} />
+          <SummaryLine label="客户目标" value={textValue(output.user_goal) || "-"} multiline />
+          <SummaryLine label="回答策略" value={strategyLabel(textValue(output.answer_strategy))} />
+          <SummaryLine label="边界" value={boundaryLabel(textValue(output.risk_boundary))} />
+          <SummaryLine label="已有产品" value={booleanText(output.has_product)} />
+          <SummaryLine label="需问产品" value={booleanText(output.needs_product_clarification)} />
+          <SummaryLine label="追问槽位" value={textValue(output.clarification_target) || "-"} />
           <SummaryLine label="意图" value={textValue(output.intent) || "-"} />
           <SummaryLine label="路由置信度" value={textValue(output.routing_confidence) || "-"} />
           <SummaryLine label="是否检索" value={booleanText(output.needs_retrieval)} />
@@ -310,6 +327,112 @@ function CustomerTraceRouterPanel({ router }: { router: Record<string, unknown> 
   );
 }
 
+function CustomerTraceObservabilityPanel({
+  observability,
+  router,
+  retrieval,
+}: {
+  observability: Record<string, unknown>;
+  router: Record<string, unknown>;
+  retrieval: Record<string, unknown>;
+}) {
+  const routerOutput = asObject(router.output);
+  const decision = Object.keys(asObject(observability.decision)).length > 0 ? asObject(observability.decision) : routerOutput;
+  const clarification = asObject(observability.clarification);
+  const hardStop = asObject(observability.hard_stop);
+  const diagnostics = Object.keys(asObject(observability.retrieval_diagnostics)).length > 0 ? asObject(observability.retrieval_diagnostics) : retrieval;
+  const signals = Array.isArray(observability.quality_signals) ? observability.quality_signals : [];
+
+  return (
+    <div className="min-w-0 space-y-3">
+      <section className="min-w-0 rounded-lg border border-border bg-card p-3 dark:border-border dark:bg-card">
+        <div className="mb-3 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+          <Activity className="h-3.5 w-3.5" />
+          决策观测
+        </div>
+        <div className="grid gap-2 md:grid-cols-2">
+          <SummaryLine label="问题阶段" value={stageLabel(textValue(decision.question_stage))} />
+          <SummaryLine label="客户目标" value={textValue(decision.user_goal) || "-"} multiline />
+          <SummaryLine label="目标角色" value={textValue(decision.specialist) || "-"} />
+          <SummaryLine label="回答策略" value={strategyLabel(textValue(decision.answer_strategy))} />
+          <SummaryLine label="边界" value={boundaryLabel(textValue(decision.risk_boundary))} />
+          <SummaryLine label="路由置信度" value={textValue(decision.routing_confidence) || "-"} />
+          <SummaryLine label="需要检索" value={booleanText(decision.needs_retrieval)} />
+          <SummaryLine label="Query 数" value={textValue(decision.retrieval_query_count) || "-"} />
+        </div>
+      </section>
+      <div className="grid gap-3 md:grid-cols-2">
+        <section className="min-w-0 rounded-lg border border-border bg-card p-3 dark:border-border dark:bg-card">
+          <div className="mb-3 text-xs font-medium text-muted-foreground">澄清判断</div>
+          <div className="space-y-2">
+            <SummaryLine label="需要澄清" value={booleanText(clarification.needed ?? decision.needs_product_clarification)} />
+            <SummaryLine label="目标槽位" value={textValue(clarification.target ?? decision.clarification_target) || "-"} />
+            <SummaryLine label="原因" value={textValue(clarification.reason) || "-"} multiline />
+          </div>
+        </section>
+        <section className="min-w-0 rounded-lg border border-border bg-card p-3 dark:border-border dark:bg-card">
+          <div className="mb-3 text-xs font-medium text-muted-foreground">硬停判断</div>
+          <div className="space-y-2">
+            <SummaryLine label="类型" value={textValue(hardStop.type) || "none"} />
+            <SummaryLine label="边界" value={boundaryLabel(textValue(hardStop.risk_boundary ?? decision.risk_boundary))} />
+            <SummaryLine label="备注" value={textValue(hardStop.handoff_notes) || "-"} multiline />
+          </div>
+        </section>
+      </div>
+      <QualitySignalList items={signals} />
+      <section className="min-w-0 rounded-lg border border-border bg-card p-3 dark:border-border dark:bg-card">
+        <div className="mb-3 text-xs font-medium text-muted-foreground">检索诊断</div>
+        <div className="grid gap-2 md:grid-cols-2">
+          <SummaryLine label="请求检索" value={booleanText(diagnostics.requested ?? routerOutput.needs_retrieval)} />
+          <SummaryLine label="实际执行" value={booleanText(diagnostics.executed)} />
+          <SummaryLine label="候选数" value={textValue(diagnostics.candidate_count) || textValue(diagnostics.source_count) || "0"} />
+          <SummaryLine label="证据数" value={textValue(diagnostics.source_count) || "0"} />
+          <SummaryLine label="TopK" value={textValue(diagnostics.candidate_top_k) || "-"} />
+          <SummaryLine label="耗时" value={durationText(diagnostics.duration_ms ?? retrieval.duration_ms)} />
+        </div>
+      </section>
+      <PanelBlock title="观测 JSON" value={observability} />
+    </div>
+  );
+}
+
+function QualitySignalList({ items }: { items: unknown[] }) {
+  if (items.length === 0) {
+    return (
+      <section className="min-w-0 rounded-lg border border-border bg-muted/40 p-4 text-sm text-foreground">
+        没有记录质量预警。
+      </section>
+    );
+  }
+  return (
+    <section className="min-w-0 rounded-lg border border-border bg-card p-3 dark:border-border dark:bg-card">
+      <div className="mb-3 text-xs font-medium text-muted-foreground">质量信号</div>
+      <div className="space-y-2">
+        {items.map((item, index) => {
+          const signal = asObject(item);
+          const severity = textValue(signal.severity);
+          return (
+            <div
+              key={index}
+              className={cn(
+                "rounded-md border p-3",
+                severity === "critical"
+                  ? "border-destructive/30 bg-destructive/10 text-destructive"
+                  : severity === "warning"
+                    ? "border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200"
+                    : "border-border bg-muted/40 text-foreground dark:border-border dark:bg-secondary/60",
+              )}
+            >
+              <div className="text-xs font-semibold">{textValue(signal.code) || `signal_${index + 1}`}</div>
+              <div className="mt-1 text-sm leading-6">{textValue(signal.message) || "-"}</div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function CustomerTraceRetrievalPanel({ retrieval }: { retrieval: Record<string, unknown> }) {
   const evidencePreview = Array.isArray(retrieval.evidence_preview) ? retrieval.evidence_preview : [];
   return (
@@ -320,7 +443,7 @@ function CustomerTraceRetrievalPanel({ retrieval }: { retrieval: Record<string, 
           检索概览
         </div>
         <div className="grid gap-2 md:grid-cols-2">
-          <SummaryLine label="目标技术专家" value={textValue(retrieval.target_specialist) || "-"} />
+          <SummaryLine label="目标角色" value={textValue(retrieval.target_specialist) || "-"} />
           <SummaryLine label="范围" value={textValue(retrieval.scope) || "-"} />
           <SummaryLine label="耗时" value={durationText(retrieval.duration_ms)} />
           <SummaryLine label="执行方" value={textValue(retrieval.executed_by) || "-"} />
@@ -353,9 +476,9 @@ function CustomerTraceSpecialistPanel({ specialist }: { specialist: Record<strin
   return (
     <div className="min-w-0 space-y-3">
       <section className="min-w-0 rounded-lg border border-border bg-card p-3 dark:border-border dark:bg-card">
-        <div className="mb-3 text-xs font-medium text-muted-foreground">技术专家回答</div>
+        <div className="mb-3 text-xs font-medium text-muted-foreground">模型回答</div>
         <div className="grid gap-2 md:grid-cols-2">
-          <SummaryLine label="技术专家" value={textValue(specialist.name) || "-"} />
+          <SummaryLine label="目标角色" value={textValue(specialist.name) || "-"} />
           <SummaryLine label="模型" value={modelLabel(model)} />
           <SummaryLine label="耗时" value={durationText(specialist.duration_ms)} />
           <SummaryLine label="回答模式" value={textValue(output.answer_mode) || "-"} />
@@ -365,7 +488,7 @@ function CustomerTraceSpecialistPanel({ specialist }: { specialist: Record<strin
           <SummaryLine label="备注" value={textValue(output.notes) || "-"} multiline />
         </div>
       </section>
-      <ThinkingBlock title="技术专家思考" thinking={asObject(specialist.thinking)} />
+      <ThinkingBlock title="模型思考" thinking={asObject(specialist.thinking)} />
       <SummaryLine label="客户可见答案" value={textValue(output.answer) || "-"} multiline />
       {promptMessages.length > 0 ? (
         <div className="space-y-3">
@@ -382,13 +505,16 @@ function CustomerTraceSpecialistPanel({ specialist }: { specialist: Record<strin
         <PanelBlock title={promptMessages.length > 0 ? "输入摘要" : "输入 Input"} value={inputSummary} />
         <PanelBlock title="来源 Sources" value={output.sources ?? []} />
       </div>
-      <PanelBlock title="技术专家输出 JSON" value={output} />
-      {specialist.raw_output ? <PanelBlock title="技术专家原始输出" value={specialist.raw_output} /> : null}
+      <PanelBlock title="模型输出 JSON" value={output} />
+      {specialist.raw_output ? <PanelBlock title="模型原始输出" value={specialist.raw_output} /> : null}
     </div>
   );
 }
 
 function CustomerTraceFinalPanel({ final }: { final: Record<string, unknown> }) {
+  const userIntent = asObject(final.user_intent);
+  const intentType = textValue(userIntent.type);
+  const intentExtra = asObject(userIntent.extra);
   return (
     <div className="min-w-0 space-y-3">
       <section className="min-w-0 rounded-lg border border-border bg-card p-3 dark:border-border dark:bg-card">
@@ -397,6 +523,13 @@ function CustomerTraceFinalPanel({ final }: { final: Record<string, unknown> }) 
           <SummaryLine label="回答模式" value={textValue(final.answer_mode) || "-"} />
           <SummaryLine label="来源数" value={textValue(final.source_count) || "0"} />
           <SummaryLine label="需要审查" value={booleanText(final.review_required)} />
+          <SummaryLine label="用户意图" value={userIntentLabel(intentType)} />
+          {intentType === "discount" ? (
+            <>
+              <SummaryLine label="意图·产品类型" value={productTypeLabel(textValue(intentExtra.product_type))} />
+              <SummaryLine label="意图·数量" value={textValue(intentExtra.quantity) || "-"} />
+            </>
+          ) : null}
         </div>
         <div className="mt-3">
           <SummaryLine label="客户可见答案" value={textValue(final.answer) || "-"} multiline />
@@ -454,6 +587,11 @@ function ThinkingBlock({ title, thinking }: { title: string; thinking: Record<st
   const enabled = thinking.enabled === true;
   const saved = thinking.saved === true;
   const content = textValue(thinking.content);
+  const reason = textValue(thinking.unavailable_reason);
+  const omitted = thinking.omitted === true;
+  const emptyMessage = omitted
+    ? "thinking 内容未持久化，只保留是否产生和字符数。"
+    : reason || "没有保存 thinking 内容。";
   return (
     <section className="min-w-0 rounded-lg border border-border bg-card p-3 dark:border-border dark:bg-card">
       <div className="mb-3 text-xs font-medium text-muted-foreground">{title}</div>
@@ -462,7 +600,7 @@ function ThinkingBlock({ title, thinking }: { title: string; thinking: Record<st
         <SummaryLine label="已保存" value={saved ? "true" : "false"} />
         <SummaryLine label="字符数" value={textValue(thinking.chars) || "0"} />
       </div>
-      {content ? <CodeBlock value={content} /> : <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">没有保存 thinking 内容。</div>}
+      {content ? <CodeBlock value={content} /> : <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">{emptyMessage}</div>}
     </section>
   );
 }
@@ -693,11 +831,128 @@ function callerResponseJSON(object: Record<string, unknown>, message?: Props["me
   if ("answer" in source || "received_at" in source || "answered_at" in source) {
     return {
       answer: typeof source.answer === "string" ? source.answer : message?.answer ?? "",
+      answer_mode: typeof source.answer_mode === "string" ? source.answer_mode : null,
+      review_required: typeof source.review_required === "boolean" ? source.review_required : null,
+      source_count: typeof source.source_count === "number" ? source.source_count : null,
+      user_intent: "user_intent" in source ? source.user_intent ?? null : null,
       received_at: typeof source.received_at === "string" ? source.received_at : null,
       answered_at: typeof source.answered_at === "string" ? source.answered_at : null,
     };
   }
   return source;
+}
+
+function userIntentLabel(type: string) {
+  switch (type) {
+    case "wecom":
+      return "企业微信 (wecom)";
+    case "refund":
+      return "退款 (refund)";
+    case "switch_ip":
+      return "切换IP (switch_ip)";
+    case "discount":
+      return "申请优惠 (discount)";
+    default:
+      return "无";
+  }
+}
+
+function productTypeLabel(product: string) {
+  switch (product) {
+    case "static_ip":
+      return "静态IP (static_ip)";
+    case "dynamic_ip":
+      return "动态IP (dynamic_ip)";
+    case "overseas_ip":
+      return "海外IP (overseas_ip)";
+    case "residential_ip":
+      return "住宅IP (residential_ip)";
+    case "datacenter_ip":
+      return "数据中心IP (datacenter_ip)";
+    case "unlimited_ip":
+      return "无限IP (unlimited_ip)";
+    case "mobile_proxy":
+      return "手机代理 (mobile_proxy)";
+    case "":
+      return "-";
+    default:
+      return product;
+  }
+}
+
+function stageLabel(stage: string) {
+  switch (stage) {
+    case "goal_consulting":
+      return "目标咨询 (goal_consulting)";
+    case "product_selection":
+      return "产品选型 (product_selection)";
+    case "operation_howto":
+      return "操作方法 (operation_howto)";
+    case "troubleshooting":
+      return "故障排查 (troubleshooting)";
+    case "pricing":
+      return "价格报价 (pricing)";
+    case "purchase":
+      return "购买开通 (purchase)";
+    case "after_sales":
+      return "售后财务 (after_sales)";
+    case "safety_boundary":
+      return "安全边界 (safety_boundary)";
+    case "reception":
+      return "接待 (reception)";
+    case "":
+      return "-";
+    default:
+      return stage;
+  }
+}
+
+function strategyLabel(strategy: string) {
+  switch (strategy) {
+    case "answer_with_evidence":
+      return "查资料直接答";
+    case "recommend_with_boundary":
+      return "推荐并说明边界";
+    case "ask_clarification":
+      return "先追问";
+    case "troubleshoot_steps":
+      return "排查步骤";
+    case "quote_or_price":
+      return "报价";
+    case "purchase_guidance":
+      return "购买指引";
+    case "refuse_with_boundary":
+      return "边界拒答";
+    case "smalltalk":
+      return "接待寒暄";
+    case "":
+      return "-";
+    default:
+      return strategy;
+  }
+}
+
+function boundaryLabel(boundary: string) {
+  switch (boundary) {
+    case "none":
+      return "无";
+    case "platform_result_not_guaranteed":
+      return "平台结果不承诺";
+    case "safety_refusal":
+      return "安全拒答";
+    case "overseas_access_boundary":
+      return "海外访问边界";
+    case "internal_security_boundary":
+      return "内部安全边界";
+    case "pricing_review":
+      return "价格需按资料";
+    case "after_sales_review":
+      return "售后需谨慎";
+    case "":
+      return "-";
+    default:
+      return boundary;
+  }
 }
 
 function SummaryLine({

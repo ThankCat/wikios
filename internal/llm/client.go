@@ -33,13 +33,17 @@ type ClientConfig struct {
 	APIKey     string
 	BaseURL    string
 	TimeoutSec int
+	// Temperature, when non-nil, is sent on every chat request to control
+	// sampling randomness. Nil leaves it unset (provider default applies).
+	Temperature *float64
 }
 
 type OpenAICompatibleClient struct {
-	baseURL string
-	apiKey  string
-	timeout time.Duration
-	client  *http.Client
+	baseURL     string
+	apiKey      string
+	timeout     time.Duration
+	temperature *float64
+	client      *http.Client
 }
 
 func NewClient(cfg ClientConfig) Client {
@@ -48,16 +52,18 @@ func NewClient(cfg ClientConfig) Client {
 		timeout = 90 * time.Second
 	}
 	return &OpenAICompatibleClient{
-		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
-		apiKey:  cfg.APIKey,
-		timeout: timeout,
-		client:  &http.Client{},
+		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
+		apiKey:      cfg.APIKey,
+		timeout:     timeout,
+		temperature: cfg.Temperature,
+		client:      &http.Client{},
 	}
 }
 
 type requestTimeoutKey struct{}
 type enableThinkingKey struct{}
 type responseFormatKey struct{}
+type temperatureKey struct{}
 
 type ResponseFormat struct {
 	Type       string                    `json:"type"`
@@ -84,6 +90,13 @@ func WithEnableThinking(ctx context.Context, enabled *bool) context.Context {
 	return context.WithValue(ctx, enableThinkingKey{}, *enabled)
 }
 
+func WithTemperature(ctx context.Context, temperature *float64) context.Context {
+	if temperature == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, temperatureKey{}, *temperature)
+}
+
 func WithResponseFormat(ctx context.Context, format *ResponseFormat) context.Context {
 	if format == nil || strings.TrimSpace(format.Type) == "" {
 		return ctx
@@ -97,6 +110,7 @@ type chatRequest struct {
 	Stream         bool            `json:"stream,omitempty"`
 	EnableThinking *bool           `json:"enable_thinking,omitempty"`
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+	Temperature    *float64        `json:"temperature,omitempty"`
 }
 
 type chatResponse struct {
@@ -157,6 +171,10 @@ func (c *OpenAICompatibleClient) doChat(ctx context.Context, model string, messa
 	if value, ok := ctx.Value(responseFormatKey{}).(ResponseFormat); ok {
 		responseFormat = &value
 	}
+	temperature := c.temperature
+	if value, ok := ctx.Value(temperatureKey{}).(float64); ok {
+		temperature = &value
+	}
 	var lastErr error
 	fallbackToJSONObject := false
 	for attempt := 0; attempt < maxTransientLLMAttempts; attempt++ {
@@ -170,6 +188,7 @@ func (c *OpenAICompatibleClient) doChat(ctx context.Context, model string, messa
 			Stream:         stream,
 			EnableThinking: enableThinking,
 			ResponseFormat: payloadResponseFormat,
+			Temperature:    temperature,
 		})
 		if err != nil {
 			return "", err

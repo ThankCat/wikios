@@ -22,7 +22,7 @@ func TestRouterServesMissingWebBuildPage(t *testing.T) {
 	}
 	cfg := &config.Config{
 		MountedWiki: config.MountedWikiConfig{Name: "fixture-wiki"},
-		Web:         config.WebConfig{DistDir: filepath.Join(t.TempDir(), "dist")},
+		Web:         config.WebConfig{DistDir: filepath.Join(t.TempDir(), "dist"), APIBaseURL: "https://admin.example.com"},
 	}
 	router := app.NewRouter(cfg, &api.Handlers{}, dataStore)
 
@@ -45,12 +45,13 @@ func TestRouterServesMissingWebBuildPage(t *testing.T) {
 	}
 	var payload struct {
 		MountedWikiName string `json:"mountedWikiName"`
+		APIBaseURL      string `json:"apiBaseURL"`
 		WebEnabled      bool   `json:"webEnabled"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode app config: %v", err)
 	}
-	if payload.MountedWikiName != "fixture-wiki" || !payload.WebEnabled {
+	if payload.MountedWikiName != "fixture-wiki" || payload.APIBaseURL != "https://admin.example.com" || !payload.WebEnabled {
 		t.Fatalf("unexpected app config payload: %+v", payload)
 	}
 }
@@ -122,6 +123,33 @@ func TestRouterCORSAllowsModelManagementMethods(t *testing.T) {
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {
 		if !strings.Contains(allowedMethods, method) {
 			t.Fatalf("expected CORS methods to include %s, got %q", method, allowedMethods)
+		}
+	}
+}
+
+func TestRouterCORSAllowsWebViewOrigins(t *testing.T) {
+	dataStore, err := store.Open(filepath.Join(t.TempDir(), "service.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	cfg := &config.Config{
+		MountedWiki: config.MountedWikiConfig{Name: "fixture-wiki"},
+		Web:         config.WebConfig{DistDir: filepath.Join(t.TempDir(), "dist")},
+	}
+	router := app.NewRouter(cfg, &api.Handlers{}, dataStore)
+
+	for _, origin := range []string{"null", "https://192.168.0.26"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodOptions, "/api/v1/admin/customer-conversations", nil)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("expected 204 for origin %q, got %d", origin, rec.Code)
+		}
+		if got := rec.Result().Header.Get("Access-Control-Allow-Origin"); got != origin {
+			t.Fatalf("expected allow origin %q, got %q", origin, got)
 		}
 	}
 }

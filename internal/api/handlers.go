@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,8 +39,8 @@ type Handlers struct {
 	Sync                *service.SyncService
 	Store               *store.Store
 	Config              *config.Config
-	CustomerIntents     *service.CustomerIntentManager
 	ContextCounter      *service.ContextCounter
+	SafetyTerms         *service.CustomerSafetyTermManager
 }
 
 func NewHandlers(
@@ -50,8 +51,8 @@ func NewHandlers(
 	syncSvc *service.SyncService,
 	dataStore *store.Store,
 	cfg *config.Config,
-	customerIntents *service.CustomerIntentManager,
 	contextCounter *service.ContextCounter,
+	safetyTerms *service.CustomerSafetyTermManager,
 ) *Handlers {
 	return &Handlers{
 		CustomerChatService: customerQuery,
@@ -61,8 +62,8 @@ func NewHandlers(
 		Sync:                syncSvc,
 		Store:               dataStore,
 		Config:              cfg,
-		CustomerIntents:     customerIntents,
 		ContextCounter:      contextCounter,
+		SafetyTerms:         safetyTerms,
 	}
 }
 
@@ -80,6 +81,7 @@ type customerChatRequest struct {
 	Stream           bool           `json:"stream,omitempty"`
 	Simulation       bool           `json:"simulation,omitempty"`
 	Entrypoint       string         `json:"entrypoint,omitempty"`
+	ClientChannel    string         `json:"client_channel,omitempty"`
 	UserID           string         `json:"user_id"`
 	SessionID        string         `json:"session_id"`
 	MessageID        string         `json:"message_id"`
@@ -144,11 +146,11 @@ const chatHistoryLimit = 8
 const defaultCustomerChatResponseTimeoutSec = 300
 const customerChatTimeoutFallbackMessage = "当前在线回复暂时不可用，请稍后再试。"
 
-type customerIntentsUpdateRequest struct {
-	Source string `json:"source"`
-}
-
 type runtimeSettingsRequest = service.RuntimeSettings
+
+type customerSafetyTermsUpdateRequest struct {
+	Config service.CustomerSafetyTermsConfig `json:"config"`
+}
 
 type adminContextEstimateRequest adminChatRequest
 
@@ -158,6 +160,11 @@ type syncCommitRequest struct {
 }
 
 type syncPushRequest struct {
+	Remote string `json:"remote"`
+	Branch string `json:"branch"`
+}
+
+type syncPullRequest struct {
 	Remote string `json:"remote"`
 	Branch string `json:"branch"`
 }
@@ -180,6 +187,16 @@ type reviewApproveRequest struct {
 
 type reviewRejectRequest struct {
 	Reason string `json:"reason"`
+}
+
+func bindOptionalJSON(c *gin.Context, out any) error {
+	if c.Request == nil || c.Request.Body == nil || c.Request.Body == http.NoBody {
+		return nil
+	}
+	if err := c.ShouldBindJSON(out); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
 }
 
 type sseEmitter struct {
@@ -243,6 +260,18 @@ func normalizeCustomerChatAPIRequest(req *customerChatRequest) error {
 	if req.Entrypoint != "external" && req.Entrypoint != "internal" {
 		return fmt.Errorf("entrypoint must be external or internal")
 	}
+	req.ClientChannel = strings.TrimSpace(strings.ToLower(req.ClientChannel))
+	if req.ClientChannel == "" && req.Context != nil {
+		if value, ok := req.Context["client_channel"]; ok {
+			req.ClientChannel = strings.TrimSpace(strings.ToLower(fmt.Sprint(value)))
+		}
+	}
+	if req.ClientChannel == "" {
+		req.ClientChannel = "web"
+	}
+	if req.ClientChannel != "web" && req.ClientChannel != "mobile_app" {
+		return fmt.Errorf("client_channel must be web or mobile_app")
+	}
 	return nil
 }
 
@@ -292,6 +321,7 @@ func customerChatServiceRequest(req customerChatRequest, stream bool, receivedAt
 		PersistLog:        nil,
 		Simulation:        req.Simulation,
 		Entrypoint:        req.Entrypoint,
+		ClientChannel:     req.ClientChannel,
 		UserID:            req.UserID,
 		SessionID:         req.SessionID,
 		QuestionMessageID: req.MessageID,
@@ -308,9 +338,13 @@ func customerChatClientPayload(resp *service.CustomerChatResponse) gin.H {
 		return gin.H{}
 	}
 	return gin.H{
-		"answer":      resp.Answer,
-		"received_at": resp.ReceivedAt,
-		"answered_at": resp.AnsweredAt,
+		"answer":          resp.Answer,
+		"answer_mode":     resp.AnswerMode,
+		"review_required": resp.ReviewRequired,
+		"source_count":    resp.SourceCount,
+		"user_intent":     resp.UserIntent,
+		"received_at":     resp.ReceivedAt,
+		"answered_at":     resp.AnsweredAt,
 	}
 }
 
@@ -355,48 +389,6 @@ func truncateAPIText(text string, limit int) string {
 	return string(runes[:limit]) + "..."
 }
 
-func (h *Handlers) AdminGetCustomerIntents(c *gin.Context) {
-	if h.CustomerIntents == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": gin.H{"code": "CUSTOMER_INTENTS_UNAVAILABLE", "message": "customer intents are not configured"},
-		})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"source": h.CustomerIntents.SourceOrDefault(),
-		"status": h.CustomerIntents.Status(),
-	})
-}
-
-func (h *Handlers) AdminUpdateCustomerIntents(c *gin.Context) {
-	if h.CustomerIntents == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": gin.H{"code": "CUSTOMER_INTENTS_UNAVAILABLE", "message": "customer intents are not configured"},
-		})
-		return
-	}
-	var req customerIntentsUpdateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		badRequest(c, err)
-		return
-	}
-	status, err := h.CustomerIntents.Save(req.Source)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": gin.H{
-				"code":    "INVALID_CUSTOMER_INTENTS",
-				"message": err.Error(),
-			},
-			"status": status,
-		})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"source": h.CustomerIntents.SourceOrDefault(),
-		"status": status,
-	})
-}
-
 func (h *Handlers) AdminGetRuntimeSettings(c *gin.Context) {
 	snapshot, err := service.LoadRuntimeSettings(c.Request.Context(), h.Store, h.Config)
 	if err != nil {
@@ -404,6 +396,63 @@ func (h *Handlers) AdminGetRuntimeSettings(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, snapshot)
+}
+
+func (h *Handlers) AdminGetCustomerSafetyTerms(c *gin.Context) {
+	if h.SafetyTerms == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{"code": "CUSTOMER_SAFETY_TERMS_UNAVAILABLE", "message": "customer safety terms are not configured"},
+		})
+		return
+	}
+	terms, status, err := h.SafetyTerms.Config()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"source": h.SafetyTerms.SourceOrDefault(),
+			"config": terms,
+			"status": status,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"source": h.SafetyTerms.SourceOrDefault(),
+		"config": terms,
+		"status": status,
+	})
+}
+
+func (h *Handlers) AdminUpdateCustomerSafetyTerms(c *gin.Context) {
+	if h.SafetyTerms == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{"code": "CUSTOMER_SAFETY_TERMS_UNAVAILABLE", "message": "customer safety terms are not configured"},
+		})
+		return
+	}
+	var req customerSafetyTermsUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	status, err := h.SafetyTerms.SaveConfig(req.Config)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"code":    "INVALID_CUSTOMER_SAFETY_TERMS",
+				"message": err.Error(),
+			},
+			"status": status,
+		})
+		return
+	}
+	terms, loadedStatus, err := h.SafetyTerms.Config()
+	if err != nil {
+		loadedStatus = status
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"source": h.SafetyTerms.SourceOrDefault(),
+		"config": terms,
+		"status": loadedStatus,
+	})
 }
 
 func (h *Handlers) AdminUpdateRuntimeSettings(c *gin.Context) {
@@ -471,7 +520,7 @@ func (h *Handlers) AdminReviewApprove(c *gin.Context) {
 		return
 	}
 	var req reviewApproveRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindOptionalJSON(c, &req); err != nil {
 		badRequest(c, err)
 		return
 	}
@@ -496,7 +545,7 @@ func (h *Handlers) AdminReviewReject(c *gin.Context) {
 		return
 	}
 	var req reviewRejectRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindOptionalJSON(c, &req); err != nil {
 		badRequest(c, err)
 		return
 	}
@@ -1407,6 +1456,43 @@ func (h *Handlers) AdminSyncPush(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "remote": remote, "branch": branch, "stdout": result.Stdout, "stderr": result.Stderr, "exit_code": result.ExitCode})
 }
 
+func (h *Handlers) AdminSyncPull(c *gin.Context) {
+	var req syncPullRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, err)
+		return
+	}
+	runner, remote, branch := h.gitRunner(c.Request.Context(), req.Remote, req.Branch)
+	if !safeGitName(remote) || !safeGitName(branch) {
+		badRequest(c, fmt.Errorf("invalid remote or branch"))
+		return
+	}
+	status, err := h.gitStatus(c.Request.Context())
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	if !status.RepoReady || !status.RemoteReady || !status.BranchReady {
+		gitCommandError(c, http.StatusBadRequest, "GIT_PULL_NOT_READY", firstNonEmpty(status.SetupHint, "同步配置尚未就绪。"), "", "", 1)
+		return
+	}
+	if status.ChangedCount > 0 {
+		gitCommandError(c, http.StatusBadRequest, "GIT_WORKTREE_DIRTY", "当前知识库有未提交改动，无法拉取远程更新。请先提交或手动处理后再拉取。", "", "", 1)
+		return
+	}
+	result, err := runner.Run(c.Request.Context(), "pull", "--ff-only", remote, branch)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	if result.ExitCode != 0 {
+		gitCommandError(c, http.StatusBadRequest, "GIT_PULL_FAILED", "git pull failed", result.Stdout, result.Stderr, result.ExitCode)
+		return
+	}
+	log.Printf("audit sync.pull remote=%s branch=%s", remote, branch)
+	c.JSON(http.StatusOK, gin.H{"ok": true, "remote": remote, "branch": branch, "stdout": result.Stdout, "stderr": result.Stderr, "exit_code": result.ExitCode})
+}
+
 func (h *Handlers) buildDirectAdminRequest(req adminChatRequest, mode string) service.DirectAdminRequest {
 	context := map[string]any{}
 	for key, value := range req.Context {
@@ -1726,6 +1812,24 @@ func (h *Handlers) gitStatus(ctx context.Context) (syncStatusResponse, error) {
 		}
 	}
 	status.BranchReady = strings.TrimSpace(status.Branch) != "" && strings.TrimSpace(status.Branch) != "HEAD" && (upstreamReady || remoteBranchReady)
+	if status.RemoteReady && strings.TrimSpace(status.Branch) != "" {
+		fetch, fetchErr := runner.Run(ctx, "fetch", remote, status.Branch)
+		if fetchErr != nil {
+			return syncStatusResponse{}, fetchErr
+		}
+		if fetch.ExitCode == 0 {
+			if count, countErr := gitRevCount(ctx, runner, "HEAD.."+remote+"/"+status.Branch); countErr != nil {
+				return syncStatusResponse{}, countErr
+			} else {
+				status.Behind = count
+			}
+			if count, countErr := gitRevCount(ctx, runner, remote+"/"+status.Branch+"..HEAD"); countErr != nil {
+				return syncStatusResponse{}, countErr
+			} else {
+				status.Ahead = count
+			}
+		}
+	}
 	status.ChangedCount = len(status.Files)
 	status.CommitsToPush = h.gitLog(ctx, "@{u}..HEAD", 20)
 	if len(status.CommitsToPush) == 0 && remoteBranchReady {
@@ -1865,6 +1969,21 @@ func gitWorktreeDirty(ctx context.Context, runner *wikigit.Runner) (bool, error)
 		return false, fmt.Errorf("git status failed: %s", strings.TrimSpace(result.Stderr))
 	}
 	return strings.TrimSpace(result.Stdout) != "", nil
+}
+
+func gitRevCount(ctx context.Context, runner *wikigit.Runner, rev string) (int, error) {
+	result, err := runner.Run(ctx, "rev-list", "--count", rev)
+	if err != nil {
+		return 0, err
+	}
+	if result.ExitCode != 0 {
+		return 0, nil
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(result.Stdout))
+	if err != nil {
+		return 0, nil
+	}
+	return count, nil
 }
 
 func parseBranchLine(line string, status *syncStatusResponse) {

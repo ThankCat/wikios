@@ -10,9 +10,23 @@ mounted_wiki:
 llm:
   timeout_sec: 300
   admin_timeout_sec: 300
+  # Lower = more stable/deterministic answers. Leave empty for provider default.
+  # Override via WIKIOS_LLM_TEMPERATURE.
+  temperature: ${WIKIOS_LLM_TEMPERATURE}
 
 retrieval:
   top_k: 5
+  qmd_http:
+    enabled: true
+    url: http://localhost:8181/mcp
+    timeout_sec: 30
+    # The LLM reranker adds ~8s of fixed cost per cold query and does not scale
+    # down with rerank_candidates (candidateLimit tuning is a no-op for latency).
+    # Lexical+vector scores already rank the best in-scope page first (verified),
+    # so we skip rerank for speed without making answers dumber. Set true to
+    # restore LLM reranking.
+    rerank: false
+    rerank_candidates: 8
 
 workspace:
   base_dir: .workspace
@@ -36,13 +50,10 @@ sync:
 web:
   enabled: true
   dist_dir: web/dist
+  api_base_url: ${WIKIOS_WEB_API_BASE_URL}
 
 upload:
   max_text_file_kb: 500
-
-customer_intents:
-  enabled: true
-  path: configs/customer_intents.yaml
 
 customer_query:
   candidate_top_k: 6
@@ -55,6 +66,10 @@ customer_query:
   confidence:
     direct_min: 0.70
     review_min: 0.25
+
+customer_safety_terms:
+  enabled: true
+  path: configs/customer_safety_terms.yaml
 
 support:
   phone: "400-1080-106"

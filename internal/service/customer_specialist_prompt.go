@@ -23,12 +23,26 @@ func (s *CustomerChatService) loadCustomerSpecialistSystemPrompt(profile Custome
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(basePrompt) +
-		customerSpecialistPromptSeparator + strings.TrimSpace(rolePrompt) +
-		customerSpecialistPromptSeparator + strings.TrimSpace(checkPrompt) +
-		customerSpecialistJSONOnlySuffix, nil
+	parts := []string{
+		strings.TrimSpace(basePrompt),
+		strings.TrimSpace(rolePrompt),
+	}
+	if profile.Name == "safety" {
+		if block := customerSafetyTermsPromptBlock(s.deps.SafetyTerms); block != "" {
+			parts = append(parts, block)
+		}
+	}
+	parts = append(parts, strings.TrimSpace(checkPrompt))
+	return strings.Join(parts, customerSpecialistPromptSeparator) + customerSpecialistJSONOnlySuffix, nil
 }
 
 func (s *CustomerChatService) loadCustomerSpecialistBoundary() (string, error) {
 	return s.loadPrompt(customerSpecialistBoundaryPromptFile)
+}
+
+func customerSafetyTermsPromptBlock(manager *CustomerSafetyTermManager) string {
+	if manager == nil {
+		return ""
+	}
+	return manager.PromptBlock()
 }

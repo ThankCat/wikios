@@ -9,7 +9,7 @@ WikiOS 是一个智能 Wiki 知识库微服务，核心职责是连接外挂 LLM
 ## 功能概览
 
 - Customer Chat API：面向 AI 客服系统，提供普通 JSON 和 SSE 流式问答。
-- Admin Web：内置管理后台，支持上传摄入、健康检查、综合分析、修复、资料库浏览、前置话术、同步。
+- Admin Web：内置管理后台，支持上传摄入、健康检查、综合分析、修复、资料库浏览、同步。
 - 外挂 Wiki：知识库以独立目录或独立 git 仓库挂载，默认生产路径为 `/data/wiki-repo`。
 - LLM-Wiki 治理：Wiki 层以挂载知识库的 `AGENT.md` 为最高优先级规则，维护来源、正式知识、政策、流程、对比、概念、实体、综合、意图、链接、根目录报告和演化日志。
 
@@ -125,7 +125,6 @@ http://127.0.0.1:9025/dashboard
 - 上传并摄入资料
 - 执行健康检查
 - 综合分析、修复、合并
-- 修改前置话术
 - 浏览外挂 Wiki 文件
 - 查看同步状态、生成提交信息、提交和推送 Wiki 变更
 
@@ -163,13 +162,13 @@ http://127.0.0.1:9025/dashboard
 | `llm.admin_timeout_sec` | Admin/摄入类 LLM 请求超时默认值。 |
 | `storage.sqlite_path` | 服务 SQLite 数据库路径。 |
 | `web.dist_dir` | 内置 Web 静态产物目录。 |
-| `customer_intents.path` | 前置话术 YAML 路径。 |
 | `customer_query.candidate_top_k` | Customer Chat 检索候选数量，可用 `WIKIOS_CUSTOMER_CANDIDATE_TOP_K` 配置，默认 6。 |
 | `customer_query.max_evidence_chars` | Customer Chat 单页证据最大字符数，可用 `WIKIOS_CUSTOMER_MAX_EVIDENCE_CHARS` 配置，默认 2400。 |
 | `customer_query.response_timeout_sec` | `/api/v1/customer/chat` 整体响应超时，可用 `WIKIOS_CUSTOMER_RESPONSE_TIMEOUT_SEC` 配置，默认 300 秒；上游网关/客户端超时也要同步放大。 |
 | `customer_query.answer_log.enabled` | 是否写入 Customer Chat JSONL 日志，默认开启。 |
 | `customer_query.answer_log.redact` | 是否对 Customer Chat 日志做密钥、Token、手机号、邮箱脱敏，默认开启。 |
 | `customer_query.answer_log.retention_days` | Customer Chat 日志保留天数，默认 14 天。 |
+| `customer_safety_terms.path` | Customer Chat 安全风险信号表路径；仅注入 Router/Safety prompt，不做服务端拦截。 |
 | `WIKIOS_SUPPORT_PHONE` | Customer Chat 注入给 LLM 的公开客服电话，默认 `400-1080-106`。 |
 | `WIKIOS_SUPPORT_WECOM` | Customer Chat 注入给 LLM 的公开企业微信联系方式，默认 `企业微信`。 |
 | `WIKIOS_WIKI_GIT_URL` | 推荐使用 HTTPS Git URL；配置后容器启动时自动 clone/pull 外挂 Wiki。 |

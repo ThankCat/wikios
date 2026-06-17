@@ -82,7 +82,7 @@ var customerSpecialistProfiles = map[string]CustomerSpecialistProfile{
 		Name:             "product",
 		PromptFile:       "customer_specialist_product.md",
 		AllowedPrefixes:  []string{"wiki/knowledge/", "wiki/comparisons/", "wiki/concepts/", "wiki/entities/", "wiki/intents/"},
-		CandidateTopK:    4,
+		CandidateTopK:    5,
 		MaxEvidenceChars: 1800,
 	},
 	"pricing": {
@@ -226,6 +226,12 @@ func (s *CustomerChatService) retrieveCustomerSpecialistEvidence(ctx context.Con
 	evidenceTrace := []map[string]any{}
 	errors := []string{}
 	cacheTrace := customerSpecialistCacheTrace{}
+	type pendingEvidenceExpansion struct {
+		sourcePath string
+		content    string
+		query      string
+	}
+	pendingExpansions := []pendingEvidenceExpansion{}
 
 	readPath := func(path string, query string) (string, bool) {
 		path = filepath.ToSlash(strings.TrimSpace(path))
@@ -266,18 +272,28 @@ func (s *CustomerChatService) retrieveCustomerSpecialistEvidence(ctx context.Con
 		}
 		cacheTrace.recordRetrievalResults(index+1, query, pages)
 		candidates = append(candidates, pages...)
-		for _, page := range prioritizeCustomerRetrievedPages(pages) {
+		for _, page := range prioritizeCustomerRetrievedPagesForRouter(pages, routerOutput) {
 			if len(sources) >= topK {
 				break
 			}
 			content, ok := readPath(page.Path, query)
 			if ok {
-				expandLinkedEvidence(page.Path, content, query)
+				pendingExpansions = append(pendingExpansions, pendingEvidenceExpansion{
+					sourcePath: page.Path,
+					content:    content,
+					query:      query,
+				})
 			}
 		}
 	}
+	for _, expansion := range pendingExpansions {
+		if len(sources) >= topK {
+			break
+		}
+		expandLinkedEvidence(expansion.sourcePath, expansion.content, expansion.query)
+	}
 
-	result.Candidates = filterSpecialistCandidates(candidates, profile)
+	result.Candidates = filterSpecialistCandidatesForRouter(candidates, profile, routerOutput)
 	result.Sources = sources
 	result.ContentBlocks = contentBlocks
 	result.EvidenceBodies = evidenceBodies
@@ -300,7 +316,8 @@ func (s *CustomerChatService) retrieveCustomerSpecialistPages(
 	trace *customerSpecialistCacheTrace,
 ) ([]retrieval.RetrievedPage, error) {
 	start := time.Now()
-	key := customerSpecialistRetrievalCacheKey(env, query, topK)
+	candidateLimit := customerSpecialistRetrievalCandidateLimit(topK)
+	key := customerSpecialistRetrievalCacheKey(env, query, candidateLimit)
 	if pages, ok := s.cache.getRetrieval(key); ok && len(pages) > 0 {
 		if trace != nil {
 			trace.QMDHits++
@@ -313,7 +330,7 @@ func (s *CustomerChatService) retrieveCustomerSpecialistPages(
 		trace.QMDMisses++
 		trace.ExecutedRetrievalQueries = append(trace.ExecutedRetrievalQueries, query)
 	}
-	pages, err := s.deps.Retriever.Retrieve(ctx, env, query, topK)
+	pages, err := s.deps.Retriever.Retrieve(ctx, env, query, candidateLimit)
 	if err != nil {
 		errorMessage := customerSafeErrorTextForLog(err)
 		if trace != nil {
@@ -654,6 +671,20 @@ func customerSpecialistTopK(profile CustomerSpecialistProfile, settings RuntimeS
 	return 4
 }
 
+func customerSpecialistRetrievalCandidateLimit(topK int) int {
+	if topK <= 0 {
+		return topK
+	}
+	limit := topK * 5
+	if limit < 20 {
+		return 20
+	}
+	if limit > 40 {
+		return 40
+	}
+	return limit
+}
+
 func customerSpecialistMaxEvidenceChars(profile CustomerSpecialistProfile, settings RuntimeSettings) int {
 	if profile.MaxEvidenceChars > 0 {
 		return profile.MaxEvidenceChars
@@ -665,6 +696,10 @@ func customerSpecialistMaxEvidenceChars(profile CustomerSpecialistProfile, setti
 }
 
 func filterSpecialistCandidates(candidates []retrieval.RetrievedPage, profile CustomerSpecialistProfile) []retrieval.RetrievedPage {
+	return filterSpecialistCandidatesForRouter(candidates, profile, nil)
+}
+
+func filterSpecialistCandidatesForRouter(candidates []retrieval.RetrievedPage, profile CustomerSpecialistProfile, routerOutput *CustomerRouterOutput) []retrieval.RetrievedPage {
 	out := make([]retrieval.RetrievedPage, 0, len(candidates))
 	seen := map[string]bool{}
 	for _, candidate := range candidates {
@@ -675,5 +710,6 @@ func filterSpecialistCandidates(candidates []retrieval.RetrievedPage, profile Cu
 		seen[path] = true
 		out = append(out, retrieval.RetrievedPage{Path: path, Score: candidate.Score})
 	}
+	sortCustomerRetrievedPagesByProductFit(out, routerOutput, false)
 	return out
 }

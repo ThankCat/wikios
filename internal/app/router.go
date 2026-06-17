@@ -55,12 +55,13 @@ func NewRouter(cfg *config.Config, handlers *api.Handlers, dataStore *store.Stor
 	admin.POST("/sync/generate-message", handlers.AdminSyncGenerateMessage)
 	admin.POST("/sync/commit", handlers.AdminSyncCommit)
 	admin.POST("/sync/push", handlers.AdminSyncPush)
+	admin.POST("/sync/pull", handlers.AdminSyncPull)
 	admin.POST("/upload", handlers.AdminUpload)
 	admin.POST("/upload/stream", handlers.AdminUploadStream)
-	admin.GET("/customer-intents", handlers.AdminGetCustomerIntents)
-	admin.PUT("/customer-intents", handlers.AdminUpdateCustomerIntents)
 	admin.GET("/runtime-settings", handlers.AdminGetRuntimeSettings)
 	admin.PUT("/runtime-settings", handlers.AdminUpdateRuntimeSettings)
+	admin.GET("/customer-safety-terms", handlers.AdminGetCustomerSafetyTerms)
+	admin.PUT("/customer-safety-terms", handlers.AdminUpdateCustomerSafetyTerms)
 	admin.GET("/customer-conversations", handlers.AdminCustomerConversations)
 	admin.GET("/customer-conversations/:session_id", handlers.AdminCustomerConversationDetail)
 	admin.DELETE("/customer-conversations/:session_id", handlers.AdminDeleteCustomerConversation)
@@ -87,6 +88,7 @@ func registerWebRoutes(r *gin.Engine, cfg *config.Config) {
 		c.Header("Cache-Control", "no-store")
 		c.JSON(http.StatusOK, gin.H{
 			"mountedWikiName": cfg.MountedWiki.Name,
+			"apiBaseURL":      cfg.Web.APIBaseURL,
 			"webEnabled":      webEnabled,
 		})
 	})

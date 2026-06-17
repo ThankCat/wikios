@@ -15,6 +15,7 @@ func TestJSONStringFieldExtractorStreamsAnswer(t *testing.T) {
 		`{"answer_mode":"evidence",`,
 		`"answer":"静态 IP\n适合白名单绑定，`,
 		`也适合远程办公。",`,
+		`"confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},`,
 		`"confidence":0.9}`,
 	} {
 		extractor.Feed(chunk)

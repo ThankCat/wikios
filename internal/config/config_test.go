@@ -17,4 +17,7 @@ func TestLoadLocalConfig(t *testing.T) {
 	if cfg.MountedWiki.QMDIndex == "" {
 		t.Fatalf("expected qmd index")
 	}
+	if cfg.SafetyTerms.Path == "" {
+		t.Fatalf("expected customer safety terms path")
+	}
 }

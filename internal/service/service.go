@@ -17,14 +17,14 @@ import (
 )
 
 type Deps struct {
-	Config          *config.Config
-	Runtime         *runtime.Runtime
-	LLM             llm.Client
-	Retriever       *retrieval.QMDRetriever
-	Store           *store.Store
-	CustomerIntents *CustomerIntentManager
-	PromptDir       string
-	WorkspaceDir    string
+	Config       *config.Config
+	Runtime      *runtime.Runtime
+	LLM          llm.Client
+	Retriever    *retrieval.QMDRetriever
+	Store        *store.Store
+	SafetyTerms  *CustomerSafetyTermManager
+	PromptDir    string
+	WorkspaceDir string
 }
 
 const currentLLMModel = "database-active-model"

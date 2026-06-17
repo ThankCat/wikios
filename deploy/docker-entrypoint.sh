@@ -7,10 +7,14 @@ wiki_token="${WIKIOS_WIKI_GIT_TOKEN:-}"
 wiki_username="${WIKIOS_WIKI_GIT_USERNAME:-x-access-token}"
 wiki_remote="${WIKIOS_WIKI_GIT_REMOTE:-origin}"
 wiki_branch="${WIKIOS_WIKI_GIT_BRANCH:-main}"
+wiki_git_user_name="${WIKIOS_WIKI_GIT_USER_NAME:-WikiOS Bot}"
+wiki_git_user_email="${WIKIOS_WIKI_GIT_USER_EMAIL:-wikios-bot@users.noreply.github.com}"
+wiki_git_askpass_path="${WIKIOS_WIKI_GIT_ASKPASS_PATH:-/usr/local/bin/wikios-git-askpass}"
 pull_on_start="${WIKIOS_WIKI_GIT_PULL_ON_START:-true}"
 reset_on_start="${WIKIOS_WIKI_GIT_RESET_ON_START:-false}"
 qmd_auto_collection="${WIKIOS_QMD_AUTO_COLLECTION:-true}"
 qmd_index="${WIKIOS_QMD_INDEX:-knowledge-base}"
+qmd_http_enabled="${WIKIOS_QMD_HTTP_ENABLED:-true}"
 
 log() {
   printf '[wikios-entrypoint] %s\n' "$*"
@@ -35,25 +39,32 @@ setup_git_noninteractive() {
     return 0
   fi
 
-  askpass_dir="$(mktemp -d)"
-  askpass_path="$askpass_dir/askpass.sh"
-  cat > "$askpass_path" <<'EOF'
+  cat > "$wiki_git_askpass_path" <<'EOF'
 #!/bin/sh
 case "$1" in
-  *sername*|*Username*) printf '%s\n' "$WIKIOS_GIT_ASKPASS_USERNAME" ;;
-  *) printf '%s\n' "$WIKIOS_GIT_ASKPASS_TOKEN" ;;
+  *sername*|*Username*) printf '%s\n' "${WIKIOS_WIKI_GIT_USERNAME:-x-access-token}" ;;
+  *) printf '%s\n' "$WIKIOS_WIKI_GIT_TOKEN" ;;
 esac
 EOF
-  chmod 700 "$askpass_path"
-  export GIT_ASKPASS="$askpass_path"
-  export WIKIOS_GIT_ASKPASS_USERNAME="$wiki_username"
-  export WIKIOS_GIT_ASKPASS_TOKEN="$wiki_token"
+  chmod 700 "$wiki_git_askpass_path"
+  export GIT_ASKPASS="$wiki_git_askpass_path"
 }
 
 cleanup_git_noninteractive() {
   if [ -n "${askpass_dir:-}" ] && [ -d "$askpass_dir" ]; then
     rm -rf "$askpass_dir"
   fi
+}
+
+configure_wiki_git_repo() {
+  [ -d "$wiki_root/.git" ] || return 0
+  (
+    cd "$wiki_root"
+    git config core.askPass "$wiki_git_askpass_path" || true
+    git config credential.username "$wiki_username" || true
+    git config user.name "$wiki_git_user_name" || true
+    git config user.email "$wiki_git_user_email" || true
+  )
 }
 
 is_true() {
@@ -80,6 +91,7 @@ sync_wiki_repo() {
     else
       git clone "$wiki_url" "$wiki_root"
     fi
+    configure_wiki_git_repo
     return 0
   fi
 
@@ -94,6 +106,7 @@ sync_wiki_repo() {
   fi
 
   cd "$wiki_root"
+  configure_wiki_git_repo
 
   if git remote get-url "$wiki_remote" >/dev/null 2>&1; then
     current_url="$(git remote get-url "$wiki_remote")"
@@ -140,7 +153,24 @@ if is_true "$qmd_auto_collection" && [ -d "$wiki_root/wiki" ]; then
     cd "$wiki_root"
     qmd --index "$qmd_index" collection add wiki/ --name wiki >/dev/null 2>&1 || true
     qmd --index "$qmd_index" update >/dev/null 2>&1 || true
+    qmd --index "$qmd_index" embed >/dev/null 2>&1 || true
   )
+fi
+
+# The warm `qmd mcp --http` daemon only serves qmd's DEFAULT index (index.sqlite),
+# not the --index used by the CLI path, so the default index must be prepared
+# separately here. The index lives under /root/.cache/qmd, which is persisted by
+# the qmd-cache volume, so the embed cost is only paid on the first start.
+if is_true "$qmd_http_enabled" && [ -d "$wiki_root/wiki" ]; then
+  log "preparing default qmd index for the warm 'qmd mcp --http' daemon (first run downloads models; can take a few minutes)"
+  (
+    cd "$wiki_root"
+    qmd collection add wiki/ --name wiki >/dev/null 2>&1 || true
+    qmd update >/dev/null 2>&1 || true
+    qmd embed >/dev/null 2>&1 || true
+  )
+  log "starting 'qmd mcp --http' daemon on :8181 (retrieval falls back to qmd CLI if it is unavailable)"
+  ( cd "$wiki_root" && qmd mcp --http ) >/tmp/qmd-mcp-http.log 2>&1 &
 fi
 
 cd /app

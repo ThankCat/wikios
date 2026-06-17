@@ -61,9 +61,9 @@ http://127.0.0.1:9025
 | `BAD_REQUEST` | `400` | 请求参数无效、缺失或格式错误。 |
 | `NOT_FOUND` | `404` | 路由不存在。 |
 | `CONTEXT_LIMIT_EXCEEDED` | `413` | 管理员多轮上下文超过限制。 |
-| `CUSTOMER_INTENTS_UNAVAILABLE` | `503` | 前置话术管理器不可用。 |
+| `CUSTOMER_SAFETY_TERMS_UNAVAILABLE` | `503` | 安全风险信号表未配置。 |
+| `INVALID_CUSTOMER_SAFETY_TERMS` | `400` | 安全风险信号表格式无效。 |
 | `REVIEWS_UNAVAILABLE` | `503` | 问题审查队列不可用。 |
-| `INVALID_CUSTOMER_INTENTS` | `400` | 前置话术 YAML 校验失败。 |
 | `GIT_COMMIT_FAILED` | `400` | Git commit 执行失败。 |
 | `GIT_PUSH_FAILED` | `400` | Git push 执行失败。 |
 | `NO_COMMITS_TO_PUSH` | `400` | 没有可推送的提交。 |
@@ -153,7 +153,7 @@ curl http://127.0.0.1:9025/healthz
 
 ### GET `/app-config.json`
 
-用途：内置 Web 前端读取当前挂载 Wiki 名称和 Web 状态。
+用途：内置 Web 前端读取当前挂载 Wiki 名称、Web 状态和运行时 API 地址。
 
 鉴权：无。
 
@@ -162,6 +162,7 @@ curl http://127.0.0.1:9025/healthz
 | 字段 | 类型 | 可为空 | 含义 | 示例 |
 | --- | --- | --- | --- | --- |
 | `mountedWikiName` | `string` | 否 | 当前挂载 Wiki 展示名。 | `"default-wiki"` |
+| `apiBaseURL` | `string` | 否 | 内置 Web 前端访问 API 的运行时 Base URL。为空时前端使用当前页面 origin。 | `"http://192.168.0.26:9025"` |
 | `webEnabled` | `boolean` | 否 | 是否启用内置 Web。 | `true` |
 
 #### curl
@@ -171,6 +172,8 @@ curl http://127.0.0.1:9025/app-config.json
 ```
 
 ## 5. Customer Chat API
+
+> 接入方对接机器人请优先看面向对接的精简指南：[`docs/CUSTOMER_CHAT_INTEGRATION.md`](./CUSTOMER_CHAT_INTEGRATION.md)。本节为完整字段参考。
 
 ### POST `/api/v1/customer/chat`
 
@@ -207,8 +210,41 @@ Content-Type：`application/json`
 | 字段 | 类型 | 可为空 | 含义 | 示例 |
 | --- | --- | --- | --- | --- |
 | `answer` | `string` | 否 | 给终端客户展示的答案。 | `"静态 IP 按个/月计费。"` |
+| `answer_mode` | `string` | 否 | 回答性质：`evidence` / `mixed` / `self_answer` / `clarification` / `refusal`。 | `"evidence"` |
+| `review_required` | `boolean` | 否 | 模型是否建议本轮进入人工复核。 | `false` |
+| `source_count` | `number` | 否 | 本轮使用的证据来源数量。 | `1` |
+| `user_intent` | `object` 或 `null` | 是 | 本轮识别到的业务意图；无明确意图时为 `null`。 | 见下 |
 | `received_at` | `ISO-8601 datetime string` | 否 | 服务端接收时间。 | `"2026-05-28T02:00:00Z"` |
 | `answered_at` | `ISO-8601 datetime string` | 否 | 服务端完成时间。 | `"2026-05-28T02:00:03Z"` |
+
+`user_intent` 结构：
+
+| 字段 | 类型 | 可为空 | 含义 | 示例 |
+| --- | --- | --- | --- | --- |
+| `type` | `string` | 否 | 业务意图：`wecom`（企业微信）/ `refund`（退款）/ `switch_ip`（切换 IP）/ `discount`（申请优惠）。 | `"discount"` |
+| `extra` | `object` | 是 | 仅 `discount` 时返回，包含 `product_type`（产品枚举，如 `datacenter_ip`）和 `quantity`（整数）。 | `{ "product_type": "datacenter_ip", "quantity": 1000 }` |
+
+意图达成条件（服务端按 `refund > discount > switch_ip > wecom` 优先级取一个）：
+
+- `wecom`：客户要联系人工，且明确指定微信/企业微信作为联系方式。
+- `refund`：客户有强烈、明确的退款意愿。
+- `switch_ip`：客户有切换 IP 意愿，且产品类型不是动态 IP。
+- `discount`：客户有强烈申请优惠意愿，且产品类型明确（非动态 IP），且有明确的预购数量。
+
+`user_intent` 示例：
+
+```json
+{
+  "answer": "动态 IP 会在每次重连或达到您设定的时间间隔后自动更换新的出口 IP。",
+  "answer_mode": "evidence",
+  "review_required": false,
+  "source_count": 1,
+  "user_intent": {
+    "type": "discount",
+    "extra": { "product_type": "datacenter_ip", "quantity": 1000 }
+  }
+}
+```
 
 客户问答响应体不会返回 Router、Retrieval、Specialist、Prompt、thinking、details 或 trace_id。
 
@@ -220,6 +256,7 @@ Content-Type：`application/json`
 | --- | --- | --- | --- |
 | `delta` | `data.delta` | `string` | 答案增量文本。 |
 | `result` | `data.answer` | `string` | 完整答案。 |
+| `result` | `data.answer_mode` / `data.review_required` / `data.source_count` / `data.user_intent` | 见上 | 回答模式、复核标记、来源数与业务意图，同非流式响应体。 |
 | `result` | `data.received_at` / `data.answered_at` | `string` | 接收/完成时间。 |
 | `done` | `data.ok` | `boolean` | 是否成功结束。 |
 
@@ -311,6 +348,7 @@ curl http://127.0.0.1:9025/api/v1/admin/customer-chat/traces/trace_xxx
 | `from` / `start` | `string` | 否 | `""` | 起始日期或时间。 |
 | `to` / `end` | `string` | 否 | `""` | 结束日期或时间。 |
 | `entrypoint` | `enum` | 否 | `""` | 来源筛选。可选 `external` / `internal`。 |
+| `client_channel` | `enum` | 否 | `""` | 客户端渠道筛选。可选 `web` / `mobile_app`。 |
 | `simulation` | `boolean` | 否 | `""` | 测试筛选。可选 `true` / `false`。 |
 
 #### Response
@@ -331,18 +369,20 @@ curl http://127.0.0.1:9025/api/v1/admin/customer-chat/traces/trace_xxx
 | `id` | `string` | 当前后端实际会话 group key，详情和删除接口都使用该值。 |
 | `session_id` | `string` | JSONL 中记录的原始 session。 |
 | `entrypoints` | `array<string>` | 当前会话出现过的来源。 |
+| `client_channels` | `array<string>` | 当前会话出现过的客户端渠道。 |
 | `last_entrypoint` | `string` | 最新一轮来源，`external` 或 `internal`。 |
+| `last_client_channel` | `string` | 最新一轮客户端渠道，`web` 或 `mobile_app`。 |
 | `last_simulation` | `boolean` | 最新一轮是否为测试请求。 |
 | `last_specialist` | `string` | 最新一轮 Specialist。 |
 | `last_total_duration_ms` | `number` | 最新一轮总耗时。 |
 | `last_source_count` | `number` | 最新一轮 `final.source_count`。 |
 | `error_count` | `number` | 该会话中错误记录数量。 |
-| `review_required_count` | `number` | 该会话中需要人工审查的记录数量。 |
+| `review_required_count` | `number` | 该会话中实际进入人工审查队列的记录数量（即 `review_decision.create_review` 为真，与「审查」队列一致；不含 simulation 等未入队的情形）。 |
 
 #### curl
 
 ```bash
-curl 'http://127.0.0.1:9025/api/v1/admin/customer-conversations?page_size=20&q=静态'
+curl 'http://127.0.0.1:9025/api/v1/admin/customer-conversations?page_size=20&q=静态&client_channel=web'
 ```
 
 ### GET `/api/v1/admin/customer-conversations/:session_id`
@@ -1041,60 +1081,57 @@ Request Body：无。
 
 Response：`{ "ok": true, "item": {...}, "pending_count": 2 }`
 
-## 13. Customer Intents API
+## 13. Customer Safety Terms API
 
-### GET `/api/v1/admin/customer-intents`
+安全风险信号表由后台维护，服务端只注入 Router / Safety prompt，不做命中拦截、不替换客户可见答案。
 
-用途：读取前置话术 YAML 源码和加载状态。
+### GET `/api/v1/admin/customer-safety-terms`
 
-鉴权：无。请将 Admin API 部署在可信网络内，或在反向代理层增加鉴权。
+用途：读取当前安全风险信号表。
 
-#### Response
+Response 字段：
 
-| 字段 | 类型 | 可为空 | 含义 | 示例 |
-| --- | --- | --- | --- | --- |
-| `source` | `string` | 否 | 当前 YAML 源码。 | `"version: 1\n..."` |
-| `status` | `CustomerIntentsStatus` | 否 | 加载状态。 | `{}` |
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `source` | `string` | 当前 YAML 源码，用于排障展示。 |
+| `config` | `CustomerSafetyTermsConfig` | 结构化配置。 |
+| `status` | `CustomerSafetyTermsStatus` | 读取状态。 |
 
-#### CustomerIntentsStatus
+### PUT `/api/v1/admin/customer-safety-terms`
 
-| 字段 | 类型 | 可为空 | 含义 | 示例 |
-| --- | --- | --- | --- | --- |
-| `path` | `string` | 否 | YAML 文件路径。 | `"configs/customer_intents.yaml"` |
-| `loaded_at` | `ISO-8601 datetime string` | 是 | 最近成功加载时间。 | `"2026-04-25T08:00:00Z"` |
-| `error` | `string` | 是 | 当前错误。 | `"invalid yaml"` |
-| `warnings` | `array<string>` | 是 | 校验警告。 | `[]` |
-| `rule_count` | `number` | 否 | 已加载规则数量。 | `8` |
+用途：保存结构化安全风险信号表，写回 `customer_safety_terms.path` 指向的 YAML 文件。
 
-#### curl
+Request Body：
 
-```bash
-curl http://127.0.0.1:9025/api/v1/admin/customer-intents
-```
+| 字段 | 类型 | 必填 | 含义 |
+| --- | --- | --- | --- |
+| `config` | `CustomerSafetyTermsConfig` | 是 | 完整安全风险信号表。 |
 
-### PUT `/api/v1/admin/customer-intents`
+#### CustomerSafetyTermsConfig
 
-用途：保存完整前置话术 YAML。保存前会强校验；校验失败不写文件、不替换内存缓存。
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `version` | `number` | 当前固定为 `1`。 |
+| `categories` | `array<CustomerSafetyTermCategory>` | 风险分类列表。 |
 
-鉴权：无。请将 Admin API 部署在可信网络内，或在反向代理层增加鉴权。
+#### CustomerSafetyTermCategory
 
-Content-Type：`application/json`
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | `string` | 分类 ID，仅允许小写字母、数字和下划线。 |
+| `name` | `string` | 后台展示名称。 |
+| `signals` | `array<string>` | 风险信号词。信号只用于提示模型识别意图，不代表命中即拒答。 |
+| `route_to` | `string` | 当前固定为 `safety`。 |
+| `response_goal` | `string` | Safety 专家的回复目标。它是语义要点，不是固定话术；模型应自然改写，不能逐字照抄。 |
 
-#### Request Body
+#### CustomerSafetyTermsStatus
 
-| 字段 | 类型 | 必填 | 可为空 | 默认值 | 含义 | 约束/示例 |
-| --- | --- | --- | --- | --- | --- | --- |
-| `source` | `string` | 是 | 否 | 无 | 完整 YAML 源码。 | 必须是合法 customer intents 配置。 |
-
-Response：同 `GET /api/v1/admin/customer-intents`。
-
-#### curl
-
-```bash
-curl -X PUT http://127.0.0.1:9025/api/v1/admin/customer-intents \
-  -H 'Content-Type: application/json' \
-  -d '{"source":"version: 1\nrules: []\n"}'
-```
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `path` | `string` | YAML 文件路径。 |
+| `loaded_at` | `string` | 最近读取时间。 |
+| `error` | `string` | 读取或校验错误。 |
+| `category_count` | `number` | 当前有效分类数。 |
 
 ## 14. 接入建议
 

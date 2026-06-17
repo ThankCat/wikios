@@ -15,12 +15,12 @@ import {
   History,
   Languages,
   Loader2,
-  ListChecks,
   MessageCircle,
   MessageSquareText,
   PanelLeftClose,
   PanelRightClose,
   PlugZap,
+  Plus,
   RefreshCw,
   Save,
   Search,
@@ -85,7 +85,9 @@ import type {
   CustomerConversationDetailResponse,
   CustomerConversationMessage,
   CustomerConversationSummary,
-  CustomerIntentsStatus,
+  CustomerSafetyTermCategory,
+  CustomerSafetyTermsConfig,
+  CustomerSafetyTermsStatus,
   CustomerStreamEvent,
   ReviewItem,
   SyncCommitResponse,
@@ -106,6 +108,8 @@ export type BaseModuleProps = {
 };
 
 type ConversationEntrypointFilter = "all" | "external" | "internal";
+type ConversationClientChannelFilter = "all" | "web" | "mobile_app";
+type ConversationClientChannel = "web" | "mobile_app";
 type ConversationSimulationFilter = "all" | "formal" | "simulation";
 
 const conversationListPageSize = 30;
@@ -238,6 +242,7 @@ export function ConversationsModule(_props: BaseModuleProps) {
   const [page, setPage] = React.useState(1);
   const [hasMore, setHasMore] = React.useState(false);
   const [entrypointFilter, setEntrypointFilter] = React.useState<ConversationEntrypointFilter>("all");
+  const [clientChannelFilter, setClientChannelFilter] = React.useState<ConversationClientChannelFilter>("all");
   const [simulationFilter, setSimulationFilter] = React.useState<ConversationSimulationFilter>("all");
   const [loading, setLoading] = React.useState(false);
   const [detailLoading, setDetailLoading] = React.useState(false);
@@ -259,6 +264,7 @@ export function ConversationsModule(_props: BaseModuleProps) {
   const queryRef = React.useRef("");
   const pageRef = React.useRef(1);
   const entrypointFilterRef = React.useRef<ConversationEntrypointFilter>("all");
+  const clientChannelFilterRef = React.useRef<ConversationClientChannelFilter>("all");
   const simulationFilterRef = React.useRef<ConversationSimulationFilter>("all");
 
   React.useEffect(() => {
@@ -276,6 +282,10 @@ export function ConversationsModule(_props: BaseModuleProps) {
   React.useEffect(() => {
     entrypointFilterRef.current = entrypointFilter;
   }, [entrypointFilter]);
+
+  React.useEffect(() => {
+    clientChannelFilterRef.current = clientChannelFilter;
+  }, [clientChannelFilter]);
 
   React.useEffect(() => {
     simulationFilterRef.current = simulationFilter;
@@ -300,7 +310,7 @@ export function ConversationsModule(_props: BaseModuleProps) {
         role: message.role,
         content: message.content,
         createdAt: message.created_at,
-        details: { audit_trace: trace },
+        details: { client_channel: message.client_channel ?? "web", audit_trace: trace },
         statusText: "完整 trace",
       });
     } catch (err) {
@@ -312,6 +322,7 @@ export function ConversationsModule(_props: BaseModuleProps) {
         details: {
           trace_error: errorMessage(err),
           trace_id: message.trace_id,
+          client_channel: message.client_channel ?? "web",
           fallback_details: message.details ?? {},
         },
         statusText: "Trace 读取失败",
@@ -324,6 +335,7 @@ export function ConversationsModule(_props: BaseModuleProps) {
     const resolvedQuery = options?.q ?? queryRef.current;
     const resolvedPage = options?.page ?? pageRef.current;
     const resolvedEntrypoint = entrypointFilterRef.current;
+    const resolvedClientChannel = clientChannelFilterRef.current;
     const resolvedSimulation = simulationFilterRef.current;
     setLoading(true);
     setError("");
@@ -333,6 +345,7 @@ export function ConversationsModule(_props: BaseModuleProps) {
         page: resolvedPage,
         page_size: conversationListPageSize,
         entrypoint: resolvedEntrypoint === "all" ? undefined : resolvedEntrypoint,
+        client_channel: resolvedClientChannel === "all" ? undefined : resolvedClientChannel,
         simulation: resolvedSimulation === "all" ? undefined : resolvedSimulation === "simulation",
       });
       if (requestSeq !== requestSeqRef.current) {
@@ -361,7 +374,7 @@ export function ConversationsModule(_props: BaseModuleProps) {
     return () => {
       requestSeqRef.current += 1;
     };
-  }, [entrypointFilter, simulationFilter, load]);
+  }, [entrypointFilter, clientChannelFilter, simulationFilter, load]);
 
   const detailMessages = Array.isArray(detail?.messages) ? detail.messages : [];
 
@@ -493,7 +506,7 @@ export function ConversationsModule(_props: BaseModuleProps) {
                     <span>每页 {conversationListPageSize}</span>
                   </div>
                 </div>
-                <div className="grid gap-2 lg:grid-cols-[minmax(260px,1fr)_150px_150px_auto_auto]">
+                <div className="grid gap-2 lg:grid-cols-[minmax(260px,1fr)_150px_150px_150px_auto_auto]">
                   <div className="flex min-w-0 gap-2">
                     <Input
                       value={query}
@@ -521,6 +534,19 @@ export function ConversationsModule(_props: BaseModuleProps) {
                     <option value="all">全部来源</option>
                     <option value="external">外部</option>
                     <option value="internal">内部</option>
+                  </Select>
+                  <Select
+                    value={clientChannelFilter}
+                    onChange={(event) => {
+                      pageRef.current = 1;
+                      setPage(1);
+                      setClientChannelFilter(event.target.value as ConversationClientChannelFilter);
+                    }}
+                    aria-label="渠道筛选"
+                  >
+                    <option value="all">全部渠道</option>
+                    <option value="web">web</option>
+                    <option value="mobile_app">mobile_app</option>
                   </Select>
                   <Select
                     value={simulationFilter}
@@ -723,6 +749,11 @@ export function ConversationsModule(_props: BaseModuleProps) {
                             <section className="min-w-0 rounded-lg bg-muted/40 px-3 py-2 dark:bg-secondary/50">
                               <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                                 <Badge variant="success">助手</Badge>
+                                {detailClientChannel(selectedTraceDetail.details) ? (
+                                  <Badge variant={detailClientChannel(selectedTraceDetail.details) === "mobile_app" ? "warning" : "default"}>
+                                    {detailClientChannel(selectedTraceDetail.details)}
+                                  </Badge>
+                                ) : null}
                                 {selectedTraceDetail.statusText ? <span>{selectedTraceDetail.statusText}</span> : null}
                               </div>
                               <div className="max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground dark:text-muted-foreground">
@@ -756,6 +787,7 @@ export function ConversationsModule(_props: BaseModuleProps) {
 
 function ConversationSourceBadges({ item }: { item: CustomerConversationSummary }) {
   const entrypoints = Array.isArray(item.entrypoints) && item.entrypoints.length > 0 ? item.entrypoints : item.last_entrypoint ? [item.last_entrypoint] : [];
+  const channels = Array.isArray(item.client_channels) && item.client_channels.length > 0 ? item.client_channels : item.last_client_channel ? [item.last_client_channel] : [];
   return (
     <div className="flex flex-wrap gap-1">
       {entrypoints.length ? (
@@ -766,6 +798,15 @@ function ConversationSourceBadges({ item }: { item: CustomerConversationSummary 
         ))
       ) : (
         <Badge>unknown</Badge>
+      )}
+      {channels.length ? (
+        channels.map((channel) => (
+          <Badge key={`channel-${channel}`} variant={channel === "mobile_app" ? "warning" : "default"}>
+            {channel}
+          </Badge>
+        ))
+      ) : (
+        <Badge>web</Badge>
       )}
       {item.last_simulation ? <Badge variant="warning">simulation</Badge> : null}
     </div>
@@ -785,6 +826,7 @@ function ConversationMessageAuditCard({ message, selected }: { message: Customer
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={message.role === "user" ? "default" : "success"}>{message.role === "user" ? "用户" : "助手"}</Badge>
+          {message.client_channel ? <Badge variant={message.client_channel === "mobile_app" ? "warning" : "default"}>{message.client_channel}</Badge> : null}
           {message.role === "assistant" && message.specialist ? <Badge>{message.specialist}</Badge> : null}
           {message.role === "assistant" && message.answer_mode ? <Badge variant="warning">{message.answer_mode}</Badge> : null}
           {message.role === "assistant" && message.simulation ? <Badge variant="warning">simulation</Badge> : null}
@@ -806,6 +848,17 @@ function ConversationMessageAuditCard({ message, selected }: { message: Customer
       {message.role === "assistant" && message.trace_id ? <div className="mt-2 font-mono text-[11px] text-muted-foreground">Trace：{message.trace_id}</div> : null}
     </article>
   );
+}
+
+function detailClientChannel(details: unknown) {
+  const direct = simulationRecord(details).client_channel;
+  if (typeof direct === "string" && direct.trim()) {
+    return direct;
+  }
+  const trace = simulationRecord(simulationRecord(details).audit_trace);
+  const runtime = simulationRecord(trace.runtime);
+  const channel = runtime.client_channel;
+  return typeof channel === "string" && channel.trim() ? channel : "";
 }
 
 function ConversationStatusBadges({ item }: { item: CustomerConversationSummary }) {
@@ -871,6 +924,7 @@ type ConversationSimulationMessage = {
 
 type ConversationSimulationSession = {
   draft: string;
+  clientChannel: ConversationClientChannel;
   messages: ConversationSimulationMessage[];
 };
 
@@ -1017,12 +1071,14 @@ function appendConversationSimulationDetailText(id: string, messageId: string, k
 function ChatInterfaceTestPanel() {
   const [runtimeSnapshot, setRuntimeSnapshot] = React.useState(conversationSimulationSnapshot);
   const [selectedDetailId, setSelectedDetailId] = React.useState("");
+  const [writeReviewQueue, setWriteReviewQueue] = React.useState(false);
   const sessionId = chatInterfaceTestSessionId;
   const store = runtimeSnapshot.store;
   const error = runtimeSnapshot.error;
   const busySessionId = runtimeSnapshot.busySessionId;
   const scroll = useScrollFollow<HTMLDivElement>([sessionId, store[sessionId]?.messages]);
   const activeSession = store[sessionId] ?? emptySimulationSession();
+  const activeClientChannel = normalizeConversationClientChannel(activeSession.clientChannel);
   const busy = Boolean(sessionId && busySessionId === sessionId);
   const canSend = Boolean(activeSession.draft.trim() && !busySessionId);
   const selectedDetail = React.useMemo(
@@ -1050,6 +1106,10 @@ function ChatInterfaceTestPanel() {
 
   function setDraft(value: string) {
     patchSession(sessionId, (current) => ({ ...current, draft: value }));
+  }
+
+  function setClientChannel(value: ConversationClientChannelFilter) {
+    patchSession(sessionId, (current) => ({ ...current, clientChannel: normalizeConversationClientChannel(value) }));
   }
 
   function appendMessage(id: string, message: ConversationSimulationMessage) {
@@ -1176,6 +1236,7 @@ function ChatInterfaceTestPanel() {
       role: "user",
       content: question,
       created_at: questionCreatedAt,
+      details: { client_channel: activeClientChannel },
     };
     const assistantId = createId();
     const history = simulationMessagesToCustomerHistory(activeSession.messages);
@@ -1186,6 +1247,7 @@ function ChatInterfaceTestPanel() {
       content: "",
       created_at: new Date().toISOString(),
       status: "streaming",
+      details: { client_channel: activeClientChannel },
     });
     const controller = new AbortController();
     conversationSimulationRuntime.activeRequest = { sessionId: id, controller };
@@ -1195,10 +1257,12 @@ function ChatInterfaceTestPanel() {
         question,
         history,
         {
-          session_id: `test-${id}`,
+          session_id: `${writeReviewQueue ? "review-test" : "test"}-${id}`,
           message_id: userMessage.id,
           answer_message_id: assistantId,
           message_created_at: questionCreatedAt,
+          client_channel: activeClientChannel,
+          simulation: !writeReviewQueue,
         },
         (event) => handleStreamEvent(id, assistantId, event),
         controller.signal,
@@ -1209,6 +1273,7 @@ function ChatInterfaceTestPanel() {
           patchMessage(id, assistantId, {
             details: (previous: unknown) => ({
               ...simulationRecord(previous),
+              client_channel: activeClientChannel,
               trace_id: traceID,
               audit_trace: trace,
             }),
@@ -1217,6 +1282,7 @@ function ChatInterfaceTestPanel() {
           patchMessage(id, assistantId, {
             details: (previous: unknown) => ({
               ...simulationRecord(previous),
+              client_channel: activeClientChannel,
               trace_id: traceID,
               trace_error: errorMessage(traceError),
             }),
@@ -1313,6 +1379,40 @@ function ChatInterfaceTestPanel() {
           </ScrollArea>
         </div>
         <div className="rounded-lg border bg-card p-2 shadow-sm dark:bg-background dark:shadow-none">
+          <div className="mb-2 grid gap-2 rounded-md bg-muted/40 px-3 py-2 dark:bg-muted/20 md:grid-cols-[1fr_auto]">
+            <div className="min-w-0">
+              <div className="text-xs font-medium">写入审查队列</div>
+              <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                {writeReviewQueue ? "本轮按正式请求执行，命中规则会写入待审队列。" : "默认仅测试回答链路，不生成待审项。"}
+              </div>
+            </div>
+            <Switch
+              checked={writeReviewQueue}
+              onClick={() => setWriteReviewQueue((current) => !current)}
+              aria-label="切换是否写入审查队列"
+              title="切换是否写入审查队列"
+              className="mt-0.5"
+              disabled={busy}
+            />
+          </div>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-3 rounded-md bg-muted/40 px-3 py-2 dark:bg-muted/20">
+            <div className="min-w-0">
+              <div className="text-xs font-medium">渠道模式</div>
+              <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                当前按 {activeClientChannel} 渠道调用客户问答。
+              </div>
+            </div>
+            <Select
+              value={activeClientChannel}
+              onChange={(event) => setClientChannel(event.target.value as ConversationClientChannelFilter)}
+              disabled={busy}
+              aria-label="渠道模式"
+              className="h-9 w-36"
+            >
+              <option value="web">web</option>
+              <option value="mobile_app">mobile_app</option>
+            </Select>
+          </div>
           <Textarea
             value={activeSession.draft}
             onChange={(event) => setDraft(event.target.value)}
@@ -1332,7 +1432,11 @@ function ChatInterfaceTestPanel() {
           />
           <div className="mt-2 flex items-center justify-between gap-3 px-1">
             <span className="min-w-0 truncate text-xs text-muted-foreground">
-              {busy ? "正在调用接口，可随时停止。" : "使用 Customer chat 引擎，审查结果不入库。"}
+              {busy
+                ? "正在调用接口，可随时停止。"
+                : writeReviewQueue
+                  ? "本轮命中审查规则时会入库。"
+                  : "使用 Customer chat 引擎，审查结果不入库。"}
             </span>
             <Button
               type="button"
@@ -1374,7 +1478,11 @@ function ChatInterfaceTestPanel() {
 }
 
 function emptySimulationSession(): ConversationSimulationSession {
-  return { draft: "", messages: [] };
+  return { draft: "", clientChannel: "web", messages: [] };
+}
+
+function normalizeConversationClientChannel(value: unknown): ConversationClientChannel {
+  return value === "mobile_app" ? "mobile_app" : "web";
 }
 
 function normalizeConversationSimulationStore(value: unknown): ConversationSimulationStore {
@@ -1389,6 +1497,7 @@ function normalizeConversationSimulationStore(value: unknown): ConversationSimul
     const session = rawSession as Partial<ConversationSimulationSession>;
     result[sessionId] = {
       draft: typeof session.draft === "string" ? session.draft : "",
+      clientChannel: normalizeConversationClientChannel(session.clientChannel),
       messages: normalizeConversationSimulationMessages(session.messages),
     };
   }
@@ -2230,6 +2339,49 @@ export function KnowledgeModule({ dashboard, user, onDashboardRefresh, initialPa
     }
   }
 
+  async function pullSyncRemote() {
+    if (!syncStatus) {
+      setSyncFeedback(syncTextFeedback("error", "无法拉取", "请先刷新同步状态。"));
+      return;
+    }
+    if (!syncStatus.repo_ready || !syncStatus.remote_ready || !syncStatus.branch_ready) {
+      setSyncFeedback(syncTextFeedback("error", "无法拉取", syncStatus.setup_hint || "同步配置尚未就绪，请先检测连接或修复同步配置。"));
+      return;
+    }
+    if ((syncStatus.changed_count ?? 0) > 0) {
+      setSyncFeedback(syncTextFeedback("error", "无法拉取", "当前知识库有未提交改动，请先提交或手动处理后再拉取远程更新。"));
+      return;
+    }
+    const remote = syncStatus.remote.trim();
+    const branch = (syncStatus.branch || "main").trim();
+    if (!remote || !branch) {
+      setSyncFeedback(syncTextFeedback("error", "无法拉取", "缺少 Git remote 或 branch，请先在设置中配置知识库同步默认值。"));
+      return;
+    }
+    if (!window.confirm(`确认从 ${remote}/${branch} 拉取远程知识库？`)) {
+      return;
+    }
+    setSyncBusy(true);
+    setSyncFeedback(null);
+    try {
+      const response = await api.syncPull(remote, branch);
+      await refreshSyncStatus(false);
+      setSyncFeedback({
+        kind: "success",
+        title: "拉取完成",
+        message: `已从 ${response.remote}/${response.branch} 拉取远程更新。`,
+        stdout: response.stdout,
+        stderr: response.stderr,
+        exitCode: response.exit_code,
+      });
+      onDashboardRefresh();
+    } catch (err) {
+      setSyncFeedback(syncErrorFeedback(err, "拉取失败"));
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
   async function testSyncConnection() {
     setSyncBusy(true);
     setSyncFeedback(null);
@@ -2549,6 +2701,7 @@ export function KnowledgeModule({ dashboard, user, onDashboardRefresh, initialPa
               onGenerateMessage={() => void generateSyncMessage()}
               onCommit={() => void commitSyncFiles()}
               onPush={() => void pushSyncCommit()}
+              onPull={() => void pullSyncRemote()}
               onTest={() => void testSyncConnection()}
               onSetup={() => void setupSyncRepository()}
             />
@@ -2773,6 +2926,7 @@ function KnowledgeSyncPanel({
   onGenerateMessage,
   onCommit,
   onPush,
+  onPull,
   onTest,
   onSetup,
 }: {
@@ -2790,12 +2944,16 @@ function KnowledgeSyncPanel({
   onGenerateMessage: () => void;
   onCommit: () => void;
   onPush: () => void;
+  onPull: () => void;
   onTest: () => void;
   onSetup: () => void;
 }) {
   const pushDone = syncAlreadyPushed(status, feedback);
   const pushDisabled = busy || !status?.can_push;
   const pushLabel = pushDone ? "已推送" : `推送${(status?.push_count ?? 0) > 0 ? `（${status?.push_count}）` : ""}`;
+  const pullCount = status?.behind ?? 0;
+  const pullDisabled = busy || !status?.repo_ready || !status?.remote_ready || !status?.branch_ready || (status?.changed_count ?? 0) > 0;
+  const pullLabel = `拉取${pullCount > 0 ? `（${pullCount}）` : ""}`;
   return (
     <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
       <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
@@ -2832,6 +2990,7 @@ function KnowledgeSyncPanel({
               <StatusLine label="分支" value={status?.branch || "-"} ok={status?.branch_ready} />
               <StatusLine label="待提交" value={`${status?.changed_count ?? status?.files.length ?? 0} 个文件`} ok={(status?.changed_count ?? 0) === 0} />
               <StatusLine label="待推送" value={`${status?.push_count ?? 0} 个提交`} ok={(status?.push_count ?? 0) === 0} />
+              <StatusLine label="待拉取" value={`${pullCount} 个提交`} ok={pullCount === 0} />
             </div>
           {status?.configured_url_redacted && (!status.remote_url_redacted || status.remote_matches_configured) ? (
             <div className="mb-3 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground dark:bg-background">
@@ -2923,6 +3082,10 @@ function KnowledgeSyncPanel({
               </Button>
               <Button variant="outline" disabled={pushDisabled} onClick={onPush}>
                 {pushLabel}
+              </Button>
+              <Button variant="outline" disabled={pullDisabled} onClick={onPull}>
+                <Download className="mr-2 h-4 w-4" />
+                {pullLabel}
               </Button>
             </div>
           </div>
@@ -3136,94 +3299,6 @@ export function ReviewModule({ setDetail, onDashboardRefresh }: BaseModuleProps)
   );
 }
 
-function IntentSettingsPanel({ setDetail }: Pick<BaseModuleProps, "setDetail">) {
-  const [source, setSource] = React.useState("");
-  const [status, setStatus] = React.useState<CustomerIntentsStatus | null>(null);
-  const [loading, setLoading] = React.useState(false);
-  const [saving, setSaving] = React.useState(false);
-  const [error, setError] = React.useState("");
-
-  const load = React.useCallback(async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const response = await api.getCustomerIntents();
-      setSource(response.source);
-      setStatus(response.status);
-      setDetail("前置话术状态", <pre className="whitespace-pre-wrap text-xs">{formatJSON(response.status)}</pre>);
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setLoading(false);
-    }
-  }, [setDetail]);
-
-  React.useEffect(() => {
-    void load();
-  }, [load]);
-
-  async function save() {
-    setSaving(true);
-    setError("");
-    try {
-      const response = await api.updateCustomerIntents(source);
-      setStatus(response.status);
-      setDetail("前置话术状态", <pre className="whitespace-pre-wrap text-xs">{formatJSON(response.status)}</pre>);
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 className="text-base font-semibold">意图话术</h3>
-          <p className="mt-1 text-sm text-muted-foreground">编辑 customer intents、兜底话术池和模型不可用话术。</p>
-        </div>
-        <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-          <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />
-          重载
-        </Button>
-      </div>
-      {error ? (
-        <Alert variant="destructive" className="rounded-lg">
-          <AlertTitle>配置读取失败</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      ) : null}
-      <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
-        <CardHeader>
-          <CardTitle className="text-base">configs/customer_intents.yaml</CardTitle>
-          <CardDescription>
-            当前规则数 {status?.rule_count ?? 0}，状态文件：{status?.path ?? "-"}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Textarea className="min-h-[520px] font-mono text-xs" value={source} onChange={(event) => setSource(event.target.value)} />
-          <div className="flex gap-2">
-            <Button onClick={() => void save()} disabled={saving}>
-              {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-              保存配置
-            </Button>
-            {status?.warnings?.length ? <Badge variant="warning">{status.warnings.length} 个警告</Badge> : null}
-          </div>
-        </CardContent>
-      </Card>
-    </>
-  );
-}
-
-export function CustomerConfigModule({ setDetail }: BaseModuleProps) {
-  return (
-    <ModuleFrame title="客户问答配置" description="管理 customer intents、兜底话术池、日志开关和脱敏策略。">
-      <IntentSettingsPanel setDetail={setDetail} />
-    </ModuleFrame>
-  );
-}
-
 export function PromptsModule(_props: BaseModuleProps) {
   return (
     <ReadonlyModule
@@ -3256,10 +3331,14 @@ const defaultRuntimeSettings: AdminRuntimeSettings = {
     review_min: 0.25,
     candidate_top_k: 6,
     max_evidence_chars: 2400,
+    app_channel_enabled: true,
     router_model_id: "",
     specialist_model_id: "",
     router_enable_thinking: false,
     specialist_enable_thinking: true,
+    persist_thinking: false,
+    router_temperature: 0,
+    specialist_temperature: 0.3,
   },
   support: {
     phone: "400-1080-106",
@@ -3289,15 +3368,14 @@ const defaultRuntimeEnvironment: AdminRuntimeEnvironment = {
   sqlite_path: "",
   web_dist_dir: "",
   web_enabled: true,
-  customer_intents_path: "",
 };
 
-type SettingsTab = "models" | "customer-query" | "intents" | "logs" | "knowledge" | "environment";
+type SettingsTab = "models" | "customer-query" | "safety-terms" | "logs" | "knowledge" | "environment";
 
 const settingsTabs: Array<{ id: SettingsTab; label: string; icon: typeof Settings }> = [
   { id: "models", label: "模型", icon: Bot },
   { id: "customer-query", label: "客户问答", icon: MessageCircle },
-  { id: "intents", label: "意图话术", icon: ListChecks },
+  { id: "safety-terms", label: "安全风险词", icon: ShieldCheck },
   { id: "logs", label: "日志隐私", icon: History },
   { id: "knowledge", label: "知识库同步", icon: Database },
   { id: "environment", label: "环境", icon: Settings },
@@ -3487,6 +3565,28 @@ export function SettingsModule({ dashboard, onDashboardRefresh, setDetail }: Bas
                         onThinkingChange={(checked) => updateBool("customer_query.specialist_enable_thinking", checked)}
                       />
                     </div>
+                    <div className="rounded-lg border bg-muted/40 p-3 dark:bg-background">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium">持久化模型思考</div>
+                          <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                            默认关闭；开启后会把 Router/Specialist 返回的 thinking 正文写入客户问答审计日志。
+                          </div>
+                        </div>
+                        <Switch checked={Boolean(form.customer_query.persist_thinking)} onClick={() => updateBool("customer_query.persist_thinking", !form.customer_query.persist_thinking)} />
+                      </div>
+                    </div>
+                    <div className="rounded-lg border bg-muted/40 p-3 dark:bg-background">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium">手机 App 渠道策略</div>
+                          <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                            开启后 mobile_app 请求会注入 App 限制策略，并启用最终回复 guard。
+                          </div>
+                        </div>
+                        <Switch checked={Boolean(form.customer_query.app_channel_enabled)} onClick={() => updateBool("customer_query.app_channel_enabled", !form.customer_query.app_channel_enabled)} />
+                      </div>
+                    </div>
                     <div className="grid gap-4 md:grid-cols-2">
                       <RuntimeNumberInput
                         label="直答置信度"
@@ -3525,6 +3625,26 @@ export function SettingsModule({ dashboard, onDashboardRefresh, setDetail }: Bas
                         max={20000}
                         fieldError={fieldErrors["customer_query.max_evidence_chars"]}
                         onChange={(value) => updateNumber("customer_query.max_evidence_chars", Math.round(value))}
+                      />
+                      <RuntimeNumberInput
+                        label="Router 温度"
+                        description={`默认 ${defaults.customer_query.router_temperature ?? 0}，越低越稳定；路由输出 JSON，建议 0。`}
+                        value={form.customer_query.router_temperature ?? defaults.customer_query.router_temperature ?? 0}
+                        step={0.1}
+                        min={0}
+                        max={2}
+                        fieldError={fieldErrors["customer_query.router_temperature"]}
+                        onChange={(value) => updateNumber("customer_query.router_temperature", value)}
+                      />
+                      <RuntimeNumberInput
+                        label="Specialist 温度"
+                        description={`默认 ${defaults.customer_query.specialist_temperature ?? 0.3}，越低答案越稳定一致；越高越发散。`}
+                        value={form.customer_query.specialist_temperature ?? defaults.customer_query.specialist_temperature ?? 0.3}
+                        step={0.1}
+                        min={0}
+                        max={2}
+                        fieldError={fieldErrors["customer_query.specialist_temperature"]}
+                        onChange={(value) => updateNumber("customer_query.specialist_temperature", value)}
                       />
                     </div>
                     <div className="grid gap-4 md:grid-cols-2">
@@ -3566,9 +3686,9 @@ export function SettingsModule({ dashboard, onDashboardRefresh, setDetail }: Bas
           </TabsContent>
         ) : null}
 
-        {activeTab === "intents" ? (
+        {activeTab === "safety-terms" ? (
           <TabsContent>
-            <IntentSettingsPanel setDetail={setDetail} />
+            <SafetyTermsSettingsPanel />
           </TabsContent>
         ) : null}
 
@@ -3678,6 +3798,304 @@ function StatusLine({ label, value, ok }: { label: string; value: string; ok?: b
       </span>
     </div>
   );
+}
+
+const emptySafetyTermsConfig: CustomerSafetyTermsConfig = {
+  version: 1,
+  categories: [],
+};
+
+function SafetyTermsSettingsPanel() {
+  const [config, setConfig] = React.useState<CustomerSafetyTermsConfig>(emptySafetyTermsConfig);
+  const [status, setStatus] = React.useState<CustomerSafetyTermsStatus | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const [saved, setSaved] = React.useState(false);
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    setError("");
+    setSaved(false);
+    try {
+      const response = await api.getCustomerSafetyTerms();
+      setConfig(normalizeSafetyTermsConfig(response.config));
+      setStatus(response.status);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void load();
+  }, [load]);
+
+  function patchCategory(index: number, patch: Partial<CustomerSafetyTermCategory>) {
+    setConfig((current) => ({
+      ...current,
+      categories: current.categories.map((category, i) => (i === index ? { ...category, ...patch } : category)),
+    }));
+    setSaved(false);
+  }
+
+  function addCategory() {
+    setConfig((current) => ({
+      ...current,
+      categories: [
+        ...current.categories,
+        {
+          id: uniqueSafetyTermID(current.categories),
+          name: "",
+          signals: [],
+          route_to: "safety",
+          response_goal: "",
+        },
+      ],
+    }));
+    setSaved(false);
+  }
+
+  function removeCategory(index: number) {
+    setConfig((current) => ({
+      ...current,
+      categories: current.categories.filter((_, i) => i !== index),
+    }));
+    setSaved(false);
+  }
+
+  async function save() {
+    const normalized = normalizeSafetyTermsConfig(config);
+    const validationError = validateSafetyTermsConfig(normalized);
+    if (validationError) {
+      setError(validationError);
+      setSaved(false);
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const response = await api.updateCustomerSafetyTerms(normalized);
+      setConfig(normalizeSafetyTermsConfig(response.config));
+      setStatus(response.status);
+      setSaved(true);
+    } catch (err) {
+      setError(errorMessage(err));
+      setSaved(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <ShieldCheck className="h-4 w-4" />
+                安全风险信号表
+              </CardTitle>
+              <CardDescription>维护注入 Router 和 Safety 专家的风险信号；回复目标不是固定话术，服务端不做命中拦截。</CardDescription>
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={() => void load()} disabled={loading || saving}>
+              <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />
+              重新读取
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {error ? (
+            <Alert variant="destructive" className="mb-3 rounded-lg">
+              <AlertTitle>保存失败</AlertTitle>
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : null}
+          {saved ? (
+            <Alert className="mb-3 rounded-lg border-border bg-muted/40 text-foreground">
+              <AlertTitle>已保存</AlertTitle>
+              <AlertDescription>新的风险信号会在下一轮客户问答 prompt 注入时生效。</AlertDescription>
+            </Alert>
+          ) : null}
+          <div className="space-y-3">
+            {config.categories.map((category, index) => (
+              <div key={`${category.id}-${index}`} className="rounded-lg border bg-muted/40 p-3 dark:bg-background">
+                <div className="grid gap-3 md:grid-cols-[minmax(0,220px)_minmax(0,1fr)]">
+                  <TextField
+                    label="ID"
+                    value={category.id}
+                    onChange={(value) => patchCategory(index, { id: value })}
+                    placeholder="platform_evasion"
+                  />
+                  <TextField
+                    label="分类名称"
+                    value={category.name}
+                    onChange={(value) => patchCategory(index, { name: value })}
+                    placeholder="绕平台风控"
+                  />
+                </div>
+                <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                  <label className="block space-y-2">
+                    <span className="block text-sm font-medium">风险信号</span>
+                    <Textarea
+                      className="min-h-28 rounded-lg bg-card text-sm dark:bg-card"
+                      value={category.signals.join("\n")}
+                      onChange={(event) => patchCategory(index, { signals: splitSafetySignals(event.target.value) })}
+                      placeholder={"绕检测\n过风控\n避免封号"}
+                    />
+                  </label>
+                  <label className="block space-y-2">
+                    <span className="block text-sm font-medium">回复目标</span>
+                    <Textarea
+                      className="min-h-28 rounded-lg bg-card text-sm dark:bg-card"
+                      value={category.response_goal}
+                      onChange={(event) => patchCategory(index, { response_goal: event.target.value })}
+                      placeholder="表达不能承诺规避平台风控、避免封号或保证账号结果。"
+                    />
+                  </label>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                  <Badge variant="outline">route_to: safety</Badge>
+                  <Button type="button" variant="outline" size="sm" onClick={() => removeCategory(index)}>
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    删除分类
+                  </Button>
+                </div>
+              </div>
+            ))}
+            {config.categories.length === 0 ? (
+              <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">还没有风险分类。</div>
+            ) : null}
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button type="button" variant="outline" onClick={addCategory}>
+              <Plus className="mr-2 h-4 w-4" />
+              新增分类
+            </Button>
+            <Button type="button" onClick={() => void save()} disabled={saving || loading}>
+              {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+              保存风险信号
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="rounded-lg border bg-card shadow-sm dark:bg-card">
+        <CardHeader>
+          <CardTitle className="text-base">当前状态</CardTitle>
+          <CardDescription>这份配置只影响 prompt 注入，不会触发服务端直接拒答。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <StatusLine label="分类数" value={String(status?.category_count ?? config.categories.length)} ok />
+          <StatusLine label="配置文件" value={status?.path || "-"} ok={!status?.error} />
+          <StatusLine label="最近读取" value={status?.loaded_at ? formatDate(status.loaded_at) : "-"} ok={!status?.error} />
+          {status?.error ? (
+            <Alert variant="destructive" className="mt-3 rounded-lg">
+              <AlertTitle>配置读取异常</AlertTitle>
+              <AlertDescription>{status.error}</AlertDescription>
+            </Alert>
+          ) : null}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function TextField({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <label className="block space-y-2">
+      <span className="block text-sm font-medium">{label}</span>
+      <Input className="h-9 rounded-lg bg-card dark:bg-card" value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
+    </label>
+  );
+}
+
+function normalizeSafetyTermsConfig(config: CustomerSafetyTermsConfig): CustomerSafetyTermsConfig {
+  return {
+    version: 1,
+    categories: (config.categories ?? []).map((category) => ({
+      id: normalizeSafetyTermID(category.id),
+      name: category.name.trim(),
+      signals: cleanSafetySignals(category.signals),
+      route_to: "safety",
+      response_goal: category.response_goal.trim(),
+    })),
+  };
+}
+
+function normalizeSafetyTermID(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_")
+    .replace(/[^a-z0-9_]/g, "");
+}
+
+function splitSafetySignals(value: string) {
+  return cleanSafetySignals(value.split(/\r?\n|,/));
+}
+
+function cleanSafetySignals(values: string[]) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of values) {
+    const value = item.trim();
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+function validateSafetyTermsConfig(config: CustomerSafetyTermsConfig) {
+  if (config.categories.length === 0) {
+    return "至少保留一个风险分类。";
+  }
+  const seen = new Set<string>();
+  for (const [index, category] of config.categories.entries()) {
+    if (!category.id) {
+      return `第 ${index + 1} 个分类缺少 ID。`;
+    }
+    if (seen.has(category.id)) {
+      return `分类 ID 重复：${category.id}`;
+    }
+    seen.add(category.id);
+    if (!category.name) {
+      return `第 ${index + 1} 个分类缺少名称。`;
+    }
+    if (category.signals.length === 0) {
+      return `分类「${category.name}」至少需要一个风险信号。`;
+    }
+    if (!category.response_goal) {
+      return `分类「${category.name}」缺少回复目标。`;
+    }
+  }
+  return "";
+}
+
+function uniqueSafetyTermID(categories: CustomerSafetyTermCategory[]) {
+  const used = new Set(categories.map((category) => category.id));
+  let index = categories.length + 1;
+  let id = `risk_category_${index}`;
+  while (used.has(id)) {
+    index += 1;
+    id = `risk_category_${index}`;
+  }
+  return id;
 }
 
 function RuntimeLogSettingsPanel({
@@ -3890,7 +4308,6 @@ function RuntimeEnvironmentPanel({
             <ReadonlySetting label="SQLite" value={environment.sqlite_path || "-"} />
             <ReadonlySetting label="Web dist" value={environment.web_dist_dir || "-"} />
             <ReadonlySetting label="Web 静态服务" value={environment.web_enabled ? "开启" : "关闭"} />
-            <ReadonlySetting label="Intents 文件" value={environment.customer_intents_path || "-"} />
           </div>
         </CardContent>
       </Card>
@@ -4255,6 +4672,8 @@ type RuntimeNumberPath =
   | "customer_query.review_min"
   | "customer_query.candidate_top_k"
   | "customer_query.max_evidence_chars"
+  | "customer_query.router_temperature"
+  | "customer_query.specialist_temperature"
   | "answer_log.retention_days"
   | "knowledge.max_text_file_kb";
 
@@ -4266,7 +4685,11 @@ type RuntimeStringPath =
   | "sync.remote"
   | "sync.branch";
 
-type RuntimeBoolPath = "customer_query.router_enable_thinking" | "customer_query.specialist_enable_thinking";
+type RuntimeBoolPath =
+  | "customer_query.router_enable_thinking"
+  | "customer_query.specialist_enable_thinking"
+  | "customer_query.app_channel_enabled"
+  | "customer_query.persist_thinking";
 
 function setRuntimeNumber(settings: AdminRuntimeSettings, path: RuntimeNumberPath, value: number): AdminRuntimeSettings {
   switch (path) {
@@ -4278,6 +4701,10 @@ function setRuntimeNumber(settings: AdminRuntimeSettings, path: RuntimeNumberPat
       return { ...settings, customer_query: { ...settings.customer_query, candidate_top_k: value } };
     case "customer_query.max_evidence_chars":
       return { ...settings, customer_query: { ...settings.customer_query, max_evidence_chars: value } };
+    case "customer_query.router_temperature":
+      return { ...settings, customer_query: { ...settings.customer_query, router_temperature: value } };
+    case "customer_query.specialist_temperature":
+      return { ...settings, customer_query: { ...settings.customer_query, specialist_temperature: value } };
     case "answer_log.retention_days":
       return { ...settings, answer_log: { ...settings.answer_log, retention_days: value } };
     case "knowledge.max_text_file_kb":
@@ -4308,6 +4735,10 @@ function setRuntimeBool(settings: AdminRuntimeSettings, path: RuntimeBoolPath, v
       return { ...settings, customer_query: { ...settings.customer_query, router_enable_thinking: value } };
     case "customer_query.specialist_enable_thinking":
       return { ...settings, customer_query: { ...settings.customer_query, specialist_enable_thinking: value } };
+    case "customer_query.app_channel_enabled":
+      return { ...settings, customer_query: { ...settings.customer_query, app_channel_enabled: value } };
+    case "customer_query.persist_thinking":
+      return { ...settings, customer_query: { ...settings.customer_query, persist_thinking: value } };
   }
 }
 
@@ -4334,7 +4765,7 @@ function normalizeSettingsTab(value: string | null): SettingsTab {
   if (
     value === "models" ||
     value === "customer-query" ||
-    value === "intents" ||
+    value === "safety-terms" ||
     value === "logs" ||
     value === "knowledge" ||
     value === "environment"

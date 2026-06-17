@@ -358,9 +358,10 @@ func (c *DynamicLLMClient) clientForModel(model *store.LLMModel) llm.Client {
 		return client
 	}
 	client := llm.NewClient(llm.ClientConfig{
-		APIKey:     model.APIKey,
-		BaseURL:    model.BaseURL,
-		TimeoutSec: firstPositive(model.TimeoutSec, c.defaults.TimeoutSec, 90),
+		APIKey:      model.APIKey,
+		BaseURL:     model.BaseURL,
+		TimeoutSec:  firstPositive(model.TimeoutSec, c.defaults.TimeoutSec, 90),
+		Temperature: c.defaults.Temperature,
 	})
 	c.clientByID[key] = client
 	return client

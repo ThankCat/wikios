@@ -117,6 +117,75 @@ func TestChatSendsEnableThinking(t *testing.T) {
 	}
 }
 
+func TestChatSendsConfiguredTemperature(t *testing.T) {
+	var raw map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	temp := 0.2
+	client := NewClient(ClientConfig{
+		APIKey:      "test-key",
+		BaseURL:     server.URL,
+		TimeoutSec:  5,
+		Temperature: &temp,
+	})
+	if _, err := client.Chat(context.Background(), "test-model", []Message{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	got, ok := raw["temperature"]
+	if !ok {
+		t.Fatalf("expected temperature in payload, got %#v", raw)
+	}
+	if v, _ := got.(float64); v != 0.2 {
+		t.Fatalf("expected temperature=0.2, got %#v", got)
+	}
+}
+
+func TestChatOmitsTemperatureWhenUnset(t *testing.T) {
+	var raw map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{APIKey: "test-key", BaseURL: server.URL, TimeoutSec: 5})
+	if _, err := client.Chat(context.Background(), "test-model", []Message{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if _, ok := raw["temperature"]; ok {
+		t.Fatalf("expected no temperature field when unset, got %#v", raw["temperature"])
+	}
+}
+
+func TestChatContextTemperatureOverridesClientDefault(t *testing.T) {
+	var raw map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	clientTemp := 0.7
+	client := NewClient(ClientConfig{APIKey: "test-key", BaseURL: server.URL, TimeoutSec: 5, Temperature: &clientTemp})
+	override := 0.0
+	if _, err := client.Chat(WithTemperature(context.Background(), &override), "test-model", []Message{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if v, _ := raw["temperature"].(float64); v != 0.0 {
+		t.Fatalf("expected temperature=0 from context override, got %#v", raw["temperature"])
+	}
+}
+
 func TestChatSendsResponseFormat(t *testing.T) {
 	var seen *ResponseFormat
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

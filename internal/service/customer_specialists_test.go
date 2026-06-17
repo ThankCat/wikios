@@ -64,6 +64,13 @@ func TestCustomerSpecialistProfileUnknownFallsBackToProduct(t *testing.T) {
 	}
 }
 
+func TestCustomerSpecialistProductKeepsFiveCandidates(t *testing.T) {
+	profile := customerSpecialistProfile("product")
+	if profile.CandidateTopK != 5 {
+		t.Fatalf("expected product specialist to keep 5 candidates, got %d", profile.CandidateTopK)
+	}
+}
+
 func TestCustomerSpecialistRetrievalQueriesUsesRouterQueriesThenRewriteFallback(t *testing.T) {
 	queries := customerSpecialistRetrievalQueries(&CustomerRouterOutput{
 		RewrittenQuestion: "静态 IP 价格",
@@ -183,6 +190,77 @@ func TestRetrieveCustomerSpecialistEvidenceExpandsAllowedWikilinks(t *testing.T)
 	}
 }
 
+func TestRetrieveCustomerSpecialistEvidenceKeepsDirectCandidatesBeforeWikilinks(t *testing.T) {
+	root := t.TempDir()
+	writeTestWikiPage(t, root, "wiki/procedures/si-ye-tian-connection-troubleshooting.md", "---\ntitle: 连接排障\n---\n静态 IP 连接后没网时，不要只看配置；相关资料见 [[si-ye-tian-api-whitelist-setup]]、[[si-ye-tian-download-installation]]、[[si-ye-tian-after-sales-policy]]。")
+	writeTestWikiPage(t, root, "wiki/procedures/si-ye-tian-static-ip-usage.md", "---\ntitle: 静态 IP 使用\n---\n静态 IP 支持手动切换、重新分配，或更换地区/线路后测试。")
+	writeTestWikiPage(t, root, "wiki/procedures/si-ye-tian-device-network-configuration.md", "---\ntitle: 设备网络\n---\n检查系统代理和全局代理设置。")
+	writeTestWikiPage(t, root, "wiki/knowledge/si-ye-tian-static-ip.md", "---\ntitle: 静态 IP\n---\n静态 IP 是相对固定出口，也支持按后台资源手动切换。")
+	writeTestWikiPage(t, root, "wiki/procedures/si-ye-tian-api-whitelist-setup.md", "---\ntitle: 白名单\n---\n确认当前出口公网 IP 已加入白名单。")
+	writeTestWikiPage(t, root, "wiki/procedures/si-ye-tian-download-installation.md", "---\ntitle: 下载安装\n---\n下载并安装客户端。")
+	writeTestWikiPage(t, root, "wiki/policies/si-ye-tian-after-sales-policy.md", "---\ntitle: 售后\n---\n以当前订单状态为准。")
+
+	rt := testRuntime(
+		testRuntimeTool{name: "exec.qmd", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			raw, err := json.Marshal([]map[string]any{
+				{"path": "wiki/procedures/si-ye-tian-connection-troubleshooting.md", "score": 100},
+				{"path": "wiki/procedures/si-ye-tian-static-ip-usage.md", "score": 90},
+				{"path": "wiki/procedures/si-ye-tian-device-network-configuration.md", "score": 80},
+				{"path": "wiki/knowledge/si-ye-tian-static-ip.md", "score": 70},
+			})
+			if err != nil {
+				return runtime.ToolResult{}, err
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"stdout": string(raw)}}, nil
+		}},
+		testRuntimeTool{name: "wiki.search_pages"},
+		testRuntimeTool{name: "wiki.read_page", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			path, _ := args["path"].(string)
+			raw, err := os.ReadFile(filepath.Join(env.WikiRoot, filepath.FromSlash(path)))
+			if err != nil {
+				return runtime.ToolResult{Success: false, RiskLevel: runtime.RiskLow}, err
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"content": string(raw)}}, nil
+		}},
+	)
+	svc := newTestCustomerChatServiceWithRoot(t, rt, root)
+	result := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-direct-before-links", &CustomerRouterOutput{
+		Specialist:        "troubleshooting",
+		RewrittenQuestion: "客户使用静态 IP，连接后所有网页都打不开，基础排查后还是连不上。",
+		NeedsRetrieval:    true,
+		RetrievalQueries:  []string{"四叶天 静态 IP 连接后没网 所有网页打不开 排查"},
+		Slots: CustomerRouterSlots{
+			PrimaryProduct: "static_ip",
+			Products:       []string{"static_ip"},
+		},
+	}, RuntimeSettings{})
+	if result.Error != "" {
+		t.Fatalf("expected retrieval without error, got %q", result.Error)
+	}
+	if len(result.Sources) != 4 {
+		t.Fatalf("expected direct topK sources, got %+v", result.Sources)
+	}
+	wantSources := []string{
+		"wiki/procedures/si-ye-tian-connection-troubleshooting.md",
+		"wiki/procedures/si-ye-tian-static-ip-usage.md",
+		"wiki/procedures/si-ye-tian-device-network-configuration.md",
+		"wiki/knowledge/si-ye-tian-static-ip.md",
+	}
+	for index, want := range wantSources {
+		if result.Sources[index].Path != want {
+			t.Fatalf("source %d: expected %s, got %+v", index, want, result.Sources)
+		}
+	}
+	if _, ok := result.EvidenceBodies["wiki/procedures/si-ye-tian-static-ip-usage.md"]; !ok {
+		t.Fatalf("expected static IP usage evidence to be visible, got keys %+v", result.EvidenceBodies)
+	}
+	for _, source := range result.Sources {
+		if source.Path == "wiki/procedures/si-ye-tian-api-whitelist-setup.md" {
+			t.Fatalf("expected wikilink expansion not to crowd out direct candidates, got %+v", result.Sources)
+		}
+	}
+}
+
 func TestResolveCustomerEvidenceWikilinksKeepsSpecialistScope(t *testing.T) {
 	root := t.TempDir()
 	writeTestWikiPage(t, root, "wiki/procedures/si-ye-tian-api-whitelist-setup.md", "procedure")
@@ -270,6 +348,77 @@ func TestRetrieveCustomerSpecialistEvidenceStopsAfterEnoughEvidence(t *testing.T
 	}
 }
 
+func TestRetrieveCustomerSpecialistEvidenceDemotesConflictingProductPages(t *testing.T) {
+	rt := testRuntime(
+		testRuntimeTool{name: "exec.qmd", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			raw, err := json.Marshal([]map[string]any{
+				{"path": "wiki/procedures/si-ye-tian-dynamic-ip-usage.md", "score": 100},
+				{"path": "wiki/procedures/si-ye-tian-static-ip-usage.md", "score": 90},
+				{"path": "wiki/knowledge/si-ye-tian-static-ip.md", "score": 80},
+				{"path": "wiki/procedures/si-ye-tian-api-whitelist-setup.md", "score": 70},
+				{"path": "wiki/procedures/si-ye-tian-renewal-upgrade-procedure.md", "score": 60},
+			})
+			if err != nil {
+				return runtime.ToolResult{}, err
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"stdout": string(raw)}}, nil
+		}},
+		testRuntimeTool{name: "wiki.search_pages"},
+		testRuntimeTool{name: "wiki.read_page", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			path, _ := args["path"].(string)
+			pages := map[string]string{
+				"wiki/procedures/si-ye-tian-dynamic-ip-usage.md":          "---\ntitle: 动态 IP 使用\n---\n动态 IP 可重新提取。",
+				"wiki/procedures/si-ye-tian-static-ip-usage.md":           "---\ntitle: 静态 IP 使用\n---\n静态 IP 可在后台手动切换。",
+				"wiki/knowledge/si-ye-tian-static-ip.md":                  "---\ntitle: 静态 IP\n---\n静态 IP 是固定出口产品。",
+				"wiki/procedures/si-ye-tian-api-whitelist-setup.md":       "---\ntitle: 白名单\n---\n后台可配置白名单。",
+				"wiki/procedures/si-ye-tian-renewal-upgrade-procedure.md": "---\ntitle: 续费升级\n---\n后台可续费升级。",
+			}
+			content := pages[path]
+			if content == "" {
+				return runtime.ToolResult{Success: false, RiskLevel: runtime.RiskLow, Error: &runtime.ToolError{Code: "NOT_FOUND", Message: path}}, nil
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"content": content}}, nil
+		}},
+	)
+	svc := newTestCustomerChatService(t, rt)
+	result := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-static-product-rank", &CustomerRouterOutput{
+		Specialist:        "technical",
+		RewrittenQuestion: "客户询问静态 IP 怎么切换。",
+		NeedsRetrieval:    true,
+		RetrievalQueries:  []string{"四叶天 静态 IP 切换 IP 方法"},
+		Slots: CustomerRouterSlots{
+			PrimaryProduct: "static_ip",
+			Products:       []string{"static_ip"},
+		},
+	}, RuntimeSettings{})
+	if result.Error != "" {
+		t.Fatalf("expected retrieval without error, got %q", result.Error)
+	}
+	if len(result.Sources) != 4 {
+		t.Fatalf("expected topK evidence pages, got %+v", result.Sources)
+	}
+	if result.Sources[0].Path != "wiki/procedures/si-ye-tian-static-ip-usage.md" {
+		t.Fatalf("expected static IP usage to be the first source, got %+v", result.Sources)
+	}
+	for _, source := range result.Sources {
+		if source.Path == "wiki/procedures/si-ye-tian-dynamic-ip-usage.md" {
+			t.Fatalf("expected conflicting dynamic IP page to stay out of topK sources, got %+v", result.Sources)
+		}
+	}
+	candidateIndex := map[string]int{}
+	for index, candidate := range result.Candidates {
+		candidateIndex[candidate.Path] = index
+	}
+	dynamicIndex, hasDynamic := candidateIndex["wiki/procedures/si-ye-tian-dynamic-ip-usage.md"]
+	renewalIndex, hasRenewal := candidateIndex["wiki/procedures/si-ye-tian-renewal-upgrade-procedure.md"]
+	if !hasDynamic || !hasRenewal {
+		t.Fatalf("expected both dynamic and renewal candidates to remain visible, got %+v", result.Candidates)
+	}
+	if dynamicIndex < renewalIndex {
+		t.Fatalf("expected conflicting dynamic candidate to be demoted, got %+v", result.Candidates)
+	}
+}
+
 func TestRetrieveCustomerSpecialistCacheDoesNotBypassProfileScope(t *testing.T) {
 	qmdCalls := 0
 	readCalls := 0
@@ -344,6 +493,42 @@ func TestRetrieveCustomerSpecialistEvidenceTechnicalWhitelistReadsProcedure(t *t
 	}
 	if len(result.CacheTrace.RetrievalResults) != 1 {
 		t.Fatalf("expected retrieval result trace, got %+v", result.CacheTrace)
+	}
+}
+
+func TestBuildCustomerEvidencePreviewKeepsStaticSwitchEntryURL(t *testing.T) {
+	body := `# 四叶天静态 IP 使用与切换流程
+
+## Summary
+
+静态 IP 使用与切换流程用于处理“静态IP怎么用”“静态IP怎么切换”“静态IP怎么换IP/换地区”这类操作问题。正式事实以 [[si-ye-tian-static-ip]] 为准；本页只沉淀购买、安装、连接、切换和验证的流程。
+
+## Preconditions
+
+- 已确认需要相对固定的出口 IP，而不是高频更换；需要频繁更换时应改用动态 IP，不要依赖静态 IP 高频切换。
+- 已确认产品类型：数据中心静态 IP（购买期内 IP 固定）或住宅静态 IP（信任度高，但可能在同城范围内跳 IP）。
+- 已确认使用端：电脑（Windows/Mac）或手机。
+- 切换前先登录会员中心确认当前套餐、地区和剩余切换次数。
+
+## Steps
+
+1. 购买静态 IP：购买入口 ` + "`https://www.siyetian.com/staticip.html`" + `；选择共享型或独享型、带宽和节点，价格与有效期以官网或人工确认为准。
+2. 下载并安装软件：下载入口 ` + "`https://www.siyetian.com/download.html`" + `；Windows 客户端可选择静态 IP（数据中心 IP）或住宅 IP、带宽和节点。
+3. 登录会员中心查看与管理已购静态 IP，登录后的查看、续费和切换入口包括 ` + "`https://www.siyetian.com/member/jingtai.html`" + `、` + "`https://www.siyetian.com/member/staticip.html`" + ` 和 ` + "`https://www.siyetian.com/member/house.html`" + `；具体可见资源以当前账号后台为准。
+4. 在会员中心对应产品页对静态 IP 执行手动切换（更换地区/线路或重新分配）；静态 IP 支持手动切换，主来源记录为每月 5 次切换机会。`
+
+	preview := buildCustomerEvidencePreview(body, "wiki/procedures/si-ye-tian-static-ip-usage.md", "我的静态IP怎么切换成另一个IP地址？", 1800)
+	for _, want := range []string{
+		"https://www.siyetian.com/member/staticip.html",
+		"执行手动切换",
+		"每月 5 次",
+	} {
+		if !strings.Contains(preview, want) {
+			t.Fatalf("expected preview to include %q, got:\n%s", want, preview)
+		}
+	}
+	if strings.Contains(preview, "\uFFFD") {
+		t.Fatalf("expected preview not to contain replacement chars, got:\n%s", preview)
 	}
 }
 

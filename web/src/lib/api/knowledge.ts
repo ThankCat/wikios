@@ -8,5 +8,5 @@ export const knowledgeAPI = {
   syncCommit: api.syncCommit,
   syncGenerateMessage: api.syncGenerateMessage,
   syncPush: api.syncPush,
+  syncPull: api.syncPull,
 };
-

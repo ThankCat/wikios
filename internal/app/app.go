@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -44,17 +45,30 @@ func New(cfg *config.Config) (*App, error) {
 	rt := runtime.NewRuntime(registry, runtime.NewPolicyEngine(), runtime.NewValidator(), runtime.NewAuditLogger())
 	llmClient := service.NewDynamicLLMClient(dataStore, cfg.LLM)
 	retriever := retrieval.NewQMDRetriever(rt)
-	customerIntents := service.NewCustomerIntentManager(cfg.CustomerIntents)
+	if cfg.Retrieval.QMDHTTP.Enabled {
+		rerank := true
+		if cfg.Retrieval.QMDHTTP.Rerank != nil {
+			rerank = *cfg.Retrieval.QMDHTTP.Rerank
+		}
+		httpClient := retrieval.NewQMDHTTPClientWithRerank(
+			cfg.Retrieval.QMDHTTP.URL,
+			time.Duration(cfg.Retrieval.QMDHTTP.TimeoutSec)*time.Second,
+			rerank,
+			cfg.Retrieval.QMDHTTP.RerankCandidates,
+		)
+		retriever = retrieval.NewQMDRetrieverWithHTTP(rt, httpClient)
+	}
+	safetyTerms := service.NewCustomerSafetyTermManager(cfg.SafetyTerms)
 	contextCounter := service.NewContextCounter(cfg.Context)
 	deps := service.Deps{
-		Config:          cfg,
-		Runtime:         rt,
-		LLM:             llmClient,
-		Retriever:       retriever,
-		Store:           dataStore,
-		CustomerIntents: customerIntents,
-		PromptDir:       "internal/llm/prompts",
-		WorkspaceDir:    cfg.Workspace.BaseDir,
+		Config:       cfg,
+		Runtime:      rt,
+		LLM:          llmClient,
+		Retriever:    retriever,
+		Store:        dataStore,
+		SafetyTerms:  safetyTerms,
+		PromptDir:    "internal/llm/prompts",
+		WorkspaceDir: cfg.Workspace.BaseDir,
 	}
 	handlers := api.NewHandlers(
 		service.NewCustomerChatService(deps),
@@ -64,8 +78,8 @@ func New(cfg *config.Config) (*App, error) {
 		service.NewSyncService(deps),
 		dataStore,
 		cfg,
-		customerIntents,
 		contextCounter,
+		safetyTerms,
 	)
 
 	a := &App{cfg: cfg}

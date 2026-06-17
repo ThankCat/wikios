@@ -1,8 +1,26 @@
+export type UserIntentType = "wecom" | "refund" | "switch_ip" | "discount";
+
+export type UserIntentExtra = {
+  product_type: string;
+  quantity: number;
+};
+
+export type UserIntent = {
+  type: UserIntentType;
+  extra?: UserIntentExtra | null;
+};
+
 export type CustomerChatResponse = {
   answer: string;
+  answer_mode?: string;
+  review_required?: boolean;
+  source_count?: number;
+  user_intent?: UserIntent | null;
   received_at?: string;
   answered_at?: string;
 };
+
+export type CustomerClientChannel = "web" | "mobile_app";
 
 export type CustomerContextEstimateResponse = {
   mode: "customer" | string;
@@ -96,17 +114,30 @@ export type UploadStreamEvent = {
   data: unknown;
 };
 
-export type CustomerIntentsStatus = {
+export type CustomerSafetyTermCategory = {
+  id: string;
+  name: string;
+  signals: string[];
+  route_to: string;
+  response_goal: string;
+};
+
+export type CustomerSafetyTermsConfig = {
+  version: number;
+  categories: CustomerSafetyTermCategory[];
+};
+
+export type CustomerSafetyTermsStatus = {
   path: string;
   loaded_at?: string;
   error?: string;
-  warnings?: string[];
-  rule_count: number;
+  category_count: number;
 };
 
-export type CustomerIntentsResponse = {
+export type CustomerSafetyTermsResponse = {
   source: string;
-  status: CustomerIntentsStatus;
+  config: CustomerSafetyTermsConfig;
+  status: CustomerSafetyTermsStatus;
 };
 
 export type LLMModel = {
@@ -145,10 +176,14 @@ export type AdminRuntimeSettings = {
     review_min: number;
     candidate_top_k: number;
     max_evidence_chars: number;
+    app_channel_enabled: boolean;
     router_model_id?: string;
     specialist_model_id?: string;
     router_enable_thinking?: boolean;
     specialist_enable_thinking?: boolean;
+    persist_thinking: boolean;
+    router_temperature?: number | null;
+    specialist_temperature?: number | null;
   };
   support: {
     phone: string;
@@ -178,7 +213,6 @@ export type AdminRuntimeEnvironment = {
   sqlite_path: string;
   web_dist_dir: string;
   web_enabled: boolean;
-  customer_intents_path: string;
 };
 
 export type AdminRuntimeSettingsResponse = {
@@ -405,6 +439,8 @@ export type SyncPushResponse = {
   exit_code: number;
 };
 
+export type SyncPullResponse = SyncPushResponse;
+
 export type CustomerConversationSummary = {
   id: string;
   session_id: string;
@@ -414,6 +450,8 @@ export type CustomerConversationSummary = {
   last_question: string;
   last_answer: string;
   last_answer_mode?: string;
+  client_channels?: CustomerClientChannel[] | string[];
+  last_client_channel?: CustomerClientChannel | string;
   entrypoints?: string[];
   last_entrypoint?: "external" | "internal" | string;
   last_simulation?: boolean;
@@ -438,6 +476,7 @@ export type CustomerConversationMessage = {
   trace_id?: string;
   message_id?: string;
   answer_mode?: string;
+  client_channel?: CustomerClientChannel | string;
   entrypoint?: "external" | "internal" | string;
   simulation?: boolean;
   specialist?: string;

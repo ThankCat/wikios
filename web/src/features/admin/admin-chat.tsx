@@ -40,7 +40,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ScrollJumpControls } from "@/components/ui/scroll-jump-controls";
 import { Textarea } from "@/components/ui/textarea";
-import { api, APIError, isAbortError } from "@/lib/api";
+import { api, isAbortError } from "@/lib/api";
 import { createId } from "@/lib/id";
 import { useScrollFollow } from "@/lib/use-scroll-follow";
 import { cn } from "@/lib/utils";
@@ -50,7 +50,6 @@ import type {
   AdminStreamEvent,
   ContextUsage,
   LLMModel,
-  CustomerIntentsStatus,
   ReviewItem,
   ReviewTarget,
   SyncCommitResponse,
@@ -312,14 +311,6 @@ export function AdminChat({
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const typingTimersRef = useRef<Record<string, number>>({});
   const [requestLabels, setRequestLabelsSnapshot] = useState<Record<string, string>>(() => runtime.requestLabels);
-  const [intentEditorOpen, setIntentEditorOpen] = useState(false);
-  const [intentSource, setIntentSource] = useState("");
-  const [intentStatus, setIntentStatus] = useState<CustomerIntentsStatus | null>(
-    null,
-  );
-  const [intentLoading, setIntentLoading] = useState(false);
-  const [intentSaving, setIntentSaving] = useState(false);
-  const [intentMessage, setIntentMessage] = useState("");
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [contextLoading, setContextLoading] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
@@ -1011,73 +1002,6 @@ export function AdminChat({
       setReviewMessage(reason instanceof Error ? reason.message : "删除失败");
     } finally {
       setReviewBusy(false);
-    }
-  }
-
-  async function openIntentEditor() {
-    setIntentEditorOpen(true);
-    if (intentSource.trim() !== "") {
-      return;
-    }
-    setIntentLoading(true);
-    setIntentMessage("");
-    try {
-      const response = await api.getCustomerIntents();
-      setIntentSource(response.source);
-      setIntentStatus(response.status);
-    } catch (reason) {
-      setIntentMessage(
-        reason instanceof Error ? reason.message : "读取前置话术失败",
-      );
-    } finally {
-      setIntentLoading(false);
-    }
-  }
-
-  function closeIntentEditor() {
-    setIntentEditorOpen(false);
-  }
-
-  async function reloadIntentSource() {
-    setIntentLoading(true);
-    setIntentMessage("");
-    try {
-      const response = await api.getCustomerIntents();
-      setIntentSource(response.source);
-      setIntentStatus(response.status);
-      setIntentMessage("已重新读取当前配置。");
-    } catch (reason) {
-      setIntentMessage(
-        reason instanceof Error ? reason.message : "读取前置话术失败",
-      );
-    } finally {
-      setIntentLoading(false);
-    }
-  }
-
-  async function saveIntentSource() {
-    setIntentSaving(true);
-    setIntentMessage("");
-    try {
-      const response = await api.updateCustomerIntents(intentSource);
-      setIntentSource(response.source);
-      setIntentStatus(response.status);
-      const warningText = response.status.warnings?.length
-        ? `，警告：${response.status.warnings.join("；")}`
-        : "";
-      setIntentMessage(`保存成功，已替换内存缓存${warningText}`);
-    } catch (reason) {
-      if (reason instanceof APIError) {
-        const payload = asRecord(reason.payload);
-        const errorObject = asRecord(payload.error);
-        setIntentMessage(String(errorObject.message ?? reason.message));
-      } else {
-        setIntentMessage(
-          reason instanceof Error ? reason.message : "保存前置话术失败",
-        );
-      }
-    } finally {
-      setIntentSaving(false);
     }
   }
 
@@ -1791,16 +1715,6 @@ export function AdminChat({
                   >
                     <Bot className="mr-2 h-4 w-4" />
                     模型
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void openIntentEditor()}
-                    disabled={intentLoading}
-                    title="编辑 server 端前置话术 YAML"
-                  >
-                    <FileText className="mr-2 h-4 w-4" />
-                    前置话术
                   </Button>
                   <Button
                     variant="outline"
@@ -2817,102 +2731,6 @@ export function AdminChat({
                   }
                 >
                   推送{(syncStatus?.push_count ?? 0) > 0 ? `（${syncStatus?.push_count}）` : ""}
-                </Button>
-              </footer>
-            </div>
-          </div>
-        ) : null}
-        {intentEditorOpen ? (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/35 p-4"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="customer-intents-title"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget) {
-                closeIntentEditor();
-              }
-            }}
-          >
-            <div className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-lg">
-              <header className="flex items-start justify-between gap-4 border-b px-5 py-4">
-                <div>
-                  <h2
-                    id="customer-intents-title"
-                    className="text-sm font-semibold"
-                  >
-                    前置话术策略
-                  </h2>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    直接编辑 server 端
-                    YAML。保存成功后会立即校验、写入文件并替换内存缓存。
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={closeIntentEditor}
-                  aria-label="关闭前置话术弹窗"
-                >
-                  <X className="mr-2 h-4 w-4" />
-                  关闭
-                </Button>
-              </header>
-              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-                <Textarea
-                  value={intentSource}
-                  onChange={(event) => setIntentSource(event.target.value)}
-                  className="min-h-[52vh] resize-none bg-card font-mono text-xs leading-relaxed"
-                  spellCheck={false}
-                  placeholder={intentLoading ? "正在读取配置..." : "version: 1"}
-                />
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                  <span>
-                    {intentStatus
-                      ? `文件：${intentStatus.path}；规则数：${intentStatus.rule_count}${intentStatus.loaded_at ? `；加载：${intentStatus.loaded_at}` : ""}`
-                      : "尚未读取配置"}
-                  </span>
-                  <span
-                    className={cn(
-                      intentMessage.includes("成功") ||
-                        intentMessage.includes("重新读取")
-                        ? "text-muted-foreground"
-                        : intentMessage
-                          ? "text-destructive"
-                          : "",
-                    )}
-                  >
-                    {intentMessage || intentStatus?.error || ""}
-                  </span>
-                </div>
-              </div>
-              <footer className="flex flex-wrap items-center justify-end gap-2 border-t bg-muted/40 px-5 py-4">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void reloadIntentSource()}
-                  disabled={intentLoading || intentSaving}
-                >
-                  重新读取
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={closeIntentEditor}
-                >
-                  关闭
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={() => void saveIntentSource()}
-                  disabled={intentLoading || intentSaving}
-                >
-                  <Save className="mr-2 h-4 w-4" />
-                  {intentSaving ? "保存中" : "保存并生效"}
                 </Button>
               </footer>
             </div>

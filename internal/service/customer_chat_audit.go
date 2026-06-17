@@ -17,19 +17,21 @@ const (
 )
 
 type customerChatAuditRecord struct {
-	SchemaVersion string                      `json:"schema_version"`
-	RecordType    string                      `json:"record_type"`
-	TraceID       string                      `json:"trace_id"`
-	SessionID     string                      `json:"session_id"`
-	Time          customerChatAuditTime       `json:"time"`
-	Runtime       customerChatAuditRuntime    `json:"runtime"`
-	Request       customerChatAuditRequest    `json:"request"`
-	Router        customerChatAuditRouter     `json:"router"`
-	Retrieval     map[string]any              `json:"retrieval"`
-	Specialist    customerChatAuditSpecialist `json:"specialist"`
-	Final         customerChatAuditFinal      `json:"final"`
-	Error         *customerChatAuditError     `json:"error"`
-	Review        customerChatAuditReview     `json:"review"`
+	SchemaVersion  string                      `json:"schema_version"`
+	RecordType     string                      `json:"record_type"`
+	TraceID        string                      `json:"trace_id"`
+	SessionID      string                      `json:"session_id"`
+	Time           customerChatAuditTime       `json:"time"`
+	Runtime        customerChatAuditRuntime    `json:"runtime"`
+	Request        customerChatAuditRequest    `json:"request"`
+	Router         customerChatAuditRouter     `json:"router"`
+	Retrieval      map[string]any              `json:"retrieval"`
+	Observability  map[string]any              `json:"observability,omitempty"`
+	Specialist     customerChatAuditSpecialist `json:"specialist"`
+	Final          customerChatAuditFinal      `json:"final"`
+	Error          *customerChatAuditError     `json:"error"`
+	ReviewDecision map[string]any              `json:"review_decision,omitempty"`
+	Review         customerChatAuditReview     `json:"review"`
 }
 
 type customerChatAuditTime struct {
@@ -42,6 +44,7 @@ type customerChatAuditTime struct {
 type customerChatAuditRuntime struct {
 	Environment           string `json:"environment"`
 	Entrypoint            string `json:"entrypoint"`
+	ClientChannel         string `json:"client_channel"`
 	Simulation            bool   `json:"simulation"`
 	GitCommit             string `json:"git_commit"`
 	CustomerChatMode      string `json:"customer_chat_mode"`
@@ -83,10 +86,11 @@ type customerChatAuditSpecialist struct {
 }
 
 type customerChatAuditFinal struct {
-	Answer         string `json:"answer"`
-	AnswerMode     string `json:"answer_mode"`
-	SourceCount    int64  `json:"source_count"`
-	ReviewRequired bool   `json:"review_required"`
+	Answer         string              `json:"answer"`
+	AnswerMode     string              `json:"answer_mode"`
+	SourceCount    int64               `json:"source_count"`
+	ReviewRequired bool                `json:"review_required"`
+	UserIntent     *CustomerUserIntent `json:"user_intent"`
 }
 
 type customerChatAuditError struct {

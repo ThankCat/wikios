@@ -48,6 +48,11 @@ func TestSaveRuntimeSettingsPersistsAcrossStoreRestart(t *testing.T) {
 	specialistThinking := false
 	settings.CustomerChat.RouterEnableThinking = &routerThinking
 	settings.CustomerChat.SpecialistEnableThinking = &specialistThinking
+	settings.CustomerChat.PersistThinking = true
+	routerTemp := 0.0
+	specialistTemp := 0.45
+	settings.CustomerChat.RouterTemperature = &routerTemp
+	settings.CustomerChat.SpecialistTemperature = &specialistTemp
 	settings.AnswerLog.Enabled = false
 	settings.AnswerLog.Redact = false
 	settings.AnswerLog.RetentionDays = 30
@@ -81,10 +86,16 @@ func TestSaveRuntimeSettingsPersistsAcrossStoreRestart(t *testing.T) {
 	if reloaded.Settings.CustomerChat.DirectMin != 0.82 ||
 		reloaded.Settings.CustomerChat.RouterModelID != "router-fast" ||
 		reloaded.Settings.CustomerChat.SpecialistModelID != "specialist-main" ||
+		!reloaded.Settings.CustomerChat.AppChannelEnabled ||
 		reloaded.Settings.CustomerChat.RouterEnableThinking == nil ||
 		!*reloaded.Settings.CustomerChat.RouterEnableThinking ||
 		reloaded.Settings.CustomerChat.SpecialistEnableThinking == nil ||
 		*reloaded.Settings.CustomerChat.SpecialistEnableThinking ||
+		!reloaded.Settings.CustomerChat.PersistThinking ||
+		reloaded.Settings.CustomerChat.RouterTemperature == nil ||
+		*reloaded.Settings.CustomerChat.RouterTemperature != 0.0 ||
+		reloaded.Settings.CustomerChat.SpecialistTemperature == nil ||
+		*reloaded.Settings.CustomerChat.SpecialistTemperature != 0.45 ||
 		reloaded.Settings.AnswerLog.Enabled ||
 		reloaded.Settings.Knowledge.MaxTextFileKB != 900 ||
 		reloaded.Settings.Sync.Branch != "release" {
@@ -122,7 +133,8 @@ func TestLoadRuntimeSettingsMigratesLegacyCustomerQueryKey(t *testing.T) {
 		snapshot.Settings.CustomerChat.ReviewMin != 0.32 ||
 		snapshot.Settings.CustomerChat.CandidateTopK != 5 ||
 		snapshot.Settings.CustomerChat.MaxEvidenceChars != 1800 ||
-		snapshot.Settings.CustomerChat.RouterModelID != "router-legacy" {
+		snapshot.Settings.CustomerChat.RouterModelID != "router-legacy" ||
+		!snapshot.Settings.CustomerChat.AppChannelEnabled {
 		t.Fatalf("expected legacy customer query settings to load, got %+v", snapshot.Settings.CustomerChat)
 	}
 }
@@ -158,10 +170,9 @@ func testRuntimeSettingsConfig(t *testing.T) *config.Config {
 			Name:     "Test Wiki",
 			QMDIndex: "test-index",
 		},
-		Workspace:       config.WorkspaceConfig{BaseDir: t.TempDir(), DefaultTimeoutSec: 5},
-		Storage:         config.StorageConfig{SQLitePath: filepath.Join(t.TempDir(), "service.db")},
-		Web:             config.WebConfig{Enabled: &enabled, DistDir: "web/dist"},
-		CustomerIntents: config.CustomerIntentsConfig{Path: "configs/customer_intents.yaml"},
+		Workspace: config.WorkspaceConfig{BaseDir: t.TempDir(), DefaultTimeoutSec: 5},
+		Storage:   config.StorageConfig{SQLitePath: filepath.Join(t.TempDir(), "service.db")},
+		Web:       config.WebConfig{Enabled: &enabled, DistDir: "web/dist"},
 		CustomerChat: config.CustomerQueryConfig{
 			Confidence:       config.CustomerQueryConfidenceConfig{DirectMin: 0.75, ReviewMin: 0.3},
 			CandidateTopK:    8,

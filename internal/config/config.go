@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -15,20 +16,20 @@ const (
 )
 
 type Config struct {
-	Server          ServerConfig          `yaml:"server"`
-	MountedWiki     MountedWikiConfig     `yaml:"mounted_wiki"`
-	LLM             LLMConfig             `yaml:"llm"`
-	Retrieval       RetrievalConfig       `yaml:"retrieval"`
-	Workspace       WorkspaceConfig       `yaml:"workspace"`
-	Sandbox         SandboxConfig         `yaml:"sandbox"`
-	Storage         StorageConfig         `yaml:"storage"`
-	Sync            SyncConfig            `yaml:"sync"`
-	Web             WebConfig             `yaml:"web"`
-	Upload          UploadConfig          `yaml:"upload"`
-	CustomerIntents CustomerIntentsConfig `yaml:"customer_intents"`
-	CustomerChat    CustomerQueryConfig   `yaml:"customer_query"`
-	Support         SupportConfig         `yaml:"support"`
-	Context         ContextConfig         `yaml:"context"`
+	Server       ServerConfig        `yaml:"server"`
+	MountedWiki  MountedWikiConfig   `yaml:"mounted_wiki"`
+	LLM          LLMConfig           `yaml:"llm"`
+	Retrieval    RetrievalConfig     `yaml:"retrieval"`
+	Workspace    WorkspaceConfig     `yaml:"workspace"`
+	Sandbox      SandboxConfig       `yaml:"sandbox"`
+	Storage      StorageConfig       `yaml:"storage"`
+	Sync         SyncConfig          `yaml:"sync"`
+	Web          WebConfig           `yaml:"web"`
+	Upload       UploadConfig        `yaml:"upload"`
+	CustomerChat CustomerQueryConfig `yaml:"customer_query"`
+	SafetyTerms  CustomerSafetyTerms `yaml:"customer_safety_terms"`
+	Support      SupportConfig       `yaml:"support"`
+	Context      ContextConfig       `yaml:"context"`
 }
 
 type ServerConfig struct {
@@ -45,10 +46,32 @@ type MountedWikiConfig struct {
 type LLMConfig struct {
 	TimeoutSec      int `yaml:"timeout_sec"`
 	AdminTimeoutSec int `yaml:"admin_timeout_sec"`
+	// Temperature controls LLM sampling randomness. Lower values make answers
+	// more deterministic/stable (recommended for grounded customer chat); nil
+	// leaves it unset so the provider default applies.
+	Temperature *float64 `yaml:"temperature"`
 }
 
 type RetrievalConfig struct {
-	TopK int `yaml:"top_k"`
+	TopK    int           `yaml:"top_k"`
+	QMDHTTP QMDHTTPConfig `yaml:"qmd_http"`
+}
+
+// QMDHTTPConfig enables retrieval against a long-running `qmd mcp --http`
+// daemon, which keeps the local embedding/rerank models warm.
+type QMDHTTPConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	URL        string `yaml:"url"`
+	TimeoutSec int    `yaml:"timeout_sec"`
+	// Rerank toggles the daemon's LLM reranker. Reranking improves ordering but
+	// is the dominant cost on a cold query (~8s). Defaults to true. Set false to
+	// rely on lexical+vector scores only (much faster, ordering still puts the
+	// best in-scope page first in practice).
+	Rerank *bool `yaml:"rerank"`
+	// RerankCandidates caps how many candidates the reranker scores
+	// (daemon's candidateLimit). Lower = faster; only the most promising
+	// candidates are reranked. Defaults to 8. Ignored when Rerank is false.
+	RerankCandidates int `yaml:"rerank_candidates"`
 }
 
 type WorkspaceConfig struct {
@@ -75,17 +98,13 @@ type SyncConfig struct {
 }
 
 type WebConfig struct {
-	Enabled *bool  `yaml:"enabled"`
-	DistDir string `yaml:"dist_dir"`
+	Enabled    *bool  `yaml:"enabled"`
+	DistDir    string `yaml:"dist_dir"`
+	APIBaseURL string `yaml:"api_base_url"`
 }
 
 type UploadConfig struct {
 	MaxTextFileKB int `yaml:"max_text_file_kb"`
-}
-
-type CustomerIntentsConfig struct {
-	Enabled *bool  `yaml:"enabled"`
-	Path    string `yaml:"path"`
 }
 
 type CustomerQueryConfig struct {
@@ -94,6 +113,11 @@ type CustomerQueryConfig struct {
 	MaxEvidenceChars   int                           `yaml:"max_evidence_chars"`
 	ResponseTimeoutSec int                           `yaml:"response_timeout_sec"`
 	AnswerLog          CustomerChatLogConfig         `yaml:"answer_log"`
+}
+
+type CustomerSafetyTerms struct {
+	Enabled *bool  `yaml:"enabled"`
+	Path    string `yaml:"path"`
 }
 
 type CustomerChatLogConfig struct {
@@ -151,6 +175,19 @@ func (c *Config) normalizeAndValidate() error {
 	if c.Retrieval.TopK <= 0 {
 		c.Retrieval.TopK = 5
 	}
+	if strings.TrimSpace(c.Retrieval.QMDHTTP.URL) == "" {
+		c.Retrieval.QMDHTTP.URL = "http://localhost:8181/mcp"
+	}
+	if c.Retrieval.QMDHTTP.TimeoutSec <= 0 {
+		c.Retrieval.QMDHTTP.TimeoutSec = 30
+	}
+	if c.Retrieval.QMDHTTP.Rerank == nil {
+		enabled := true
+		c.Retrieval.QMDHTTP.Rerank = &enabled
+	}
+	if c.Retrieval.QMDHTTP.RerankCandidates <= 0 {
+		c.Retrieval.QMDHTTP.RerankCandidates = 8
+	}
 	if c.Workspace.BaseDir == "" {
 		c.Workspace.BaseDir = ".workspace"
 	}
@@ -171,6 +208,19 @@ func (c *Config) normalizeAndValidate() error {
 	}
 	if c.LLM.AdminTimeoutSec <= 0 {
 		c.LLM.AdminTimeoutSec = 300
+	}
+	if c.LLM.Temperature == nil {
+		if v, ok := envFloat("WIKIOS_LLM_TEMPERATURE"); ok {
+			c.LLM.Temperature = &v
+		}
+	}
+	if c.LLM.Temperature != nil {
+		if *c.LLM.Temperature < 0 {
+			*c.LLM.Temperature = 0
+		}
+		if *c.LLM.Temperature > 2 {
+			*c.LLM.Temperature = 2
+		}
 	}
 	c.Workspace.BaseDir = filepath.Clean(c.Workspace.BaseDir)
 	c.Storage.SQLitePath = filepath.Clean(c.Storage.SQLitePath)
@@ -197,19 +247,13 @@ func (c *Config) normalizeAndValidate() error {
 	if c.Web.DistDir == "" {
 		c.Web.DistDir = "web/dist"
 	}
+	c.Web.APIBaseURL = strings.TrimSpace(firstEnv("WIKIOS_WEB_API_BASE_URL", c.Web.APIBaseURL))
 	if c.Web.Enabled == nil {
 		enabled := true
 		c.Web.Enabled = &enabled
 	}
 	if c.Upload.MaxTextFileKB <= 0 {
 		c.Upload.MaxTextFileKB = 500
-	}
-	if c.CustomerIntents.Enabled == nil {
-		enabled := true
-		c.CustomerIntents.Enabled = &enabled
-	}
-	if strings.TrimSpace(c.CustomerIntents.Path) == "" {
-		c.CustomerIntents.Path = filepath.Join("configs", "customer_intents.yaml")
 	}
 	if c.CustomerChat.Confidence.DirectMin <= 0 {
 		c.CustomerChat.Confidence.DirectMin = 0.70
@@ -246,6 +290,13 @@ func (c *Config) normalizeAndValidate() error {
 	if c.CustomerChat.AnswerLog.RetentionDays <= 0 {
 		c.CustomerChat.AnswerLog.RetentionDays = envInt("WIKIOS_CUSTOMER_CHAT_LOG_RETENTION_DAYS", 14)
 	}
+	if c.SafetyTerms.Enabled == nil {
+		enabled := true
+		c.SafetyTerms.Enabled = &enabled
+	}
+	if strings.TrimSpace(c.SafetyTerms.Path) == "" {
+		c.SafetyTerms.Path = filepath.Join("configs", "customer_safety_terms.yaml")
+	}
 	if strings.TrimSpace(c.Support.Phone) == "" {
 		c.Support.Phone = firstEnv("WIKIOS_SUPPORT_PHONE", "400-1080-106")
 	}
@@ -271,7 +322,7 @@ func (c *Config) normalizeAndValidate() error {
 		c.Context.Tokenizer = firstEnv("WIKIOS_CONTEXT_TOKENIZER", "cl100k_base")
 	}
 	c.Web.DistDir = filepath.Clean(c.Web.DistDir)
-	c.CustomerIntents.Path = filepath.Clean(c.CustomerIntents.Path)
+	c.SafetyTerms.Path = filepath.Clean(c.SafetyTerms.Path)
 	return nil
 }
 
@@ -292,6 +343,18 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func envFloat(key string) (float64, bool) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
 }
 
 func parseEnvBool(value string, fallback bool) bool {
