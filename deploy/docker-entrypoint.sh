@@ -15,6 +15,7 @@ reset_on_start="${WIKIOS_WIKI_GIT_RESET_ON_START:-false}"
 qmd_auto_collection="${WIKIOS_QMD_AUTO_COLLECTION:-true}"
 qmd_index="${WIKIOS_QMD_INDEX:-knowledge-base}"
 qmd_http_enabled="${WIKIOS_QMD_HTTP_ENABLED:-true}"
+retrieval_mode="${WIKIOS_RETRIEVAL_MODE:-qmd}"
 
 log() {
   printf '[wikios-entrypoint] %s\n' "$*"
@@ -146,6 +147,12 @@ setup_git_noninteractive
 trap cleanup_git_noninteractive EXIT
 sync_wiki_repo
 cleanup_git_noninteractive
+
+if [ "$(printf '%s' "$retrieval_mode" | tr '[:upper:]' '[:lower:]')" = "wiki" ]; then
+  log "retrieval mode is wiki; skipping qmd collection/embed initialization and qmd mcp daemon"
+  qmd_auto_collection=false
+  qmd_http_enabled=false
+fi
 
 if is_true "$qmd_auto_collection" && [ -d "$wiki_root/wiki" ]; then
   log "ensuring qmd collection 'wiki' exists"

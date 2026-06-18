@@ -158,6 +158,8 @@ http://127.0.0.1:9025/dashboard
 | --- | --- |
 | `mounted_wiki.root` | 外挂 Wiki 根目录，Docker 中默认为 `/data/wiki-repo`。 |
 | `mounted_wiki.qmd_index` | qmd index 名称，可通过 `WIKIOS_QMD_INDEX` 配置。 |
+| `retrieval.mode` | 检索模式，可用 `WIKIOS_RETRIEVAL_MODE` 配置；`wiki` 使用 Go 进程内全文检索，最省资源，生产 Docker 默认；`qmd` 使用 qmd/向量检索。 |
+| `WIKIOS_QMD_QUERY_MODE` | qmd CLI fallback 查询模式：`search` 使用纯 BM25 全文检索，适合 4C4G 小机；`query` 使用 qmd 混合查询并跳过 rerank。生产 Docker 默认 `search`。 |
 | `llm.timeout_sec` | Customer Chat 单次 LLM 请求超时默认值，可用 `WIKIOS_LLM_TIMEOUT_SEC` 配置，默认 300 秒。 |
 | `llm.admin_timeout_sec` | Admin/摄入类 LLM 请求超时默认值。 |
 | `storage.sqlite_path` | 服务 SQLite 数据库路径。 |
@@ -165,6 +167,7 @@ http://127.0.0.1:9025/dashboard
 | `customer_query.candidate_top_k` | Customer Chat 检索候选数量，可用 `WIKIOS_CUSTOMER_CANDIDATE_TOP_K` 配置，默认 6。 |
 | `customer_query.max_evidence_chars` | Customer Chat 单页证据最大字符数，可用 `WIKIOS_CUSTOMER_MAX_EVIDENCE_CHARS` 配置，默认 2400。 |
 | `customer_query.response_timeout_sec` | `/api/v1/customer/chat` 整体响应超时，可用 `WIKIOS_CUSTOMER_RESPONSE_TIMEOUT_SEC` 配置，默认 300 秒；上游网关/客户端超时也要同步放大。 |
+| `customer_query.max_concurrent` | Customer Chat 服务端并发上限，可用 `WIKIOS_CUSTOMER_MAX_CONCURRENT` 配置；生产 Docker 默认 1，适合 4C4G 小机防止 qmd/LLM 并发打满资源。 |
 | `customer_query.answer_log.enabled` | 是否写入 Customer Chat JSONL 日志，默认开启。 |
 | `customer_query.answer_log.redact` | 是否对 Customer Chat 日志做密钥、Token、手机号、邮箱脱敏，默认开启。 |
 | `customer_query.answer_log.retention_days` | Customer Chat 日志保留天数，默认 14 天。 |

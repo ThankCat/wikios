@@ -54,6 +54,7 @@ type LLMConfig struct {
 
 type RetrievalConfig struct {
 	TopK    int           `yaml:"top_k"`
+	Mode    string        `yaml:"mode"`
 	QMDHTTP QMDHTTPConfig `yaml:"qmd_http"`
 }
 
@@ -112,6 +113,7 @@ type CustomerQueryConfig struct {
 	CandidateTopK      int                           `yaml:"candidate_top_k"`
 	MaxEvidenceChars   int                           `yaml:"max_evidence_chars"`
 	ResponseTimeoutSec int                           `yaml:"response_timeout_sec"`
+	MaxConcurrent      int                           `yaml:"max_concurrent"`
 	AnswerLog          CustomerChatLogConfig         `yaml:"answer_log"`
 }
 
@@ -174,6 +176,15 @@ func (c *Config) normalizeAndValidate() error {
 	}
 	if c.Retrieval.TopK <= 0 {
 		c.Retrieval.TopK = 5
+	}
+	c.Retrieval.Mode = strings.ToLower(strings.TrimSpace(firstEnv("WIKIOS_RETRIEVAL_MODE", c.Retrieval.Mode)))
+	switch c.Retrieval.Mode {
+	case "", "qmd":
+		c.Retrieval.Mode = "qmd"
+	case "wiki", "lite", "fallback":
+		c.Retrieval.Mode = "wiki"
+	default:
+		return fmt.Errorf("retrieval.mode must be qmd or wiki, got %q", c.Retrieval.Mode)
 	}
 	if strings.TrimSpace(c.Retrieval.QMDHTTP.URL) == "" {
 		c.Retrieval.QMDHTTP.URL = "http://localhost:8181/mcp"
@@ -279,6 +290,12 @@ func (c *Config) normalizeAndValidate() error {
 	if c.CustomerChat.ResponseTimeoutSec <= 0 {
 		c.CustomerChat.ResponseTimeoutSec = envInt("WIKIOS_CUSTOMER_RESPONSE_TIMEOUT_SEC", 300)
 	}
+	if v, ok := envPositiveInt("WIKIOS_CUSTOMER_MAX_CONCURRENT"); ok {
+		c.CustomerChat.MaxConcurrent = v
+	}
+	if c.CustomerChat.MaxConcurrent < 0 {
+		c.CustomerChat.MaxConcurrent = 0
+	}
 	if c.CustomerChat.AnswerLog.Enabled == nil {
 		enabled := parseEnvBool(os.Getenv("WIKIOS_CUSTOMER_CHAT_LOG_ENABLED"), true)
 		c.CustomerChat.AnswerLog.Enabled = &enabled
@@ -343,6 +360,18 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func envPositiveInt(key string) (int, bool) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0, false
+	}
+	return parsed, true
 }
 
 func envFloat(key string) (float64, bool) {

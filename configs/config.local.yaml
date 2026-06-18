@@ -15,6 +15,7 @@ llm:
   temperature: ${WIKIOS_LLM_TEMPERATURE}
 
 retrieval:
+  mode: qmd
   top_k: 5
   qmd_http:
     enabled: true
@@ -59,6 +60,7 @@ customer_query:
   candidate_top_k: 6
   max_evidence_chars: 2400
   response_timeout_sec: 300
+  max_concurrent: 0
   answer_log:
     enabled: true
     redact: true

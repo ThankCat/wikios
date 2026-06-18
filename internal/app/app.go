@@ -45,7 +45,9 @@ func New(cfg *config.Config) (*App, error) {
 	rt := runtime.NewRuntime(registry, runtime.NewPolicyEngine(), runtime.NewValidator(), runtime.NewAuditLogger())
 	llmClient := service.NewDynamicLLMClient(dataStore, cfg.LLM)
 	retriever := retrieval.NewQMDRetriever(rt)
-	if cfg.Retrieval.QMDHTTP.Enabled {
+	if cfg.Retrieval.Mode == "wiki" {
+		retriever = retrieval.NewWikiRetriever(rt)
+	} else if cfg.Retrieval.QMDHTTP.Enabled {
 		rerank := true
 		if cfg.Retrieval.QMDHTTP.Rerank != nil {
 			rerank = *cfg.Retrieval.QMDHTTP.Rerank

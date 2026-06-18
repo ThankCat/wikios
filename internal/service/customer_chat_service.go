@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"wikios/internal/config"
@@ -63,7 +64,8 @@ type CustomerChatResponse struct {
 
 type CustomerChatService struct {
 	baseService
-	cache *customerChatCache
+	cache       *customerChatCache
+	concurrency chan struct{}
 }
 
 type customerChatLLMOutput struct {
@@ -97,9 +99,14 @@ type customerChatSource struct {
 }
 
 func NewCustomerChatService(deps Deps) *CustomerChatService {
+	var concurrency chan struct{}
+	if deps.Config != nil && deps.Config.CustomerChat.MaxConcurrent > 0 {
+		concurrency = make(chan struct{}, deps.Config.CustomerChat.MaxConcurrent)
+	}
 	return &CustomerChatService{
 		baseService: newBaseService(deps),
 		cache:       defaultCustomerChatCache,
+		concurrency: concurrency,
 	}
 }
 
@@ -122,8 +129,30 @@ func (s *CustomerChatService) answerStream(ctx context.Context, traceID string, 
 }
 
 func (s *CustomerChatService) answer(ctx context.Context, traceID string, req CustomerChatRequest, stream *customerChatStream) (*CustomerChatResponse, error) {
+	release, err := s.acquireCustomerChatSlot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	runtimeSettings := LoadRuntimeSettingsOrDefault(ctx, s.deps.Store, s.deps.Config)
 	return s.answerRouted(ctx, traceID, req, stream, runtimeSettings)
+}
+
+func (s *CustomerChatService) acquireCustomerChatSlot(ctx context.Context) (func(), error) {
+	if s == nil || s.concurrency == nil {
+		return func() {}, nil
+	}
+	select {
+	case s.concurrency <- struct{}{}:
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				<-s.concurrency
+			})
+		}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func customerChatRequestCanceled(ctx context.Context, err error) bool {

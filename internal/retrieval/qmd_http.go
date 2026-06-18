@@ -29,6 +29,7 @@ type QMDHTTPClient struct {
 
 	mu        sync.Mutex
 	sessionID string
+	queryMu   sync.Mutex
 }
 
 const defaultQMDHTTPURL = "http://localhost:8181/mcp"
@@ -80,6 +81,8 @@ type qmdQueryResult struct {
 // (it does not run the CLI's LLM query-expansion), which is both faster and, in
 // practice, surfaces synthesized knowledge pages more reliably.
 func (c *QMDHTTPClient) Query(ctx context.Context, question string, topK int) ([]RetrievedPage, error) {
+	c.queryMu.Lock()
+	defer c.queryMu.Unlock()
 	pages, err := c.queryOnce(ctx, question, topK)
 	if err != nil {
 		// A stale session is the most common transient failure; drop it and retry once.

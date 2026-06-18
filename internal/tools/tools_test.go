@@ -125,6 +125,86 @@ func TestExecRestrictionsAndRepair(t *testing.T) {
 	}
 }
 
+func TestExecQMDQuerySkipsRerankInQueryMode(t *testing.T) {
+	root := createFixtureWiki(t)
+	binDir := t.TempDir()
+	argsPath := filepath.Join(binDir, "qmd-args.txt")
+	qmdPath := filepath.Join(binDir, "qmd")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" > " + shellQuote(argsPath) + "\nprintf '[]'\n"
+	if err := os.WriteFile(qmdPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake qmd: %v", err)
+	}
+	t.Setenv("WIKIOS_QMD_NODE_BIN", binDir)
+	t.Setenv("WIKIOS_QMD_WRAPPER_DIR", filepath.Join(t.TempDir(), "wrapper"))
+	t.Setenv("WIKIOS_QMD_QUERY_MODE", "query")
+	cfg := testConfig(root, t.TempDir())
+	rt := newRuntime(cfg)
+	env := &runtime.ExecEnv{
+		WikiRoot:     root,
+		WorkspaceDir: cfg.Workspace.BaseDir,
+		Mode:         "customer",
+		QMDIndex:     cfg.MountedWiki.QMDIndex,
+	}
+	result, err := rt.Execute(context.Background(), env, runtime.ToolCall{
+		Name: "exec.qmd",
+		Args: map[string]any{"subcommand": "query", "question": "动态 IP 价格"},
+	})
+	if err != nil || !result.Success {
+		t.Fatalf("exec.qmd query failed: %+v %v", result, err)
+	}
+	raw, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read fake qmd args: %v", err)
+	}
+	args := string(raw)
+	if !strings.Contains(args, "--no-rerank") {
+		t.Fatalf("expected qmd query to include --no-rerank, got %q", args)
+	}
+	if !strings.Contains(args, "--json") {
+		t.Fatalf("expected qmd query to include --json, got %q", args)
+	}
+}
+
+func TestExecQMDQueryUsesSearchModeWhenConfigured(t *testing.T) {
+	root := createFixtureWiki(t)
+	binDir := t.TempDir()
+	argsPath := filepath.Join(binDir, "qmd-args.txt")
+	qmdPath := filepath.Join(binDir, "qmd")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" > " + shellQuote(argsPath) + "\nprintf '[]'\n"
+	if err := os.WriteFile(qmdPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake qmd: %v", err)
+	}
+	t.Setenv("WIKIOS_QMD_NODE_BIN", binDir)
+	t.Setenv("WIKIOS_QMD_WRAPPER_DIR", filepath.Join(t.TempDir(), "wrapper"))
+	t.Setenv("WIKIOS_QMD_QUERY_MODE", "search")
+	cfg := testConfig(root, t.TempDir())
+	rt := newRuntime(cfg)
+	env := &runtime.ExecEnv{
+		WikiRoot:     root,
+		WorkspaceDir: cfg.Workspace.BaseDir,
+		Mode:         "customer",
+		QMDIndex:     cfg.MountedWiki.QMDIndex,
+	}
+	result, err := rt.Execute(context.Background(), env, runtime.ToolCall{
+		Name: "exec.qmd",
+		Args: map[string]any{"subcommand": "query", "question": "动态 IP 价格"},
+	})
+	if err != nil || !result.Success {
+		t.Fatalf("exec.qmd query failed: %+v %v", result, err)
+	}
+	raw, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read fake qmd args: %v", err)
+	}
+	args := string(raw)
+	if !strings.Contains(args, "search 动态 IP 价格 --format json") {
+		t.Fatalf("expected qmd search json mode, got %q", args)
+	}
+	if strings.Contains(args, "--no-rerank") {
+		t.Fatalf("expected search mode not to pass rerank flags, got %q", args)
+	}
+}
+
 func TestExecShellPrefersConfiguredQMDNodePath(t *testing.T) {
 	root := createFixtureWiki(t)
 	preferredNodeDir := t.TempDir()
@@ -357,4 +437,8 @@ func run(t *testing.T, dir string, name string, args ...string) {
 	if err != nil {
 		t.Fatalf("%s %v: %v\n%s", name, args, err, string(out))
 	}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }

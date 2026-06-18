@@ -18,12 +18,17 @@ type RetrievedPage struct {
 }
 
 type QMDRetriever struct {
-	rt   *runtime.Runtime
-	http *QMDHTTPClient
+	rt       *runtime.Runtime
+	http     *QMDHTTPClient
+	wikiOnly bool
 }
 
 func NewQMDRetriever(rt *runtime.Runtime) *QMDRetriever {
 	return &QMDRetriever{rt: rt}
+}
+
+func NewWikiRetriever(rt *runtime.Runtime) *QMDRetriever {
+	return &QMDRetriever{rt: rt, wikiOnly: true}
 }
 
 const (
@@ -53,6 +58,9 @@ func NewQMDRetrieverWithHTTP(rt *runtime.Runtime, httpClient *QMDHTTPClient) *QM
 }
 
 func (r *QMDRetriever) Retrieve(ctx context.Context, env *runtime.ExecEnv, question string, topK int) ([]RetrievedPage, error) {
+	if r.wikiOnly {
+		return r.retrieveWikiSearch(ctx, env, question, topK, nil)
+	}
 	if r.http != nil {
 		// Over-fetch a candidate pool rather than just topK: the caller applies
 		// specialist scope filtering afterwards, so the highest-ranked pages
@@ -87,7 +95,10 @@ func (r *QMDRetriever) Retrieve(ctx context.Context, env *runtime.ExecEnv, quest
 			return out, nil
 		}
 	}
-	var out []RetrievedPage
+	return r.retrieveWikiSearch(ctx, env, question, topK, result.Error)
+}
+
+func (r *QMDRetriever) retrieveWikiSearch(ctx context.Context, env *runtime.ExecEnv, question string, topK int, previousErr *runtime.ToolError) ([]RetrievedPage, error) {
 	fallback, fallbackErr := r.rt.Execute(ctx, env, runtime.ToolCall{
 		Name: "wiki.search_pages",
 		Args: map[string]any{"query": question},
@@ -96,11 +107,12 @@ func (r *QMDRetriever) Retrieve(ctx context.Context, env *runtime.ExecEnv, quest
 		return nil, fallbackErr
 	}
 	if !fallback.Success {
-		if result.Error != nil {
-			return nil, errors.New(result.Error.Message)
+		if previousErr != nil {
+			return nil, errors.New(previousErr.Message)
 		}
 		return nil, errors.New(fallback.Error.Message)
 	}
+	var out []RetrievedPage
 	if raw, ok := fallback.Data["matches"].([]map[string]any); ok {
 		for _, item := range raw {
 			path, _ := item["path"].(string)

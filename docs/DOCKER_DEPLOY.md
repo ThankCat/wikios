@@ -41,6 +41,7 @@ WIKIOS_CORS_ALLOWED_ORIGINS=*
 WIKIOS_LLM_TIMEOUT_SEC=300
 WIKIOS_LLM_ADMIN_TIMEOUT_SEC=300
 WIKIOS_CUSTOMER_RESPONSE_TIMEOUT_SEC=300
+WIKIOS_CUSTOMER_MAX_CONCURRENT=1
 WIKIOS_CUSTOMER_CHAT_LOG_ENABLED=true
 WIKIOS_CUSTOMER_CHAT_LOG_REDACT=true
 WIKIOS_CUSTOMER_CHAT_LOG_RETENTION_DAYS=14
@@ -59,7 +60,20 @@ WIKIOS_CUSTOMER_CHAT_LOG_RETENTION_DAYS=14
 - `WIKIOS_WIKI_GIT_RESET_ON_START=false` 是安全默认值；改成 `true` 会在启动时丢弃 Wiki 仓库内未提交改动。
 - `WIKIOS_SUPPORT_PHONE` 和 `WIKIOS_SUPPORT_WECOM` 是 customer chat 注入给 LLM 的公开客服联系方式。
 
-其余变量（`WIKIOS_QMD_INDEX`、`WIKIOS_QMD_AUTO_COLLECTION`、`WIKIOS_QMD_HTTP_ENABLED`、`WIKIOS_CUSTOMER_CANDIDATE_TOP_K`、`WIKIOS_CUSTOMER_MAX_EVIDENCE_CHARS`、`WIKIOS_CONTEXT_*`、`WIKIOS_WIKI_GIT_REMOTE` 等）都在 `docker-compose.yml` 里带默认值，按需覆盖即可，不写则用默认值。
+其余变量（`WIKIOS_QMD_INDEX`、`WIKIOS_QMD_AUTO_COLLECTION`、`WIKIOS_QMD_HTTP_ENABLED`、`WIKIOS_CUSTOMER_CANDIDATE_TOP_K`、`WIKIOS_CUSTOMER_MAX_EVIDENCE_CHARS`、`WIKIOS_CUSTOMER_MAX_CONCURRENT`、`WIKIOS_CONTEXT_*`、`WIKIOS_WIKI_GIT_REMOTE` 等）都在 `docker-compose.yml` 里带默认值，按需覆盖即可，不写则用默认值。
+
+4C4G 低配服务器建议先用保守配置，避免 qmd 本地模型和 LLM 请求并发把机器打满：
+
+```env
+WIKIOS_RETRIEVAL_MODE=wiki
+WIKIOS_QMD_HTTP_ENABLED=false
+WIKIOS_QMD_QUERY_MODE=search
+WIKIOS_CUSTOMER_MAX_CONCURRENT=1
+WIKIOS_CUSTOMER_CANDIDATE_TOP_K=3
+WIKIOS_CUSTOMER_MAX_EVIDENCE_CHARS=1200
+```
+
+这种模式会牺牲一部分语义检索能力，但不会常驻 `qmd mcp --http` 模型进程，也不会在启动时执行 `qmd embed`；Customer Chat 直接使用 Go 进程内 `wiki.search_pages` 全文检索，适合内存紧张的小机先稳定运行。需要更强检索质量时，再把 `WIKIOS_RETRIEVAL_MODE=qmd` 并开启 qmd 初始化/HTTP 热进程。
 
 验证 WebView/局域网配置是否生效：
 
@@ -188,12 +202,12 @@ qmd --index "$WIKIOS_QMD_INDEX" collection add wiki/ --name wiki
 qmd --index "$WIKIOS_QMD_INDEX" update
 ```
 
-### qmd 检索热进程（性能关键）
+### qmd 检索热进程（可选性能优化）
 
-为了让客户问答检索保持亚秒级（而不是每次查询付 qmd CLI 冷加载约 15s），入口脚本还会启动一个常驻的 `qmd mcp --http` 守护进程（监听容器内 `:8181`），服务端配置 `retrieval.qmd_http` 指向它：
+为了让客户问答检索保持亚秒级（而不是每次查询付 qmd CLI 冷加载约 15s），入口脚本可启动一个常驻的 `qmd mcp --http` 守护进程（监听容器内 `:8181`），服务端配置 `retrieval.qmd_http` 指向它：
 
 ```bash
-# 由 WIKIOS_QMD_HTTP_ENABLED=true 控制（默认开启）
+# 由 WIKIOS_QMD_HTTP_ENABLED=true 控制（4C4G 推荐保持默认关闭）
 qmd collection add wiki/ --name wiki   # 默认索引 index.sqlite
 qmd update
 qmd embed                              # 首次运行会联网下载嵌入/重排模型
@@ -205,7 +219,8 @@ qmd mcp --http                         # 后台常驻，监听 :8181
 - `qmd mcp --http` 只服务 qmd 的**默认索引**（`index.sqlite`），与 CLI 路径用的 `--index knowledge-base` 是两套索引，所以入口脚本会**单独准备默认索引**。
 - 索引和模型缓存都在 `/root/.cache/qmd`，由 `./data/qmd-cache` 卷持久化，**embed 成本只在首次启动付一次**；之后重启是增量更新。
 - 首次启动会下载模型，可能几分钟，期间日志里能看到 qmd 在准备索引；这属正常。
-- 守护进程不可用时，检索会**自动回退到 qmd CLI**，不会报错，只是变慢。可设 `WIKIOS_QMD_HTTP_ENABLED=false` 显式关闭热进程。
+- 守护进程不可用时，检索会**自动回退到 qmd CLI**，不会报错，只是变慢；默认生产 Docker 会设置 `WIKIOS_QMD_QUERY_MODE=search`，让 CLI fallback 使用纯 BM25 全文检索。若改成 `query`，CLI fallback 会带 `--no-rerank`，避免低配服务器在 rerank 模型初始化时耗尽资源。
+- 4C4G 这类小机建议保持默认 `WIKIOS_RETRIEVAL_MODE=wiki` 并设 `WIKIOS_QMD_HTTP_ENABLED=false`；热进程适合内存更宽裕、需要更低检索延迟的部署。
 - 查看守护进程日志：`$COMPOSE exec wikios sh -lc 'cat /tmp/qmd-mcp-http.log'`。
 
 ## 4. 启动服务

@@ -76,7 +76,12 @@ func (t *execQMDTool) Execute(ctx context.Context, env *runtime.ExecEnv, args ma
 		if err != nil {
 			return failure(t.risk, "INVALID_ARGS", err), nil
 		}
-		cmdArgs = append(cmdArgs, "query", question, "--json")
+		switch strings.ToLower(strings.TrimSpace(os.Getenv("WIKIOS_QMD_QUERY_MODE"))) {
+		case "search", "lex", "bm25":
+			cmdArgs = append(cmdArgs, "search", question, "--format", "json")
+		default:
+			cmdArgs = append(cmdArgs, "query", question, "--json", "--no-rerank")
+		}
 	case "status":
 		cmdArgs = append(cmdArgs, "status")
 	case "update":

@@ -15,11 +15,11 @@ llm:
   temperature: ${WIKIOS_LLM_TEMPERATURE}
 
 retrieval:
+  mode: ${WIKIOS_RETRIEVAL_MODE}
   top_k: 5
-  # Warm `qmd mcp --http` daemon (started by docker-entrypoint.sh) keeps the
-  # embedding/rerank models resident so customer-chat retrieval is sub-second
-  # instead of paying the qmd CLI cold-load (~15s) per query. If the daemon is
-  # down, retrieval transparently falls back to the qmd CLI path.
+  # qmd mode can use the warm `qmd mcp --http` daemon. wiki mode uses the
+  # in-process lightweight wiki.search_pages retriever and never loads local
+  # qmd embedding/query/rerank models during customer chat.
   qmd_http:
     enabled: ${WIKIOS_QMD_HTTP_ENABLED}
     url: http://localhost:8181/mcp
@@ -60,6 +60,7 @@ customer_query:
   candidate_top_k: ${WIKIOS_CUSTOMER_CANDIDATE_TOP_K}
   max_evidence_chars: ${WIKIOS_CUSTOMER_MAX_EVIDENCE_CHARS}
   response_timeout_sec: ${WIKIOS_CUSTOMER_RESPONSE_TIMEOUT_SEC}
+  max_concurrent: ${WIKIOS_CUSTOMER_MAX_CONCURRENT}
   answer_log:
     enabled: ${WIKIOS_CUSTOMER_CHAT_LOG_ENABLED}
     redact: ${WIKIOS_CUSTOMER_CHAT_LOG_REDACT}
