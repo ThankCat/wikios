@@ -4994,6 +4994,12 @@ func customerEvidenceProductsInPath(path string) map[string]bool {
 	if strings.Contains(path, "dynamic-ip") || strings.Contains(path, "dynamic_ip") {
 		products["dynamic_ip"] = true
 	}
+	if strings.Contains(path, "residential-ip") || strings.Contains(path, "residential_ip") || strings.Contains(path, "house") {
+		products["residential_ip"] = true
+	}
+	if strings.Contains(path, "datacenter-ip") || strings.Contains(path, "datacenter_ip") || strings.Contains(path, "data-center-ip") || strings.Contains(path, "data_center_ip") {
+		products["datacenter_ip"] = true
+	}
 	if strings.Contains(path, "overseas-ip") || strings.Contains(path, "overseas_ip") || strings.Contains(path, "product/os") {
 		products["overseas_ip"] = true
 	}

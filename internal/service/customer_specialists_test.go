@@ -437,7 +437,7 @@ func TestRetrieveCustomerSpecialistEvidenceFiltersConflictingProductEvidence(t *
 		testRuntimeTool{name: "wiki.read_page", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
 			path, _ := args["path"].(string)
 			pages := map[string]string{
-				"wiki/procedures/si-ye-tian-connection-troubleshooting.md":       "---\ntitle: 连接排障\n---\n海外 IP 场景需确认海外网络环境。",
+				"wiki/procedures/si-ye-tian-connection-troubleshooting.md":       "---\ntitle: 连接排障\n---\n海外 IP 场景需确认海外网络环境。\n静态 IP 连接后异常时，可在会员中心对应产品页手动切换、重新分配静态 IP，入口为 https://www.siyetian.com/member/staticip.html。",
 				"wiki/procedures/si-ye-tian-static-ip-usage.md":                 "---\ntitle: 静态 IP 使用\n---\n静态 IP 可在会员中心手动切换、重新分配，每月 5 次。",
 				"wiki/knowledge/si-ye-tian-overseas-ip.md":                      "---\ntitle: 海外 IP\n---\n海外 IP 需要海外网络环境或海外服务器环境。",
 				"wiki/procedures/si-ye-tian-device-network-configuration.md":     "---\ntitle: 设备网络\n---\n连接后用 IP 查询站检查出口 IP。",
@@ -471,6 +471,15 @@ func TestRetrieveCustomerSpecialistEvidenceFiltersConflictingProductEvidence(t *
 	}
 	if _, ok := result.EvidenceBodies["wiki/procedures/si-ye-tian-static-ip-usage.md"]; ok {
 		t.Fatalf("expected static IP usage body to stay out of evidence, got keys %+v", result.EvidenceBodies)
+	}
+	promptText := strings.Join(result.ContentBlocks, "\n")
+	for _, forbidden := range []string{"member/staticip", "静态 IP 连接后异常", "重新分配静态 IP"} {
+		if strings.Contains(promptText, forbidden) {
+			t.Fatalf("expected generic static switch contamination %q to be removed from evidence prompt, got:\n%s", forbidden, promptText)
+		}
+	}
+	if !strings.Contains(promptText, "海外 IP 场景需确认海外网络环境") {
+		t.Fatalf("expected overseas troubleshooting evidence to remain, got:\n%s", promptText)
 	}
 	candidatePaths := customerRetrievedPagePaths(result.Candidates, 10)
 	if !containsString(candidatePaths, "wiki/procedures/si-ye-tian-static-ip-usage.md") {

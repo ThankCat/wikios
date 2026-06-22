@@ -1276,6 +1276,44 @@ func TestAnswerRoutedTechnicalUsesSpecialistAnswer(t *testing.T) {
 	}
 }
 
+func TestAnswerRoutedOverseasIPSwitchUsesKnowledgeEvidenceNotStaticSwitch(t *testing.T) {
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"technical","routing_confidence":0.95,"routing_reason":"用户明确询问海外 IP 的切换方法。","intent":"overseas_ip_switch_method","rewritten_question":"客户想了解四叶天海外 IP 如何切换 IP。","question_stage":"operation_howto","user_goal":"了解海外 IP 如何切换 IP","has_product":true,"needs_product_clarification":false,"clarification_target":"none","answer_strategy":"answer_with_evidence","risk_boundary":"none","history_summary":"","slots":{"primary_product":"overseas_ip","products":["overseas_ip"],"static_type":"","ip_type":"overseas","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["technical"],"needs_retrieval":true,"retrieval_queries":["四叶天 海外 IP 切换 IP 方法 步骤"],"handoff_notes":"用户询问海外 IP 切换方法，需检索对应产品的切换操作说明。","user_intent_signals":{"wants_human":false,"wants_wechat":false,"refund_strong":false,"switch_ip":true,"discount_strong":false}}`,
+		specialistText: `{"answer_mode":"evidence","answer":"海外 IP 不支持切换 IP；如果当前海外 IP 无法满足使用需求，请以产品页面当前规则为准，或重新购买其他海外 IP 资源。","review_question":"","confidence_breakdown":{"evidence_coverage":0.95,"source_directness":0.95,"answer_specificity":0.95,"missing_info_impact":0.95,"risk_sensitivity":0.85},"confidence":0.93,"evidence_confidence":0.95,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-overseas-ip.md","confidence":"high"}],"notes":""}`,
+	}
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	resp, err := svc.answerRouted(context.Background(), "trace-overseas-switch-evidence", CustomerChatRequest{
+		Question:   "海外IP 如何切换IP",
+		PersistLog: boolPtr(false),
+	}, nil, DefaultRuntimeSettings(svc.deps.Config))
+	if err != nil {
+		t.Fatalf("answerRouted: %v", err)
+	}
+	if resp == nil || !strings.Contains(resp.Answer, "海外 IP 不支持切换 IP") {
+		t.Fatalf("expected overseas switch answer, got %#v", resp)
+	}
+	if strings.Contains(resp.Answer, "member/staticip") || strings.Contains(resp.Answer, "手动切换") {
+		t.Fatalf("expected no static switch instructions, got %s", resp.Answer)
+	}
+	if resp.SourceCount != 1 {
+		t.Fatalf("expected overseas source to survive filtering, got %#v", resp)
+	}
+	var specialistUserPrompt string
+	for _, messages := range llmClient.messages {
+		if len(messages) == 2 && !strings.Contains(messages[0].Content, "客服经理 Router") {
+			specialistUserPrompt = messages[1].Content
+		}
+	}
+	if !strings.Contains(specialistUserPrompt, "海外 IP 不支持切换 IP") {
+		t.Fatalf("expected overseas evidence in specialist prompt, got:\n%s", specialistUserPrompt)
+	}
+	for _, forbidden := range []string{"member/staticip", "member/jingtai", "静态 IP 可在会员中心手动切换", "重新分配", "每月 5 次"} {
+		if strings.Contains(specialistUserPrompt, forbidden) {
+			t.Fatalf("expected static switch evidence %q to be filtered from specialist prompt, got:\n%s", forbidden, specialistUserPrompt)
+		}
+	}
+}
+
 func TestAnswerRoutedTroubleshootingUsesSpecialistAnswer(t *testing.T) {
 	llmClient := &customerRoutedPipelineTestLLM{
 		routerText:     `{"contract_version":"customer_router.v1","specialist":"troubleshooting","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"ip_not_changed","rewritten_question":"客户连接静态 IP 后发现出口 IP 没变。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["device"],"risk_flags":["troubleshooting"],"needs_retrieval":true,"retrieval_queries":["静态 IP 连接后 IP 没变 排查"],"handoff_notes":"用户反馈连接后 IP 没变，未说明使用设备或工具。"}`,
@@ -2024,6 +2062,19 @@ func newCustomerRoutedPipelineTestService(t *testing.T, llmClient llm.Client, pr
 			if containsAny(query, "退款", "退费", "售后", "发票", "开票") {
 				afterSalesScore = 86
 			}
+			queryText := strings.ToLower(query)
+			if strings.Contains(queryText, "海外") && strings.Contains(queryText, "切换") {
+				raw, err := json.Marshal([]map[string]any{
+					{"path": "wiki/procedures/si-ye-tian-connection-troubleshooting.md", "score": 327},
+					{"path": "wiki/knowledge/si-ye-tian-overseas-ip.md", "score": 251},
+					{"path": "wiki/procedures/si-ye-tian-device-network-configuration.md", "score": 231},
+					{"path": "wiki/procedures/si-ye-tian-static-ip-usage.md", "score": 311},
+				})
+				if err != nil {
+					return runtime.ToolResult{}, err
+				}
+				return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"stdout": string(raw)}}, nil
+			}
 			raw, err := json.Marshal([]map[string]any{
 				{"path": "wiki/knowledge/si-ye-tian-static-ip-pricing.md", "score": 100},
 				{"path": "wiki/knowledge/si-ye-tian-proxy-ip-products.md", "score": 90},
@@ -2053,9 +2104,11 @@ func newCustomerRoutedPipelineTestService(t *testing.T, llmClient llm.Client, pr
 				"wiki/synthesis/si-ye-tian-official-entry-points.md":           "---\ntitle: 官方入口\n---\n购买、下载和测试应通过官方入口进行。",
 				"wiki/procedures/si-ye-tian-api-whitelist-setup.md":            "---\ntitle: API 白名单\n---\n先获取当前出口 IP，添加到后台授权白名单并保存，再重新连接代理测试。",
 				"wiki/procedures/si-ye-tian-dynamic-ip-usage.md":               "---\ntitle: 动态 IP 使用\n---\n动态 IP 可按后台配置方式连接使用。",
+				"wiki/procedures/si-ye-tian-static-ip-usage.md":                "---\ntitle: 静态 IP 使用\n---\n静态 IP 可在会员中心手动切换 IP，入口包括 https://www.siyetian.com/member/staticip.html 和 https://www.siyetian.com/member/jingtai.html，可重新分配，每月 5 次。",
+				"wiki/knowledge/si-ye-tian-overseas-ip.md":                     "---\ntitle: 海外 IP\n---\n海外 IP 不支持切换 IP。如果当前海外 IP 无法满足使用需求，应以海外 IP 产品页面当前规则为准，或重新购买其他海外 IP 资源。",
 				"wiki/procedures/si-ye-tian-third-party-tool-configuration.md": "---\ntitle: 第三方工具配置\n---\n第三方工具需按代理协议、地址、端口和认证信息配置。",
 				"wiki/procedures/si-ye-tian-device-network-configuration.md":   "---\ntitle: 设备网络配置\n---\n设备网络配置需确认代理连接和本地网络规则。",
-				"wiki/procedures/si-ye-tian-connection-troubleshooting.md":     "---\ntitle: 连接排障\n---\nIP 没变时先确认代理连接成功，关闭本地直连或分流规则，再重新测试出口 IP。",
+				"wiki/procedures/si-ye-tian-connection-troubleshooting.md":     "---\ntitle: 连接排障\n---\nIP 没变时先确认代理连接成功，关闭本地直连或分流规则，再重新测试出口 IP。\n静态 IP 连接后异常时，可在会员中心对应产品页手动切换、重新分配静态 IP，入口为 https://www.siyetian.com/member/staticip.html。",
 				"wiki/policies/si-ye-tian-after-sales-policy.md":               "---\ntitle: 售后政策\n---\n售后问题需按页面规则处理。",
 			}
 			content := pages[path]

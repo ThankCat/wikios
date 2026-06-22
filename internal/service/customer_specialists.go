@@ -12,6 +12,7 @@ import (
 
 	"wikios/internal/retrieval"
 	"wikios/internal/runtime"
+	"wikios/internal/wikiadapter"
 )
 
 type CustomerSpecialistProfile struct {
@@ -240,7 +241,7 @@ func (s *CustomerChatService) retrieveCustomerSpecialistEvidence(ctx context.Con
 			return "", false
 		}
 		beforeSources := len(sources)
-		content, ok := s.readCustomerSpecialistEvidencePage(ctx, env, traceID, profile.Name, path, query, maxChars, seenPaths, &contentBlocks, &sources, &cacheTrace)
+		content, ok := s.readCustomerSpecialistEvidencePage(ctx, env, traceID, profile.Name, path, query, routerOutput, maxChars, seenPaths, &contentBlocks, &sources, &cacheTrace)
 		if ok && len(sources) > beforeSources {
 			evidenceBodies[path] = content
 			evidenceTrace = append(evidenceTrace, customerEvidenceTraceItem(sources[len(sources)-1], content))
@@ -356,6 +357,7 @@ func (s *CustomerChatService) readCustomerSpecialistEvidencePage(
 	specialist string,
 	path string,
 	question string,
+	routerOutput *CustomerRouterOutput,
 	maxChars int,
 	seenPaths map[string]bool,
 	contentBlocks *[]string,
@@ -374,7 +376,7 @@ func (s *CustomerChatService) readCustomerSpecialistEvidencePage(
 			trace.recordReadPageTiming(path, "hit", time.Since(start), len([]rune(content)), true, "")
 		}
 		logCustomerSpecialistReadPageTiming(traceID, specialist, path, "hit", time.Since(start), len([]rune(content)), true, "")
-		return appendCustomerEvidencePage(path, question, maxChars, seenPaths, contentBlocks, sources, content)
+		return appendCustomerEvidencePageForRouter(path, question, routerOutput, maxChars, seenPaths, contentBlocks, sources, content)
 	}
 	if trace != nil {
 		trace.ReadPageMisses++
@@ -406,7 +408,7 @@ func (s *CustomerChatService) readCustomerSpecialistEvidencePage(
 		trace.recordReadPageTiming(path, "miss", time.Since(start), len([]rune(content)), true, "")
 	}
 	logCustomerSpecialistReadPageTiming(traceID, specialist, path, "miss", time.Since(start), len([]rune(content)), true, "")
-	return appendCustomerEvidencePage(path, question, maxChars, seenPaths, contentBlocks, sources, content)
+	return appendCustomerEvidencePageForRouter(path, question, routerOutput, maxChars, seenPaths, contentBlocks, sources, content)
 }
 
 func resolveCustomerEvidenceWikilinks(env *runtime.ExecEnv, profile CustomerSpecialistProfile, content string) []string {
@@ -728,4 +730,86 @@ func filterCustomerEvidencePagesForRouter(pages []retrieval.RetrievedPage, route
 		out = append(out, page)
 	}
 	return out
+}
+
+func appendCustomerEvidencePageForRouter(
+	path string,
+	question string,
+	routerOutput *CustomerRouterOutput,
+	maxChars int,
+	seenPaths map[string]bool,
+	contentBlocks *[]string,
+	sources *[]SourceRef,
+	content string,
+) (string, bool) {
+	if customerScenarioIsOverseasIPSwitchUnsupported(routerOutput, customerScenarioGuardText(CustomerChatRequest{Question: question}, routerOutput)) &&
+		customerEvidencePathIsConflictingOverseasSwitch(path) {
+		return "", false
+	}
+	if !customerScenarioIsOverseasIPSwitchUnsupported(routerOutput, customerScenarioGuardText(CustomerChatRequest{Question: question}, routerOutput)) {
+		return appendCustomerEvidencePage(path, question, maxChars, seenPaths, contentBlocks, sources, content)
+	}
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if path == "" || seenPaths[path] || strings.TrimSpace(content) == "" {
+		return "", false
+	}
+	displayTitle := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	body := strings.TrimSpace(content)
+	if doc, err := wikiadapter.ParseDocument(content); err == nil {
+		if title, _ := doc.Frontmatter["title"].(string); strings.TrimSpace(title) != "" {
+			displayTitle = strings.TrimSpace(title)
+		}
+		if strings.TrimSpace(doc.Body) != "" {
+			body = strings.TrimSpace(doc.Body)
+		}
+	}
+	if maxChars <= 0 {
+		maxChars = 2400
+	}
+	preview := customerEvidencePreviewWithoutOverseasSwitchContamination(buildCustomerEvidencePreview(body, path, question, maxChars))
+	if strings.TrimSpace(preview) == "" {
+		return "", false
+	}
+	seenPaths[path] = true
+	source := SourceRef{
+		Path:       path,
+		Title:      displayTitle,
+		Confidence: customerSourceConfidence(path),
+	}
+	*contentBlocks = append(*contentBlocks, formatCandidatePageBlock(source, truncateForPrompt(preview, maxChars)))
+	*sources = append(*sources, source)
+	return body, true
+}
+
+func customerEvidencePathIsConflictingOverseasSwitch(path string) bool {
+	products := customerEvidenceProductsInPath(path)
+	return products["static_ip"] || products["dynamic_ip"] || products["residential_ip"] || products["datacenter_ip"]
+}
+
+func customerEvidencePreviewWithoutOverseasSwitchContamination(preview string) string {
+	lines := strings.Split(strings.TrimSpace(preview), "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if customerEvidenceLineIsConflictingOverseasSwitch(line) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func customerEvidenceLineIsConflictingOverseasSwitch(line string) bool {
+	text := normalizeCustomerReviewText(line)
+	if text == "" || strings.Contains(text, "不支持切换ip") || strings.Contains(text, "不支持切换 ip") {
+		return false
+	}
+	hasSwitchAction := containsAny(text, "切换ip", "切换 ip", "换ip", "换 ip", "更换ip", "更换 ip", "手动切换", "重新分配", "重新提取", "断开重连", "切换按钮")
+	if !hasSwitchAction {
+		return false
+	}
+	return containsAny(text,
+		"静态ip", "静态 ip", "住宅ip", "住宅 ip", "动态ip", "动态 ip", "数据中心ip", "数据中心 ip",
+		"member/staticip", "member/jingtai", "member/house", "staticip.html", "jingtai.html", "house.html",
+		"每月 5 次", "每月5次", "每天 3 次", "每天3次",
+	)
 }
