@@ -192,6 +192,8 @@ func TestCustomerSpecialistTechnicalPromptCoversShortConfigNoFollowupPolicy(t *t
 		"不扩展设备绑定、数量限制、产品页面或后续操作",
 		"有通用代理配置证据时，先给协议、代理地址、端口、认证信息这类通用顺序",
 		"只有完全没有通用证据时才问产品类型",
+		"客户已明确说海外 IP 时",
+		"不要把静态 IP、住宅 IP 的手动切换、每月次数、重新分配或后台按钮规则套用到海外 IP",
 		"产品不明确但有通用切换或选型证据时",
 		"回答入口或字段后就停",
 		"不追问工具、脚本、系统或设备",
@@ -577,6 +579,9 @@ func TestCustomerSpecialistTechnicalPromptCoversSwitchIPHandling(t *testing.T) {
 		"在会员中心对应产品页手动切换或重新分配",
 		"若证据中有当前产品的直接入口 URL",
 		"按通用操作入口规则优先给出最相关入口",
+		"若客户明确是海外 IP",
+		"不能说海外 IP 支持手动切换、重新分配或每月 N 次",
+		"只回答海外 IP 证据支持的能力边界",
 		"不要把它误解成“切换到客户指定的某个 IP”而否认",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -595,6 +600,11 @@ func TestCustomerSpecialistCheckPromptCoversDenyingSupportedCapability(t *testin
 		"是否对证据明确支持的能力/操作",
 		"用“相对固定”否定了可切换",
 		"把“换成另一个 IP”误解成“切换到指定 IP”而否认",
+		"客户已明确说海外 IP 时",
+		"同样支持手动切换",
+		"更换地区/线路或重新分配",
+		"每月 5 次",
+		"没有海外 IP 证据直接支持",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected check prompt to include %q, got:\n%s", want, prompt)

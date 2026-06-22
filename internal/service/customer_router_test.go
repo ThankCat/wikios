@@ -1174,6 +1174,28 @@ func TestCustomerRouterPromptTreatsTargetCitySwitchAsStaticIP(t *testing.T) {
 	}
 }
 
+func TestCustomerRouterPromptKeepsOverseasIPSwitchAsOverseas(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", customerRouterPromptFile))
+	if err != nil {
+		t.Fatalf("read router prompt: %v", err)
+	}
+	prompt := string(raw)
+	for _, want := range []string{
+		"海外 IP 上下文中的切换 IP",
+		"`primary_product=overseas_ip`",
+		"不要继承或改写成静态 IP/住宅 IP 切换方法",
+		"检索海外 IP 支持范围和使用限制",
+		"客户已明确纠正为海外 IP",
+		"overseas_ip_switch_capability",
+		"四叶天 海外 IP 切换 支持范围 使用限制",
+		"海外 IP 不能继承静态/住宅 IP 的手动切换、每月次数或重新分配规则",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected router prompt to include %q, got:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestCustomerRouterPromptCoversUserIntentSignals(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", customerRouterPromptFile))
 	if err != nil {

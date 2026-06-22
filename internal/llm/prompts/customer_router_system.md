@@ -167,6 +167,7 @@
 - 代理 IP、proxy IP 但没有上下文：`primary_product=unknown`，`products=[]`
 - 切换 IP、换 IP、改 IP、更换代理、配置代理、连接代理但没有明确说动态/静态/海外/住宅/数据中心，也没有指定目标城市/地区：`primary_product=unknown`，`products=[]`
 - 指定目标城市/地区/线路的切换诉求（如切换成上海 IP、换广州 IP、切到杭州线路）：`primary_product=static_ip`，`products=["static_ip"]`；属于静态 IP 地区/线路切换，不先追问产品类型。
+- 海外 IP 上下文中的切换 IP、换 IP、切换地区/线路：`primary_product=overseas_ip`，`products=["overseas_ip"]`；不要继承或改写成静态 IP/住宅 IP 切换方法，检索海外 IP 支持范围和使用限制。
 - 静态住宅 IP：`primary_product=static_ip`，`ip_type=residential`
 - 静态数据中心 IP、静态机房 IP：`primary_product=static_ip`，`ip_type=datacenter`
 
@@ -592,6 +593,39 @@
   "needs_retrieval": true,
   "retrieval_queries": ["四叶天 静态 IP 切换 方法 步骤"],
   "handoff_notes": "客户在被追问产品后回答静态 IP，真实诉求是上一轮的静态 IP 切换方法，不是产品介绍。",
+  "user_intent_signals": {"wants_human": false, "wants_wechat": false, "refund_strong": false, "switch_ip": true, "discount_strong": false}
+}
+```
+
+场景：前文误按住宅/静态 IP 讲过切换，客户本轮纠正“我的是海外 IP”或追问“海外 IP 不支持切换吧”
+
+```json
+{
+  "contract_version": "customer_router.v1",
+  "specialist": "technical",
+  "routing_confidence": 0.95,
+  "routing_reason": "客户已明确纠正为海外 IP，当前仍在追问切换 IP 支持范围，不能继续套用静态/住宅 IP 切换方法。",
+  "intent": "overseas_ip_switch_capability",
+  "rewritten_question": "客户想确认四叶天海外 IP 是否支持切换 IP。",
+  "history_summary": "前文围绕切换 IP 讨论，客户曾说住宅 IP，随后纠正为海外 IP。",
+  "slots": {
+    "primary_product": "overseas_ip",
+    "products": ["overseas_ip"],
+    "static_type": "",
+    "ip_type": "",
+    "bandwidth": "",
+    "quantity": "",
+    "scenario": "",
+    "platform": "",
+    "device": "",
+    "error_code": ""
+  },
+  "ambiguity": {"is_ambiguous": false, "ambiguous_fields": [], "reason": ""},
+  "missing_info": [],
+  "risk_flags": ["technical"],
+  "needs_retrieval": true,
+  "retrieval_queries": ["四叶天 海外 IP 切换 支持范围 使用限制"],
+  "handoff_notes": "海外 IP 不能继承静态/住宅 IP 的手动切换、每月次数或重新分配规则；只回答海外 IP 证据支持的能力边界。",
   "user_intent_signals": {"wants_human": false, "wants_wechat": false, "refund_strong": false, "switch_ip": true, "discount_strong": false}
 }
 ```

@@ -2714,6 +2714,7 @@ func (result customerScenarioAnswerGuardResult) Audit() map[string]any {
 		"action":    "review_only",
 	}
 	if result.Blocked {
+		out["action"] = "blocked"
 		out["blocked"] = true
 		out["block_reason"] = result.BlockReason
 	}
@@ -3575,6 +3576,7 @@ func customerScenarioIsOverseasIPSwitchUnsupported(routerOutput *CustomerRouterO
 	if routerOutput == nil {
 		return false
 	}
+	decisionText := normalizeCustomerReviewText(text)
 	intentText := normalizeCustomerReviewText(strings.Join([]string{
 		routerOutput.Intent,
 		routerOutput.UserGoal,
@@ -3583,13 +3585,14 @@ func customerScenarioIsOverseasIPSwitchUnsupported(routerOutput *CustomerRouterO
 		strings.Join(routerOutput.Slots.Products, " "),
 		routerOutput.Slots.IPType,
 	}, " "))
-	if !customerRouterTextHasOverseasCue(intentText) &&
+	combinedText := normalizeCustomerReviewText(strings.Join([]string{decisionText, intentText}, " "))
+	if !customerRouterTextHasOverseasCue(combinedText) &&
 		routerOutput.Slots.PrimaryProduct != "overseas_ip" &&
 		!customerRouterListContains(routerOutput.Slots.Products, "overseas_ip") &&
 		routerOutput.Slots.IPType != "overseas" {
 		return false
 	}
-	return containsAny(intentText, "切换ip", "切换 ip", "换ip", "换 ip", "更换ip", "更换 ip", "切换出口", "更换出口", "switch")
+	return containsAny(combinedText, "切换ip", "切换 ip", "换ip", "换 ip", "更换ip", "更换 ip", "切换出口", "更换出口", "switch")
 }
 
 func customerAnswerHasOverseasIPSwitchUnsupportedTerms(answer string) bool {
