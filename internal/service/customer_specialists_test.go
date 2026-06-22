@@ -419,6 +419,65 @@ func TestRetrieveCustomerSpecialistEvidenceDemotesConflictingProductPages(t *tes
 	}
 }
 
+func TestRetrieveCustomerSpecialistEvidenceFiltersConflictingProductEvidence(t *testing.T) {
+	rt := testRuntime(
+		testRuntimeTool{name: "exec.qmd", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			raw, err := json.Marshal([]map[string]any{
+				{"path": "wiki/procedures/si-ye-tian-connection-troubleshooting.md", "score": 327},
+				{"path": "wiki/procedures/si-ye-tian-static-ip-usage.md", "score": 311},
+				{"path": "wiki/knowledge/si-ye-tian-overseas-ip.md", "score": 251},
+				{"path": "wiki/procedures/si-ye-tian-device-network-configuration.md", "score": 231},
+			})
+			if err != nil {
+				return runtime.ToolResult{}, err
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"stdout": string(raw)}}, nil
+		}},
+		testRuntimeTool{name: "wiki.search_pages"},
+		testRuntimeTool{name: "wiki.read_page", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			path, _ := args["path"].(string)
+			pages := map[string]string{
+				"wiki/procedures/si-ye-tian-connection-troubleshooting.md":       "---\ntitle: 连接排障\n---\n海外 IP 场景需确认海外网络环境。",
+				"wiki/procedures/si-ye-tian-static-ip-usage.md":                 "---\ntitle: 静态 IP 使用\n---\n静态 IP 可在会员中心手动切换、重新分配，每月 5 次。",
+				"wiki/knowledge/si-ye-tian-overseas-ip.md":                      "---\ntitle: 海外 IP\n---\n海外 IP 需要海外网络环境或海外服务器环境。",
+				"wiki/procedures/si-ye-tian-device-network-configuration.md":     "---\ntitle: 设备网络\n---\n连接后用 IP 查询站检查出口 IP。",
+			}
+			content := pages[path]
+			if content == "" {
+				return runtime.ToolResult{Success: false, RiskLevel: runtime.RiskLow, Error: &runtime.ToolError{Code: "NOT_FOUND", Message: path}}, nil
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"content": content}}, nil
+		}},
+	)
+	svc := newTestCustomerChatService(t, rt)
+	result := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-overseas-product-filter", &CustomerRouterOutput{
+		Specialist:        "technical",
+		RewrittenQuestion: "客户想了解四叶天海外 IP 如何切换 IP。",
+		NeedsRetrieval:    true,
+		RetrievalQueries:  []string{"四叶天 海外 IP 切换 方法 步骤"},
+		Slots: CustomerRouterSlots{
+			PrimaryProduct: "overseas_ip",
+			Products:       []string{"overseas_ip"},
+			IPType:         "overseas",
+		},
+	}, RuntimeSettings{})
+	if result.Error != "" {
+		t.Fatalf("expected retrieval without error, got %q", result.Error)
+	}
+	for _, source := range result.Sources {
+		if source.Path == "wiki/procedures/si-ye-tian-static-ip-usage.md" {
+			t.Fatalf("expected conflicting static IP page not to be used as overseas evidence, got %+v", result.Sources)
+		}
+	}
+	if _, ok := result.EvidenceBodies["wiki/procedures/si-ye-tian-static-ip-usage.md"]; ok {
+		t.Fatalf("expected static IP usage body to stay out of evidence, got keys %+v", result.EvidenceBodies)
+	}
+	candidatePaths := customerRetrievedPagePaths(result.Candidates, 10)
+	if !containsString(candidatePaths, "wiki/procedures/si-ye-tian-static-ip-usage.md") {
+		t.Fatalf("expected conflicting static page to remain visible as candidate for diagnostics, got %+v", result.Candidates)
+	}
+}
+
 func TestRetrieveCustomerSpecialistCacheDoesNotBypassProfileScope(t *testing.T) {
 	qmdCalls := 0
 	readCalls := 0

@@ -167,7 +167,7 @@
 - 代理 IP、proxy IP 但没有上下文：`primary_product=unknown`，`products=[]`
 - 切换 IP、换 IP、改 IP、更换代理、配置代理、连接代理但没有明确说动态/静态/海外/住宅/数据中心，也没有指定目标城市/地区：`primary_product=unknown`，`products=[]`
 - 指定目标城市/地区/线路的切换诉求（如切换成上海 IP、换广州 IP、切到杭州线路）：`primary_product=static_ip`，`products=["static_ip"]`；属于静态 IP 地区/线路切换，不先追问产品类型。
-- 海外 IP 上下文中的切换 IP、换 IP、切换地区/线路：`primary_product=overseas_ip`，`products=["overseas_ip"]`；不要继承或改写成静态 IP/住宅 IP 切换方法，检索海外 IP 支持范围和使用限制。
+- 海外 IP 上下文中的切换 IP、换 IP、切换地区/线路：`primary_product=overseas_ip`，`products=["overseas_ip"]`；不要继承或改写成静态 IP/住宅 IP 切换方法，检索海外 IP 支持范围、使用限制、是否支持切换；不要把 query 写成“海外 IP 切换方法步骤”。
 - 静态住宅 IP：`primary_product=static_ip`，`ip_type=residential`
 - 静态数据中心 IP、静态机房 IP：`primary_product=static_ip`，`ip_type=datacenter`
 

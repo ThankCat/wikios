@@ -272,7 +272,7 @@ func (s *CustomerChatService) retrieveCustomerSpecialistEvidence(ctx context.Con
 		}
 		cacheTrace.recordRetrievalResults(index+1, query, pages)
 		candidates = append(candidates, pages...)
-		for _, page := range prioritizeCustomerRetrievedPagesForRouter(pages, routerOutput) {
+		for _, page := range filterCustomerEvidencePagesForRouter(prioritizeCustomerRetrievedPagesForRouter(pages, routerOutput), routerOutput) {
 			if len(sources) >= topK {
 				break
 			}
@@ -711,5 +711,21 @@ func filterSpecialistCandidatesForRouter(candidates []retrieval.RetrievedPage, p
 		out = append(out, retrieval.RetrievedPage{Path: path, Score: candidate.Score})
 	}
 	sortCustomerRetrievedPagesByProductFit(out, routerOutput, false)
+	return out
+}
+
+func filterCustomerEvidencePagesForRouter(pages []retrieval.RetrievedPage, routerOutput *CustomerRouterOutput) []retrieval.RetrievedPage {
+	target := customerEvidenceSinglePrimaryProduct(routerOutput)
+	if target == "" {
+		return pages
+	}
+	out := make([]retrieval.RetrievedPage, 0, len(pages))
+	for _, page := range pages {
+		products := customerEvidenceProductsInPath(page.Path)
+		if len(products) > 0 && !products[target] {
+			continue
+		}
+		out = append(out, page)
+	}
 	return out
 }
