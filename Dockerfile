@@ -21,7 +21,13 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/wiki-server ./cmd/
 
 FROM node:24-bookworm AS runtime
 WORKDIR /app
-RUN npm install -g @tobilu/qmd \
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+RUN npm install -g \
+		--registry="${NPM_REGISTRY}" \
+		--fetch-retries=5 \
+		--fetch-retry-mintimeout=20000 \
+		--fetch-retry-maxtimeout=120000 \
+		@tobilu/qmd \
 	&& git --version \
 	&& python3 --version \
 	&& qmd --version
