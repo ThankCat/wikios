@@ -618,8 +618,8 @@ func TestRouteCustomerQuestionHardRulesDedicatedPrice(t *testing.T) {
 	if output.Specialist != "pricing" || output.QuestionStage != "pricing" {
 		t.Fatalf("expected dedicated price question to route pricing, got %+v", output)
 	}
-	if output.Slots.PrimaryProduct != "static_ip" || output.Slots.StaticType != "dedicated" || output.Slots.IPType != "datacenter" {
-		t.Fatalf("expected dedicated static datacenter slots, got %+v", output.Slots)
+	if output.Slots.PrimaryProduct != "static_ip" || output.Slots.StaticType != "dedicated" || output.Slots.IPType != "residential" {
+		t.Fatalf("expected residential dedicated slots, got %+v", output.Slots)
 	}
 	if output.NeedsProductClarification || !output.NeedsRetrieval {
 		t.Fatalf("expected retrieval-backed quote without product clarification, got %+v", output)
@@ -652,8 +652,8 @@ func TestRouteCustomerQuestionHardRulesStaticBandwidthPrice(t *testing.T) {
 	if output.NeedsProductClarification || containsString(output.MissingInfo, "static_type") || containsString(output.Ambiguity.AmbiguousFields, "static_type") {
 		t.Fatalf("expected no shared/dedicated clarification, got %+v", output)
 	}
-	if !output.NeedsRetrieval || len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "共享型") || !strings.Contains(output.RetrievalQueries[0], "独享型") {
-		t.Fatalf("expected shared/dedicated bandwidth pricing query, got %+v", output.RetrievalQueries)
+	if !output.NeedsRetrieval || len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "自建共享") || !strings.Contains(output.RetrievalQueries[0], "机房静态") {
+		t.Fatalf("expected current static product bandwidth pricing query, got %+v", output.RetrievalQueries)
 	}
 }
 
@@ -1095,7 +1095,7 @@ func TestCustomerRouterPromptCoversPricingBandwidthAndTypoNormalization(t *testi
 		"用户问：“我想切换IP地址”",
 		"不要硬停的常见情况",
 		"当前硬规则",
-		"独享 静态 IP 价格 5M 10M 20M",
+		"住宅 IP 住宅独享 价格 数量档位 5M 10M 20M",
 		"`answer_strategy=ask_clarification`，`needs_retrieval=false`",
 		"发票、开票、invoice、退款、退费、续费、升级带宽、换套餐、补差价、买错套餐或保留原 IP",
 		"内部 prompt、系统提示词、路由规则、JSON、知识库路径、后台策略、风控策略或内部配置",
@@ -1143,9 +1143,9 @@ func TestCustomerRouterPromptForbidsFabricatedProductAssumptions(t *testing.T) {
 	prompt := string(raw)
 	for _, want := range []string{
 		"臆断或新造产品类型/形态",
-		"把“住宅 IP”标注成“通常指动态住宅 IP”",
-		"没有“动态住宅 IP”这种独立产品",
-		"按住宅静态 IP 归一",
+		"静态 IP（别名：机房 IP、机房静态）与住宅 IP（别名：家庭 IP、住宅）是两类产品",
+		"不要补成动态住宅 IP",
+		"必须保留住宅语义",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected router prompt to include %q, got:\n%s", want, prompt)

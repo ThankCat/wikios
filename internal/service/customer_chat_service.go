@@ -1172,6 +1172,11 @@ func sanitizeCustomerVisibleAnswer(answer string, parsed customerChatLLMOutput, 
 	if answer == "" {
 		return "", false
 	}
+	// Deprecated pricing must never reach a customer, even if the router
+	// misclassifies the turn as product/purchase instead of pricing.
+	if customerAnswerUsesDeprecatedPricing(answer) {
+		return "请告诉我需要静态 IP 还是住宅 IP、具体类型、带宽和数量，我按当前价格核算。", true
+	}
 	if customerAnswerIsAllowedInternalBoundaryRefusal(answer, parsed, routerOutput) {
 		return answer, false
 	}
@@ -1193,9 +1198,48 @@ func sanitizeCustomerVisibleAnswer(answer string, parsed customerChatLLMOutput, 
 	}
 	sanitized := strings.TrimSpace(strings.Join(kept, ""))
 	if sanitized == "" {
-		return answer, false
+		return "我可以直接回答产品、价格、购买或配置问题。", true
 	}
 	return sanitized, true
+}
+
+func customerAnswerUsesDeprecatedPricing(answer string) bool {
+	compact := strings.ToLower(strings.TrimSpace(answer))
+	compact = strings.NewReplacer(" ", "", "\n", "", "\r", "", "\t", "").Replace(compact)
+	for _, marker := range []string{
+		"5-20个9折",
+		"21-50个8折",
+		"51-100个7折",
+		"101-200个6折",
+		"201-300个5折",
+		"300个以上4折",
+		"折后",
+		"多买多优惠",
+		"数量越多越划算",
+		"买5个",
+		"起步价",
+		"25至70元/个/月",
+		"300至800元/个/月",
+		"25至70",
+		"300至800",
+		"17.5元/个",
+		"52.5元/个",
+		"22.5元/个/月",
+		"独享型不参与数量折扣",
+		"独享不参与数量折扣",
+		"数据中心独享",
+	} {
+		if strings.Contains(compact, marker) {
+			return true
+		}
+	}
+	if strings.Contains(compact, "独享") &&
+		(strings.Contains(compact, "300元/个/月") ||
+			strings.Contains(compact, "500元/个/月") ||
+			strings.Contains(compact, "800元/个/月")) {
+		return true
+	}
+	return false
 }
 
 func customerAnswerIsAllowedInternalBoundaryRefusal(answer string, parsed customerChatLLMOutput, routerOutput *CustomerRouterOutput) bool {
@@ -1641,54 +1685,6 @@ func customerScenarioAnswerTemplateGuard(req CustomerChatRequest, parsed custome
 			MinConfidence:  0.8,
 			ReviewRequired: false,
 		}
-	case customerScenarioIsStaticIPBandwidthPrice(routerOutput, decisionText) && !customerAnswerHasStaticIPBandwidthPriceTerms(answer, customerScenarioStaticBandwidth(routerOutput, decisionText)):
-		bandwidth := customerScenarioStaticBandwidth(routerOutput, decisionText)
-		price := customerStaticIPBandwidthPrice(bandwidth)
-		return customerScenarioAnswerGuardResult{
-			Triggered:             true,
-			Answer:                fmt.Sprintf("静态 IP %s 数据中心共享型原价为 %s 元/个/月，独享型原价为 %s 元/个/月。请告诉我您需要购买的数量，以便核算对应折扣价。", bandwidth, price.Shared, price.Dedicated),
-			AnswerMode:            "evidence",
-			Reason:                "static_ip_bandwidth_price_terms",
-			FallbackSources:       []customerChatSource{{Path: "wiki/knowledge/si-ye-tian-static-ip-pricing.md", Confidence: "high"}},
-			MinConfidence:         0.85,
-			MinEvidenceConfidence: 0.9,
-		}
-	case customerScenarioIsGenericStaticIPPrice(req, routerOutput, decisionText) && !customerAnswerHasGenericStaticIPPriceTerms(answer):
-		return customerScenarioAnswerGuardResult{
-			Triggered:             true,
-			Answer:                "静态 IP 按个/月计费，分共享型和独享型：共享型 5M 25 元/个/月起，独享型 5M 300 元/个/月起。您要共享型还是独享型、需要多少个？",
-			AnswerMode:            "evidence",
-			Reason:                "generic_static_ip_price_baseline",
-			MinConfidence:         0.85,
-			MinEvidenceConfidence: 0.9,
-		}
-	case customerScenarioIsDedicatedPrice(routerOutput, decisionText) && !customerAnswerHasAllDedicatedPrices(answer):
-		return customerScenarioAnswerGuardResult{
-			Triggered:             true,
-			Answer:                "数据中心独享型静态 IP：5M 300 元/个/月，10M 500 元/个/月，20M 800 元/个/月；独享型不参与数量折扣。",
-			AnswerMode:            "evidence",
-			Reason:                "dedicated_price_complete_table",
-			MinConfidence:         0.85,
-			MinEvidenceConfidence: 0.9,
-		}
-	case customerScenarioIsSharedDatacenterQuantity50Price(routerOutput, decisionText) && !customerAnswerHasSharedDatacenterQuantity50Terms(answer):
-		return customerScenarioAnswerGuardResult{
-			Triggered:             true,
-			Answer:                "共享型 50 个按 21-50 个档位 8 折。数据中心 5M 是 25 * 50 * 0.8 = 1000 元/月，折后 20 元/个/月；10M 是 24 元/个/月，20M 是 56 元/个/月。",
-			AnswerMode:            "evidence",
-			Reason:                "shared_datacenter_quantity_50_discount_terms",
-			MinConfidence:         0.85,
-			MinEvidenceConfidence: 0.9,
-		}
-	case customerScenarioIsStaticIPQuantity100Discount(routerOutput, decisionText) && !customerAnswerHasStaticIPQuantity100DiscountTerms(answer):
-		return customerScenarioAnswerGuardResult{
-			Triggered:             true,
-			Answer:                "共享型静态 IP 100 个属于 51-100 个档位，可享 7折；独享型不参与数量折扣。具体下单金额还要按您选择的带宽和页面实时价格确认。",
-			AnswerMode:            "evidence",
-			Reason:                "static_ip_quantity_100_discount_terms",
-			MinConfidence:         0.85,
-			MinEvidenceConfidence: 0.9,
-		}
 	case customerScenarioIsOverseasIPPrice(routerOutput, decisionText) && !customerAnswerHasOverseasIPPriceBoundary(answer):
 		return customerScenarioAnswerGuardResult{
 			Triggered:             true,
@@ -1697,15 +1693,6 @@ func customerScenarioAnswerTemplateGuard(req CustomerChatRequest, parsed custome
 			Reason:                "overseas_ip_price_boundary",
 			MinConfidence:         0.8,
 			MinEvidenceConfidence: 0.8,
-		}
-	case customerScenarioIsDatacenterResidentialPriceCompare(routerOutput, decisionText) && !customerAnswerHasDatacenterResidentialPriceCompareTerms(answer):
-		return customerScenarioAnswerGuardResult{
-			Triggered:             true,
-			Answer:                "同带宽下数据中心 IP 通常更便宜：5M 数据中心 25 元/个/月、住宅 30 元/个/月；10M 数据中心 30 元/个/月、住宅 50 元/个/月；20M 数据中心 70 元/个/月、住宅 70 元/个/月。",
-			AnswerMode:            "evidence",
-			Reason:                "datacenter_residential_price_compare_terms",
-			MinConfidence:         0.85,
-			MinEvidenceConfidence: 0.9,
 		}
 	case customerScenarioIsNewUserSelection(routerOutput, decisionText) && len(customerUnsafeVisibleAnswerHits(answer)) > 0:
 		return customerScenarioAnswerGuardResult{
@@ -2274,30 +2261,6 @@ func customerScenarioHardGuardResult(req CustomerChatRequest, parsed customerCha
 			MinEvidenceConfidence: 0.85,
 		}, true
 	}
-	if customerScenarioIsDedicatedPrice(routerOutput, decisionText) &&
-		customerScenarioDedicatedPriceRequiresCompleteTable(routerOutput, decisionText) &&
-		!customerAnswerHasAllDedicatedPrices(answer) {
-		return customerScenarioAnswerGuardResult{
-			Triggered:             true,
-			Answer:                "数据中心独享型静态 IP：5M 300 元/个/月，10M 500 元/个/月，20M 800 元/个/月；独享型不参与数量折扣。",
-			AnswerMode:            "evidence",
-			Reason:                "dedicated_price_complete_table",
-			MinConfidence:         0.85,
-			MinEvidenceConfidence: 0.9,
-		}, true
-	}
-	if customerScenarioIsSharedDatacenterQuantity50Price(routerOutput, decisionText) &&
-		customerScenarioSharedDatacenterQuantity50RequiresDiscountBasis(routerOutput, decisionText) &&
-		!customerAnswerHasSharedDatacenterQuantity50Terms(answer) {
-		return customerScenarioAnswerGuardResult{
-			Triggered:             true,
-			Answer:                "共享型 50 个按 21-50 个档位 8 折。数据中心 5M 是 25 * 50 * 0.8 = 1000 元/月，折后 20 元/个/月；10M 是 24 元/个/月，20M 是 56 元/个/月。",
-			AnswerMode:            "evidence",
-			Reason:                "shared_datacenter_quantity_50_discount_terms",
-			MinConfidence:         0.85,
-			MinEvidenceConfidence: 0.9,
-		}, true
-	}
 	if customerScenarioIsRefund(routerOutput, decisionText) &&
 		(customerAnswerAsksForOrderInfo(answer) || customerAnswerHasForbiddenRefundPhrase(answer)) {
 		return customerScenarioAnswerGuardResult{
@@ -2401,16 +2364,6 @@ func customerScenarioAnswerNeedsHardGuard(req CustomerChatRequest, parsed custom
 		!customerAnswerHasOverseasIPSwitchUnsupportedTerms(answer) {
 		return true
 	}
-	if customerScenarioIsDedicatedPrice(routerOutput, decisionText) &&
-		customerScenarioDedicatedPriceRequiresCompleteTable(routerOutput, decisionText) &&
-		!customerAnswerHasAllDedicatedPrices(answer) {
-		return true
-	}
-	if customerScenarioIsSharedDatacenterQuantity50Price(routerOutput, decisionText) &&
-		customerScenarioSharedDatacenterQuantity50RequiresDiscountBasis(routerOutput, decisionText) &&
-		!customerAnswerHasSharedDatacenterQuantity50Terms(answer) {
-		return true
-	}
 	if customerScenarioIsPlatformRiskGuarantee(routerOutput, decisionText) &&
 		!customerAnswerHasPlatformRiskGuaranteeTerms(answer) {
 		return true
@@ -2446,37 +2399,6 @@ func customerScenarioAnswerNeedsHardGuard(req CustomerChatRequest, parsed custom
 		return true
 	}
 	return false
-}
-
-func customerScenarioDedicatedPriceRequiresCompleteTable(routerOutput *CustomerRouterOutput, text string) bool {
-	if routerOutput == nil {
-		return false
-	}
-	compact := normalizeCustomerScenarioCompactText(strings.Join([]string{
-		text,
-		routerOutput.Intent,
-		routerOutput.RewrittenQuestion,
-		routerOutput.RoutingReason,
-		routerOutput.HandoffNotes,
-		strings.Join(routerOutput.RetrievalQueries, " "),
-	}, " "))
-	return containsAny(compact, "完整三档", "三档", "5m10m20m", "5m、10m、20m", "5m/10m/20m") ||
-		(routerOutput.Slots.StaticType == "dedicated" && customerScenarioStaticBandwidth(routerOutput, text) == "")
-}
-
-func customerScenarioSharedDatacenterQuantity50RequiresDiscountBasis(routerOutput *CustomerRouterOutput, text string) bool {
-	if routerOutput == nil {
-		return false
-	}
-	compact := normalizeCustomerScenarioCompactText(strings.Join([]string{
-		text,
-		routerOutput.Intent,
-		routerOutput.RewrittenQuestion,
-		routerOutput.RoutingReason,
-		routerOutput.HandoffNotes,
-		strings.Join(routerOutput.RetrievalQueries, " "),
-	}, " "))
-	return containsAny(compact, "50个", "50个数量", "50个的价格", "50个价格", "8折", "折扣", "折后")
 }
 
 func customerScenarioGuardProductLocked(req CustomerChatRequest, routerOutput *CustomerRouterOutput, result customerScenarioAnswerGuardResult) customerScenarioAnswerGuardResult {
@@ -2837,55 +2759,6 @@ func customerScenarioStaticBandwidth(routerOutput *CustomerRouterOutput, text st
 	}
 }
 
-func customerStaticIPBandwidthPrice(bandwidth string) customerStaticBandwidthPrice {
-	switch strings.ToLower(strings.TrimSpace(bandwidth)) {
-	case "10m":
-		return customerStaticBandwidthPrice{Shared: "30", Dedicated: "500"}
-	case "20m":
-		return customerStaticBandwidthPrice{Shared: "70", Dedicated: "800"}
-	default:
-		return customerStaticBandwidthPrice{Shared: "25", Dedicated: "300"}
-	}
-}
-
-func customerAnswerHasStaticIPBandwidthPriceTerms(answer string, bandwidth string) bool {
-	text := normalizeCustomerReviewText(answer)
-	compact := strings.ReplaceAll(text, " ", "")
-	normalizedBandwidth := strings.ToLower(strings.TrimSpace(bandwidth))
-	if normalizedBandwidth != "" &&
-		strings.Contains(compact, normalizedBandwidth) &&
-		strings.Contains(compact, "元/个") &&
-		containsAny(text, "多买多优惠", "折扣", "申请", "优惠") {
-		return true
-	}
-	price := customerStaticIPBandwidthPrice(bandwidth)
-	return strings.Contains(text, strings.ToLower(strings.TrimSpace(bandwidth))) &&
-		strings.Contains(text, "共享型") &&
-		strings.Contains(text, "独享型") &&
-		strings.Contains(text, price.Shared) &&
-		strings.Contains(text, price.Dedicated) &&
-		strings.Contains(text, "元/个/月")
-}
-
-func customerScenarioIsStaticIPQuantity100Discount(routerOutput *CustomerRouterOutput, text string) bool {
-	if routerOutput == nil || routerOutput.Specialist != "pricing" {
-		return false
-	}
-	if strings.Contains(normalizeCustomerReviewText(routerOutput.RewrittenQuestion), "独享") ||
-		strings.Contains(normalizeCustomerReviewText(routerOutput.Intent), "dedicated") {
-		return false
-	}
-	return customerRouterTextHasStaticCue(text) && containsAny(text, "100个", "100 个") && containsAny(text, "便宜", "优惠", "折扣")
-}
-
-func customerAnswerHasStaticIPQuantity100DiscountTerms(answer string) bool {
-	text := normalizeCustomerReviewText(answer)
-	return strings.Contains(text, "51-100") &&
-		strings.Contains(text, "7折") &&
-		strings.Contains(text, "独享型") &&
-		strings.Contains(text, "不参与")
-}
-
 func customerScenarioIsOverseasIPPrice(routerOutput *CustomerRouterOutput, text string) bool {
 	if routerOutput == nil || routerOutput.Specialist != "pricing" {
 		return false
@@ -2898,81 +2771,6 @@ func customerAnswerHasOverseasIPPriceBoundary(answer string) bool {
 	return strings.Contains(text, "国家地区") &&
 		strings.Contains(text, "购买时长") &&
 		strings.Contains(text, "不能直接给固定价格")
-}
-
-func customerScenarioIsDatacenterResidentialPriceCompare(routerOutput *CustomerRouterOutput, text string) bool {
-	if routerOutput == nil || routerOutput.Specialist != "pricing" {
-		return false
-	}
-	return containsAny(text, "数据中心", "机房") &&
-		customerRouterTextHasResidentialCue(text) &&
-		containsAny(text, "便宜", "价格", "多少钱", "对比")
-}
-
-func customerAnswerHasDatacenterResidentialPriceCompareTerms(answer string) bool {
-	text := normalizeCustomerReviewText(answer)
-	return strings.Contains(text, "5m") &&
-		strings.Contains(text, "25") &&
-		strings.Contains(text, "30") &&
-		strings.Contains(text, "10m") &&
-		strings.Contains(text, "50") &&
-		strings.Contains(text, "20m") &&
-		strings.Contains(text, "70")
-}
-
-func customerScenarioIsDedicatedPrice(routerOutput *CustomerRouterOutput, text string) bool {
-	if routerOutput == nil || routerOutput.Specialist != "pricing" {
-		return false
-	}
-	if routerOutput.Slots.StaticType == "dedicated" {
-		return true
-	}
-	intentText := strings.ToLower(strings.TrimSpace(strings.Join([]string{
-		routerOutput.Intent,
-		routerOutput.RewrittenQuestion,
-		routerOutput.RoutingReason,
-	}, " ")))
-	return customerRouterLooksDedicatedPrice(intentText) && !customerRouterLooksStaticBandwidthPrice(text)
-}
-
-func customerAnswerHasAllDedicatedPrices(answer string) bool {
-	text := normalizeCustomerReviewText(answer)
-	return strings.Contains(text, "300") && strings.Contains(text, "500") && strings.Contains(text, "800")
-}
-
-func customerScenarioIsSharedDatacenterQuantity50Price(routerOutput *CustomerRouterOutput, text string) bool {
-	if routerOutput == nil || routerOutput.Specialist != "pricing" {
-		return false
-	}
-	if routerOutput.Slots.StaticType == "dedicated" || (strings.Contains(text, "独享") && !strings.Contains(text, "共享")) {
-		return false
-	}
-	if routerOutput.Slots.IPType != "" && routerOutput.Slots.IPType != "datacenter" {
-		return false
-	}
-	if qty, ok := parseCustomerQuantity(routerOutput.Slots.Quantity); !ok || qty != 50 {
-		if !containsAny(text, "50个", "50 个") {
-			return false
-		}
-	}
-	return (strings.Contains(text, "共享") || strings.Contains(text, "8折") || strings.Contains(text, "0.8") || routerOutput.Slots.StaticType == "shared") &&
-		(containsAny(text, "数据中心", "datacenter") || routerOutput.Slots.IPType == "datacenter" || !customerRouterTextHasResidentialCue(text)) &&
-		(customerRouterListContains(routerOutput.RiskFlags, "pricing") || customerRouterListContains(routerOutput.RiskFlags, "discount") || strings.Contains(text, "价格") || strings.Contains(text, "折扣"))
-}
-
-func customerAnswerHasSharedDatacenterQuantity50Terms(answer string) bool {
-	text := normalizeCustomerReviewText(answer)
-	return strings.Contains(text, "50") &&
-		(strings.Contains(text, "8折") || strings.Contains(text, "0.8")) &&
-		strings.Contains(text, "5m") &&
-		strings.Contains(text, "25") &&
-		strings.Contains(text, "0.8") &&
-		strings.Contains(text, "1000") &&
-		strings.Contains(text, "20") &&
-		strings.Contains(text, "10m") &&
-		strings.Contains(text, "24") &&
-		strings.Contains(text, "20m") &&
-		strings.Contains(text, "56")
 }
 
 func customerScenarioIsAmbiguousDynamicStaticPrice(routerOutput *CustomerRouterOutput, text string) bool {
@@ -4288,6 +4086,12 @@ func customerVisibleAnswerLeaksInternalContext(text string) bool {
 		"candidate_pages",
 		"candidate page",
 		"candidate_page_paths",
+		"source_pages",
+		"wiki/",
+		"raw/",
+		".md",
+		".xlsx",
+		"/users/chenhao/",
 		"review_question",
 		"answer_mode",
 		"evidence_confidence",
@@ -4297,6 +4101,13 @@ func customerVisibleAnswerLeaksInternalContext(text string) bool {
 		"prompt",
 		"json 字段",
 		"json字段",
+		"产品价格档位表",
+		"四叶天产品定价修订版",
+		"客服最低授权价",
+		"最低授权价",
+		"审批阈值",
+		"采购成本",
+		"毛利",
 	} {
 		if strings.Contains(normalized, strings.ToLower(marker)) {
 			return true
@@ -4313,6 +4124,13 @@ func customerVisibleAnswerLeaksInternalContext(text string) bool {
 		"候选知识",
 		"候选页面",
 		"候选页",
+		"来源文件",
+		"来源路径",
+		"工作表显示",
+		"根据价格表",
+		"按价格表",
+		"根据表格",
+		"按表格",
 		"检索结果",
 		"路由判断",
 		"分诊结果",

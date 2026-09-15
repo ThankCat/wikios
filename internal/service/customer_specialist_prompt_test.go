@@ -153,27 +153,62 @@ func TestCustomerSpecialistPricingPromptCoversSpecListNoSalesTailPolicy(t *testi
 	}
 	prompt := string(raw)
 	for _, want := range []string{
-		"如果客户问“有哪些带宽/规格/档位”，只列可选项",
-		"不要补“确定带宽和数量后可以核算月费”",
-		"不要推荐带宽或追问业务场景",
-		"如果客户问“按什么计费/怎么计费”，只说明计费维度",
-		"不要说“我可以核算金额/立即核算具体金额”",
-		"`router_output.slots.primary_product=unknown`",
-		"不要猜动态 IP、静态 IP 或其它产品价格",
-		"`动态 IP 主要按提取次数或使用时长计费。`",
-		"静态 IP 已指定带宽但未指定共享/独享时",
-		"同时给该带宽的数据中心共享型和数据中心独享型单价",
-		"独享 IP/独享静态问价且客户未指定带宽时",
-		"直接列出数据中心独享型 5M、10M、20M 三档月价",
-		"10M 应回答数据中心共享型 30 元/个/月、数据中心独享型 500 元/个/月",
-		"不要主动加入住宅 10M 价格",
-		"没有数量时只能报单价或原价",
-		"住宅 10M 这类只给了带宽、没给数量的问题",
-		"独享型静态 IP 不参与数量折扣",
-		"5M 300 元/个/月，10M 500 元/个/月，20M 800 元/个/月",
+		"## 证据原则",
+		"绝对不能出现来源文件、知识库路径、页面名、工作簿名、工作表名",
+		"`sources` 只用于系统内部审计",
+		"客服最低授权价、审批阈值、采购成本、毛利",
+		"## 当前产品映射",
+		"静态 IP：别名为“机房 IP”“机房静态”",
+		"自建共享”“机房静态”，两种类型价格完全相同",
+		"住宅 IP：别名为“家庭 IP”“住宅”",
+		"住宅共享”“住宅独享",
+		"客户说“独享”时，当前价格体系只对应住宅独享",
+		"报价前必须确定产品、必要类型、带宽和数量",
+		"缺少带宽或数量时不能先报任何单价",
+		"首次报价",
+		"即使客户首次就问“最低多少”“能优惠吗”",
+		"后续议价",
+		"最低价后申请",
+		"只回复可以提交申请、最终以审批结果为准、不能保证批准",
+		"只给一个单价，不展示“最低-最高”区间",
+		"月费计算为“单价 × 数量”",
+		"元/条/月",
+		"不得使用百分比折扣换算",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected pricing prompt to include %q, got:\n%s", want, prompt)
+		}
+	}
+	for _, obsolete := range []string{"22.5", "540 元/月", "9 折", "8 折", "300 元/个/月", "500 元/个/月", "800 元/个/月", "数据中心独享型"} {
+		if strings.Contains(prompt, obsolete) {
+			t.Fatalf("pricing prompt still contains obsolete pricing marker %q:\n%s", obsolete, prompt)
+		}
+	}
+}
+
+func TestSanitizeCustomerVisibleAnswerBlocksDeprecatedPricingAndSourceDisclosure(t *testing.T) {
+	routerOutput := &CustomerRouterOutput{Specialist: "pricing"}
+	parsed := customerChatLLMOutput{AnswerMode: "evidence"}
+
+	deprecated := "数据中心独享型静态 IP 5M 300 元/个/月，独享型不参与数量折扣。"
+	got, changed := sanitizeCustomerVisibleAnswer(deprecated, parsed, routerOutput)
+	if !changed {
+		t.Fatal("expected deprecated pricing answer to be sanitized")
+	}
+	for _, forbidden := range []string{"300", "数据中心独享", "不参与数量折扣"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("sanitized answer still contains deprecated marker %q: %s", forbidden, got)
+		}
+	}
+
+	leakedSource := "价格来自 wiki/knowledge/si-ye-tian-static-ip-pricing.md。"
+	got, changed = sanitizeCustomerVisibleAnswer(leakedSource, parsed, routerOutput)
+	if !changed {
+		t.Fatal("expected source disclosure to be sanitized")
+	}
+	for _, forbidden := range []string{"wiki/", ".md", "来源"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("sanitized answer still contains source marker %q: %s", forbidden, got)
 		}
 	}
 }

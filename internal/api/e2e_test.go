@@ -1625,7 +1625,7 @@ func TestCustomerChatResponseTimeoutReturnsSafeFallback(t *testing.T) {
 	}
 }
 
-func TestCustomerChatOrdinaryPriceQuestionKeepsModelAnswer(t *testing.T) {
+func TestCustomerChatOrdinaryPriceQuestionBlocksDeprecatedModelAnswer(t *testing.T) {
 	fixture := newAPITestFixture(t, apiCustomerChatTextLLM{text: `{
   "answer_mode": "evidence",
   "answer": "5M 静态 IP 多买多优惠，10 个可以按 90元/个申请。",
@@ -1653,14 +1653,15 @@ func TestCustomerChatOrdinaryPriceQuestionKeepsModelAnswer(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	for _, want := range []string{"多买多优惠", "90元/个"} {
-		if !strings.Contains(payload.Answer, want) {
-			t.Fatalf("expected model discount wording %q to remain, got %s", want, payload.Answer)
-		}
+	if strings.Contains(payload.Answer, "多买多优惠") || strings.Contains(payload.Answer, "90元/个") {
+		t.Fatalf("deprecated pricing must not be exposed, got %s", payload.Answer)
+	}
+	if !strings.Contains(payload.Answer, "按当前价格核算") {
+		t.Fatalf("expected safe current-pricing clarification, got %s", payload.Answer)
 	}
 }
 
-func TestCustomerChatOrdinaryStaticPriceKeepsModelAnswer(t *testing.T) {
+func TestCustomerChatOrdinaryStaticPriceBlocksDeprecatedModelAnswer(t *testing.T) {
 	fixture := newAPITestFixture(t, apiCustomerChatTextLLM{text: `{
   "answer_mode": "evidence",
   "answer": "我们静态 IP 分为共享型和独享型两类，按月计费：共享型起步价约 25 至 70 元/个/月，按需选择数据中心或住宅 IP，数量越多越划算（买 5 个起可享折扣）。独享型带宽资源更稳，起步价约 300 至 800 元/个/月。您这边主要是做账号运营还是数据采集呢？",
@@ -1688,19 +1689,17 @@ func TestCustomerChatOrdinaryStaticPriceKeepsModelAnswer(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	for _, want := range []string{"25", "70", "300", "800"} {
-		if !strings.Contains(payload.Answer, want) {
-			t.Fatalf("expected base price %q to remain, got %s", want, payload.Answer)
+	for _, forbidden := range []string{"25 至 70", "300 至 800", "数量越多", "买 5 个", "折扣"} {
+		if strings.Contains(payload.Answer, forbidden) {
+			t.Fatalf("deprecated pricing marker %q must not be exposed, got %s", forbidden, payload.Answer)
 		}
 	}
-	for _, want := range []string{"数量越多", "买 5 个", "折扣"} {
-		if !strings.Contains(payload.Answer, want) {
-			t.Fatalf("expected model discount wording %q to remain, got %s", want, payload.Answer)
-		}
+	if !strings.Contains(payload.Answer, "按当前价格核算") {
+		t.Fatalf("expected safe current-pricing clarification, got %s", payload.Answer)
 	}
 }
 
-func TestCustomerChatMissingStaticSubtypeKeepsModelAnswer(t *testing.T) {
+func TestCustomerChatMissingStaticSubtypeBlocksDeprecatedModelAnswer(t *testing.T) {
 	fixture := newAPITestFixture(t, apiCustomerChatTextLLM{text: `{
   "answer_mode": "mixed",
   "answer": "共享型静态IP购买300个以上已经是4折最低价了，10000个也是按这个折扣算。5M折后10元/个/月，10000个每月10万。您打算选哪种带宽？",
@@ -1734,14 +1733,17 @@ func TestCustomerChatMissingStaticSubtypeKeepsModelAnswer(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	for _, want := range []string{"4折", "折后", "10元/个", "每月10万"} {
-		if !strings.Contains(payload.Answer, want) {
-			t.Fatalf("expected model discount wording %q to remain, got %s", want, payload.Answer)
+	for _, forbidden := range []string{"4折", "折后", "10元/个", "每月10万"} {
+		if strings.Contains(payload.Answer, forbidden) {
+			t.Fatalf("deprecated pricing marker %q must not be exposed, got %s", forbidden, payload.Answer)
 		}
+	}
+	if !strings.Contains(payload.Answer, "按当前价格核算") {
+		t.Fatalf("expected safe current-pricing clarification, got %s", payload.Answer)
 	}
 }
 
-func TestCustomerChatBandwidthQuestionKeepsModelAnswer(t *testing.T) {
+func TestCustomerChatBandwidthQuestionBlocksDeprecatedModelAnswer(t *testing.T) {
 	fixture := newAPITestFixture(t, apiCustomerChatTextLLM{text: `{
   "answer_mode": "evidence",
   "answer": "三种带宽的核心区别在于服务器带宽规格。200个数量选共享型很划算，参考价如下：5M折后约15元/个/月，共约3000元/月；10M折后约18元/个/月，共约3600元/月；20M折后约52.5元/个/月，共约10500元/月。您偏向共享型还是独享型？",
@@ -1777,19 +1779,17 @@ func TestCustomerChatBandwidthQuestionKeepsModelAnswer(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	for _, want := range []string{"折后", "15元/个", "18元/个", "52.5元/个", "3000元/月", "3600元/月", "10500元/月"} {
-		if !strings.Contains(payload.Answer, want) {
-			t.Fatalf("expected model discount wording %q to remain, got %s", want, payload.Answer)
+	for _, forbidden := range []string{"折后", "15元/个", "18元/个", "52.5元/个", "3000元/月", "3600元/月", "10500元/月"} {
+		if strings.Contains(payload.Answer, forbidden) {
+			t.Fatalf("deprecated pricing marker %q must not be exposed, got %s", forbidden, payload.Answer)
 		}
 	}
-	for _, want := range []string{"5M", "10M", "20M"} {
-		if !strings.Contains(payload.Answer, want) {
-			t.Fatalf("expected bandwidth-focused answer to contain %q, got %s", want, payload.Answer)
-		}
+	if !strings.Contains(payload.Answer, "按当前价格核算") {
+		t.Fatalf("expected safe current-pricing clarification, got %s", payload.Answer)
 	}
 }
 
-func TestCustomerChatPurchaseKeepsModelAnswer(t *testing.T) {
+func TestCustomerChatPurchaseBlocksDeprecatedModelAnswer(t *testing.T) {
 	fixture := newAPITestFixture(t, apiCustomerChatTextLLM{text: `{
   "answer_mode": "evidence",
   "answer": "数据中心共享型静态IP如果买 100 个，5M 折后约 17.5元/个/月，可以申请优惠。",
@@ -1827,24 +1827,27 @@ func TestCustomerChatPurchaseKeepsModelAnswer(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	for _, want := range []string{"申请优惠", "折后", "17.5元/个"} {
-		if !strings.Contains(payload.Answer, want) {
-			t.Fatalf("expected model wording %q to remain, got %s", want, payload.Answer)
+	for _, forbidden := range []string{"申请优惠", "折后", "17.5元/个"} {
+		if strings.Contains(payload.Answer, forbidden) {
+			t.Fatalf("deprecated pricing marker %q must not be exposed, got %s", forbidden, payload.Answer)
 		}
+	}
+	if !strings.Contains(payload.Answer, "按当前价格核算") {
+		t.Fatalf("expected safe current-pricing clarification, got %s", payload.Answer)
 	}
 	if strings.Contains(rec.Body.String(), `"details"`) {
 		t.Fatalf("external customer chat must not expose sanitizer diagnostics in details, got %s", rec.Body.String())
 	}
 
 	entry := readLatestCustomerChatLogEntry(t, fixture.deps.WorkspaceDir)
-	encodedLog, _ := json.Marshal(entry)
-	for _, want := range []string{"17.5元/个", "折后"} {
-		if !strings.Contains(string(encodedLog), want) {
-			t.Fatalf("expected customer log to persist final model answer %q, got %s", want, string(encodedLog))
+	finalAnswer := apiTestStringValue(apiTestMapValue(entry["final"]), "answer")
+	for _, forbidden := range []string{"17.5元/个", "折后", "申请优惠"} {
+		if strings.Contains(finalAnswer, forbidden) {
+			t.Fatalf("deprecated pricing marker %q must not be persisted as final customer answer, got %s", forbidden, finalAnswer)
 		}
 	}
-	if strings.Contains(string(encodedLog), "sanitizers") {
-		t.Fatalf("expected service-layer sanitizer diagnostics to be absent, got %s", string(encodedLog))
+	if strings.TrimSpace(finalAnswer) == "" {
+		t.Fatalf("expected customer log to persist a non-empty final answer, got %#v", entry["final"])
 	}
 }
 

@@ -78,8 +78,8 @@ func (m *customerRoutedPipelineTestLLM) StreamChat(ctx context.Context, model st
 
 func TestAnswerRoutedPricingUsesSpecialistAnswer(t *testing.T) {
 	llmClient := &customerRoutedPipelineTestLLM{
-		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["static_type","bandwidth","quantity"],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户是普通静态 IP 问价，未指定共享/独享、带宽和数量。"}`,
-		specialistText: `{"answer_mode":"evidence","answer":"我们静态 IP 分共享型和独享型，按月计费。共享型 25 元/个/月起，独享型 300 元/个/月起。您更偏长期固定账号，还是批量业务使用？","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"datacenter","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["bandwidth","quantity"],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 数量档位 价格"],"handoff_notes":"静态 IP 的类型同价；缺少带宽和数量，不能报价。"}`,
+		specialistText: `{"answer_mode":"clarification","answer":"请问需要 5M、10M 还是 20M，以及需要多少条？","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
 	}
 	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
 	resp, err := svc.answerRouted(context.Background(), "trace-routed-pricing", CustomerChatRequest{
@@ -89,7 +89,7 @@ func TestAnswerRoutedPricingUsesSpecialistAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("answerRouted: %v", err)
 	}
-	if resp == nil || !strings.Contains(resp.Answer, "共享型 25 元/个/月起") {
+	if resp == nil || !strings.Contains(resp.Answer, "5M、10M 还是 20M") || !strings.Contains(resp.Answer, "多少条") {
 		t.Fatalf("expected specialist pricing answer, got %#v", resp)
 	}
 	if resp.Details == nil || resp.Details["specialist"] != "pricing" {
@@ -239,12 +239,12 @@ func TestAnswerRoutedSimulationSkipsReviewCreation(t *testing.T) {
 
 func TestAnswerRoutedResolvesUserIntentFromRouterSignals(t *testing.T) {
 	llmClient := &customerRoutedPipelineTestLLM{
-		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"datacenter_ip_bulk_discount","rewritten_question":"客户想批量采购数据中心 IP 并询问优惠。","history_summary":"","slots":{"primary_product":"datacenter_ip","products":["datacenter_ip"],"static_type":"","ip_type":"datacenter","bandwidth":"","quantity":"1000个","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing","discount"],"needs_retrieval":true,"retrieval_queries":["四叶天 数据中心 IP 批量 优惠"],"handoff_notes":"用户批量采购数据中心 IP 并询问优惠。","user_intent_signals":{"wants_human":false,"wants_wechat":false,"refund_strong":false,"switch_ip":false,"discount_strong":true}}`,
-		specialistText: `{"answer_mode":"evidence","answer":"数据中心 IP 批量采购可以走商务报价，具体折扣以最终核算为准。","review_question":"","confidence_breakdown":{"evidence_coverage":0.8,"source_directness":0.8,"answer_specificity":0.8,"missing_info_impact":0.8,"risk_sensitivity":0.8},"confidence":0.8,"evidence_confidence":0.8,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[],"notes":""}`,
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_bulk_discount","rewritten_question":"客户想批量采购机房 IP 并询问优惠。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"datacenter","bandwidth":"","quantity":"1000条","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["bandwidth"],"risk_flags":["pricing","discount"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 1000条 数量档位 价格"],"handoff_notes":"机房 IP 归一为静态 IP；客户首次询价且缺少带宽。","user_intent_signals":{"wants_human":false,"wants_wechat":false,"refund_strong":false,"switch_ip":false,"discount_strong":true}}`,
+		specialistText: `{"answer_mode":"clarification","answer":"请问需要 5M、10M 还是 20M？","review_question":"","confidence_breakdown":{"evidence_coverage":0.8,"source_directness":0.8,"answer_specificity":0.8,"missing_info_impact":0.8,"risk_sensitivity":0.8},"confidence":0.8,"evidence_confidence":0.8,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[],"notes":""}`,
 	}
 	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
 	resp, err := svc.answerRouted(context.Background(), "trace-routed-user-intent", CustomerChatRequest{
-		Question:   "数据中心IP买1000个能优惠吗？",
+		Question:   "机房IP买1000条能优惠吗？",
 		PersistLog: boolPtr(false),
 		Simulation: true,
 	}, nil, DefaultRuntimeSettings(svc.deps.Config))
@@ -257,8 +257,8 @@ func TestAnswerRoutedResolvesUserIntentFromRouterSignals(t *testing.T) {
 	if resp.UserIntent.Type != customerUserIntentDiscount {
 		t.Fatalf("expected discount intent, got %q", resp.UserIntent.Type)
 	}
-	if resp.UserIntent.Extra == nil || resp.UserIntent.Extra.ProductType != "datacenter_ip" || resp.UserIntent.Extra.Quantity != 1000 {
-		t.Fatalf("expected discount extra {datacenter_ip,1000}, got %+v", resp.UserIntent.Extra)
+	if resp.UserIntent.Extra == nil || resp.UserIntent.Extra.ProductType != "static_ip" || resp.UserIntent.Extra.Quantity != 1000 {
+		t.Fatalf("expected discount extra {static_ip,1000}, got %+v", resp.UserIntent.Extra)
 	}
 	if resp.Details["user_intent"] == nil {
 		t.Fatalf("expected user_intent stashed in details")
@@ -424,10 +424,10 @@ func TestAnswerRoutedHighRiskWithoutFinalSourcesCreatesReviewAndCountsFinalSourc
 	}
 }
 
-func TestAnswerRoutedDedicatedPriceGuardFlagsReviewWithoutCompletingTiers(t *testing.T) {
+func TestAnswerRoutedResidentialDedicatedPriceAsksForRequiredSlots(t *testing.T) {
 	llmClient := &customerRoutedPipelineTestLLM{
-		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.95,"routing_reason":"用户询问独享 IP 价格。","intent":"dedicated_ip_price_inquiry","rewritten_question":"客户想了解独享 IP 一个月多少钱。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"dedicated","ip_type":"datacenter","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["bandwidth","quantity"],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 独享 静态 IP 价格 5M 10M 20M"],"handoff_notes":"用户询问独享 IP 价格，需列完整三档。"}`,
-		specialistText: `{"answer_mode":"evidence","answer":"独享型数据中心 IP 起步价为 5M 带宽 300 元/个/月。请问您具体需要多少带宽和数量？","review_question":"","confidence_breakdown":{"evidence_coverage":0.95,"source_directness":0.95,"answer_specificity":0.7,"missing_info_impact":0.85,"risk_sensitivity":0.85},"confidence":0.86,"evidence_confidence":0.95,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.95,"routing_reason":"用户询问独享 IP 价格。","intent":"residential_dedicated_price_inquiry","rewritten_question":"客户想了解住宅独享 IP 一个月多少钱。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"dedicated","ip_type":"residential","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["bandwidth","quantity"],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 住宅 IP 住宅独享 价格 数量档位 5M 10M 20M"],"handoff_notes":"当前独享只对应住宅独享；报价前需确认带宽和数量。"}`,
+		specialistText: `{"answer_mode":"clarification","answer":"独享当前对应住宅独享；请问需要 5M、10M 还是 20M，以及需要多少条？","review_question":"","confidence_breakdown":{"evidence_coverage":0.95,"source_directness":0.95,"answer_specificity":0.7,"missing_info_impact":0.85,"risk_sensitivity":0.85},"confidence":0.86,"evidence_confidence":0.95,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
 	}
 	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
 	resp, err := svc.answerRouted(context.Background(), "trace-dedicated-price-guard", CustomerChatRequest{
@@ -437,56 +437,48 @@ func TestAnswerRoutedDedicatedPriceGuardFlagsReviewWithoutCompletingTiers(t *tes
 	if err != nil {
 		t.Fatalf("answerRouted: %v", err)
 	}
-	for _, want := range []string{"5M", "300", "带宽", "数量"} {
+	for _, want := range []string{"住宅独享", "5M", "10M", "20M", "多少条"} {
 		if resp == nil || !strings.Contains(resp.Answer, want) {
-			t.Fatalf("expected specialist answer to be preserved with %q, got %#v", want, resp)
+			t.Fatalf("expected residential dedicated clarification with %q, got %#v", want, resp)
 		}
 	}
-	for _, forbiddenRewrite := range []string{"500", "800", "不参与数量折扣"} {
-		if strings.Contains(resp.Answer, forbiddenRewrite) {
-			t.Fatalf("expected guard not to complete pricing tiers with %q, got %#v", forbiddenRewrite, resp)
-		}
-	}
-	if !resp.ReviewRequired {
-		t.Fatalf("expected incomplete dedicated pricing to be marked for review, got %#v", resp)
+	if resp.ReviewRequired {
+		t.Fatalf("expected required-slot clarification without review, got %#v", resp)
 	}
 	guard := auditMapValue(resp.Details["scenario_answer_guard"])
-	if !resultBoolValue(guard, "triggered") || guard["reason"] != "dedicated_price_complete_table" || guard["action"] != "review_only" {
-		t.Fatalf("expected dedicated price scenario guard, got %+v", guard)
+	if resultBoolValue(guard, "triggered") {
+		t.Fatalf("expected current dedicated clarification to pass, got %+v", guard)
 	}
 }
 
-func TestAnswerRoutedSharedDatacenterQuantity50PriceGuardFlagsReviewWithoutInjectingDiscount(t *testing.T) {
+func TestAnswerRoutedStaticQuantity50AsksForBandwidthWithoutQuoting(t *testing.T) {
 	llmClient := &customerRoutedPipelineTestLLM{
-		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.95,"routing_reason":"用户基于上一轮数据中心静态 IP 价格上下文，补充共享型和 50 个数量，属于价格咨询。","intent":"static_ip_price_inquiry_with_specs","rewritten_question":"客户询问数据中心共享型静态 IP 购买 50 个的价格。","history_summary":"用户询问静态 IP 怎么卖，助手已说明数据中心共享型 5M 起价。","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"shared","ip_type":"datacenter","bandwidth":"","quantity":"50个","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["bandwidth"],"risk_flags":["pricing","discount"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 共享型 数据中心 50个 价格 折扣"],"handoff_notes":"需要列出 5M、10M、20M 在 50 个数量下的折后价格。"}`,
-		specialistText: `{"answer_mode":"evidence","answer":"5M 带宽是 20 元/个/月（共 1000 元/月），10M 带宽是 24 元/个/月（共 1200 元/月），20M 带宽是 56 元/个/月（共 2800 元/月）。请问您需要哪个带宽？","review_question":"","confidence_breakdown":{"evidence_coverage":0.95,"source_directness":0.95,"answer_specificity":0.8,"missing_info_impact":0.85,"risk_sensitivity":0.85},"confidence":0.86,"evidence_confidence":0.95,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.95,"routing_reason":"用户补充静态 IP 数量，仍缺带宽。","intent":"static_ip_price_inquiry_with_specs","rewritten_question":"客户询问静态 IP 购买 50 条的价格，但未说明带宽。","history_summary":"用户询问静态 IP 怎么卖，助手追问带宽和数量。","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"datacenter","bandwidth":"","quantity":"50条","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["bandwidth"],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 50条 数量档位 价格"],"handoff_notes":"缺少带宽，不能报价。"}`,
+		specialistText: `{"answer_mode":"clarification","answer":"请问 50 条需要 5M、10M 还是 20M？","review_question":"","confidence_breakdown":{"evidence_coverage":0.95,"source_directness":0.95,"answer_specificity":0.8,"missing_info_impact":0.85,"risk_sensitivity":0.85},"confidence":0.86,"evidence_confidence":0.95,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
 	}
 	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
 	resp, err := svc.answerRouted(context.Background(), "trace-shared-50-price-guard", CustomerChatRequest{
-		Question:   "共享的，50个",
+		Question:   "50条",
 		PersistLog: boolPtr(false),
 		History: []ChatMessage{
 			{Role: "user", Content: "静态 IP 怎么卖？"},
-			{Role: "assistant", Content: "数据中心共享型 5M 是 25 元/个/月起，独享型 5M 是 300 元/个/月起。"},
+			{Role: "assistant", Content: "请告诉我需要的带宽和数量。"},
 		},
 	}, nil, DefaultRuntimeSettings(svc.deps.Config))
 	if err != nil {
 		t.Fatalf("answerRouted: %v", err)
 	}
-	for _, want := range []string{"5M", "20", "10M", "24", "20M", "56"} {
+	for _, want := range []string{"50 条", "5M", "10M", "20M"} {
 		if resp == nil || !strings.Contains(resp.Answer, want) {
-			t.Fatalf("expected specialist answer to be preserved with %q, got %#v", want, resp)
+			t.Fatalf("expected bandwidth clarification with %q, got %#v", want, resp)
 		}
 	}
-	if strings.Contains(resp.Answer, "8 折") {
-		t.Fatalf("expected guard not to inject discount wording, got %#v", resp)
-	}
-	if !resp.ReviewRequired {
-		t.Fatalf("expected incomplete quantity discount answer to be marked for review, got %#v", resp)
+	if resp.ReviewRequired {
+		t.Fatalf("expected required-slot clarification without review, got %#v", resp)
 	}
 	guard := auditMapValue(resp.Details["scenario_answer_guard"])
-	if !resultBoolValue(guard, "triggered") || guard["reason"] != "shared_datacenter_quantity_50_discount_terms" || guard["action"] != "review_only" {
-		t.Fatalf("expected shared quantity price scenario guard, got %+v", guard)
+	if resultBoolValue(guard, "triggered") {
+		t.Fatalf("expected current quantity clarification to pass, got %+v", guard)
 	}
 }
 
@@ -537,10 +529,10 @@ func TestAnswerRoutedDeterministicPreflightHandlesRouterUnavailable(t *testing.T
 	}
 }
 
-func TestAnswerRoutedGenericStaticPriceNotRewrittenAsDedicatedOnly(t *testing.T) {
+func TestAnswerRoutedGenericStaticPriceRequiresBandwidthAndQuantity(t *testing.T) {
 	llmClient := &customerRoutedPipelineTestLLM{
-		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["static_type","bandwidth","quantity"],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户是普通静态 IP 问价，未指定共享/独享、带宽和数量。"}`,
-		specialistText: `{"answer_mode":"evidence","answer":"我们静态 IP 分共享型和独享型，按月计费。共享型 25 元/个/月起，独享型 300 元/个/月起。","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"datacenter","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["bandwidth","quantity"],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 数量档位 价格"],"handoff_notes":"缺少带宽和数量。"}`,
+		specialistText: `{"answer_mode":"clarification","answer":"请问需要 5M、10M 还是 20M，以及需要多少条？","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
 	}
 	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
 	resp, err := svc.answerRouted(context.Background(), "trace-static-price-no-dedicated-guard", CustomerChatRequest{
@@ -550,8 +542,8 @@ func TestAnswerRoutedGenericStaticPriceNotRewrittenAsDedicatedOnly(t *testing.T)
 	if err != nil {
 		t.Fatalf("answerRouted: %v", err)
 	}
-	if resp == nil || !strings.Contains(resp.Answer, "共享型 25") || strings.Contains(resp.Answer, "20M 800") {
-		t.Fatalf("expected generic static pricing answer to remain, got %#v", resp)
+	if resp == nil || !strings.Contains(resp.Answer, "5M、10M 还是 20M") || !strings.Contains(resp.Answer, "多少条") || strings.Contains(resp.Answer, "元/条/月") {
+		t.Fatalf("expected generic static pricing clarification, got %#v", resp)
 	}
 	guard := auditMapValue(resp.Details["scenario_answer_guard"])
 	if resultBoolValue(guard, "triggered") {
@@ -559,10 +551,10 @@ func TestAnswerRoutedGenericStaticPriceNotRewrittenAsDedicatedOnly(t *testing.T)
 	}
 }
 
-func TestAnswerRoutedStaticBandwidthPriceNotRewrittenAsDedicatedOnly(t *testing.T) {
+func TestAnswerRoutedStaticBandwidthPriceRequiresQuantity(t *testing.T) {
 	llmClient := &customerRoutedPipelineTestLLM{
-		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.95,"routing_reason":"用户明确询问静态 IP 5M 带宽的收费，属于价格咨询。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 5M 带宽怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"5M","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["quantity"],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 5M 共享型 独享型 价格"],"handoff_notes":"客户指定静态 IP 和带宽但未指定共享/独享时，直接同时回答共享型和独享型该带宽单价，不要追问类型。"}`,
-		specialistText: `{"answer_mode":"evidence","answer":"5M 静态 IP 需要区分类型：数据中心共享型 25 元/个/月，数据中心独享型 300 元/个/月；共享型按数量有阶梯折扣，独享型不参与数量折扣。","review_question":"","confidence_breakdown":{"evidence_coverage":0.95,"source_directness":0.95,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.92,"evidence_confidence":0.95,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.95,"routing_reason":"用户明确询问静态 IP 5M 带宽的收费，属于价格咨询。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 5M 带宽怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"datacenter","bandwidth":"5M","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["quantity"],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 自建共享 机房静态 5M 数量档位 价格"],"handoff_notes":"静态 IP 两种类型同价；缺少数量，不能报价。"}`,
+		specialistText: `{"answer_mode":"clarification","answer":"请问 5M 静态 IP 需要多少条？","review_question":"","confidence_breakdown":{"evidence_coverage":0.95,"source_directness":0.95,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.92,"evidence_confidence":0.95,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
 	}
 	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
 	resp, err := svc.answerRouted(context.Background(), "trace-static-bandwidth-no-dedicated-guard", CustomerChatRequest{
@@ -572,8 +564,8 @@ func TestAnswerRoutedStaticBandwidthPriceNotRewrittenAsDedicatedOnly(t *testing.
 	if err != nil {
 		t.Fatalf("answerRouted: %v", err)
 	}
-	if resp == nil || !strings.Contains(resp.Answer, "共享型 25") || !strings.Contains(resp.Answer, "独享型 300") || strings.Contains(resp.Answer, "10M 500") {
-		t.Fatalf("expected bandwidth pricing answer to remain scoped to 5M, got %#v", resp)
+	if resp == nil || !strings.Contains(resp.Answer, "5M 静态 IP") || !strings.Contains(resp.Answer, "多少条") || strings.Contains(resp.Answer, "元/条/月") {
+		t.Fatalf("expected bandwidth pricing clarification, got %#v", resp)
 	}
 	guard := auditMapValue(resp.Details["scenario_answer_guard"])
 	if resultBoolValue(guard, "triggered") {
@@ -1203,7 +1195,7 @@ func TestPricingSpecialistPromptDefinesGenericStartingPrice(t *testing.T) {
 	}
 }
 
-func TestAnswerRoutedKeepsSpecialistAnswerUnchanged(t *testing.T) {
+func TestAnswerRoutedBlocksDeprecatedPricingFromSpecialistAnswer(t *testing.T) {
 	llmClient := &customerRoutedPipelineTestLLM{
 		routerText:     `{"contract_version":"customer_router.v1","specialist":"product","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_type_compare","rewritten_question":"客户想比较共享型和独享型静态 IP。","history_summary":"客户前面询问静态 IP 价格。","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":[],"needs_retrieval":true,"retrieval_queries":["共享型 独享型 静态 IP 区别"],"handoff_notes":"用户询问共享型和独享型静态 IP 的产品差异。"}`,
 		specialistText: `{"answer_mode":"evidence","answer":"共享型静态 IP 是多人共享带宽，起步价更低，适合预算敏感或数量较多的场景，也支持按数量享受折扣；独享型是独立带宽，稳定性更好，适合长期固定账号。您更看重成本还是稳定性？","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-proxy-ip-products.md","confidence":"high"}],"notes":""}`,
@@ -1220,11 +1212,11 @@ func TestAnswerRoutedKeepsSpecialistAnswerUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("answerRouted: %v", err)
 	}
-	if resp == nil || !strings.Contains(resp.Answer, "支持按数量享受折扣") || !strings.Contains(resp.Answer, "独享型是独立带宽") {
-		t.Fatalf("expected original product specialist answer, got %#v", resp)
+	if resp == nil || resp.Answer != "请告诉我需要静态 IP 还是住宅 IP、具体类型、带宽和数量，我按当前价格核算。" {
+		t.Fatalf("expected deprecated pricing guard answer, got %#v", resp)
 	}
-	if strings.Contains(resp.Answer, "还需要先确认") {
-		t.Fatalf("expected service layer not to replace specialist answer, got %s", resp.Answer)
+	if strings.Contains(resp.Answer, "25 元") || strings.Contains(resp.Answer, "300 元") {
+		t.Fatalf("expected old pricing not to reach customer, got %s", resp.Answer)
 	}
 }
 
@@ -1835,7 +1827,7 @@ func TestCustomerSpecialistDecisionPromptIncludesMobileAppPolicy(t *testing.T) {
 	}
 }
 
-func TestAnswerRoutedReturnsSpecialistAnswerWithoutSanitizeReplacement(t *testing.T) {
+func TestAnswerRoutedSanitizesSourcePathDisclosure(t *testing.T) {
 	rawAnswer := "请看 wiki/knowledge/internal.md 这条路径。"
 	llmClient := &customerRoutedPipelineTestLLM{
 		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户是普通静态 IP 问价。"}`,
@@ -1849,11 +1841,11 @@ func TestAnswerRoutedReturnsSpecialistAnswerWithoutSanitizeReplacement(t *testin
 	if err != nil {
 		t.Fatalf("answerRouted: %v", err)
 	}
-	if resp == nil || resp.Answer != rawAnswer {
-		t.Fatalf("expected raw specialist answer without sanitize replacement, got %#v", resp)
+	if resp == nil || resp.Answer == rawAnswer || strings.Contains(resp.Answer, "wiki/") || strings.Contains(resp.Answer, ".md") {
+		t.Fatalf("expected source path disclosure to be sanitized, got %#v", resp)
 	}
-	if _, ok := resp.Details["sanitizers"]; ok {
-		t.Fatalf("routed response must not include sanitizer trace, got %+v", resp.Details["sanitizers"])
+	if resp.Details["answer_sanitized"] == nil {
+		t.Fatalf("expected answer sanitizer audit detail, got %+v", resp.Details)
 	}
 }
 
@@ -1921,7 +1913,7 @@ func TestAnswerRoutedSpecialistRetriesMissingSchemaOutputWithoutThinking(t *test
 		routerText: `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry_with_specs","rewritten_question":"客户希望了解共享型、5M 带宽、10 个静态 IP 的具体价格。","history_summary":"用户询问静态 IP 价格后选定共享型。","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"shared","ip_type":"datacenter","bandwidth":"5M","quantity":"10","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 共享型 静态 IP 数据中心 5M 10个 价格"],"handoff_notes":"用户已明确需求：共享型静态 IP，5M 带宽，数量 10 个。"}`,
 		specialistTexts: []string{
 			`{}`,
-			`{"answer_mode":"evidence","answer":"5M 10 个是 225 元/月。\n25 × 10 × 0.9 = 225，折后 22.5 元/个/月。","review_question":"","confidence_breakdown":{"evidence_coverage":0.95,"source_directness":0.95,"answer_specificity":0.95,"missing_info_impact":0.95,"risk_sensitivity":0.95},"confidence":0.95,"evidence_confidence":0.95,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
+			`{"answer_mode":"evidence","answer":"10 条静态 IP 5M 是 25 元/条/月，共 250 元/月。","review_question":"","confidence_breakdown":{"evidence_coverage":0.95,"source_directness":0.95,"answer_specificity":0.95,"missing_info_impact":0.95,"risk_sensitivity":0.95},"confidence":0.95,"evidence_confidence":0.95,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
 		},
 	}
 	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
@@ -1934,7 +1926,7 @@ func TestAnswerRoutedSpecialistRetriesMissingSchemaOutputWithoutThinking(t *test
 	if err != nil {
 		t.Fatalf("answerRouted: %v", err)
 	}
-	if resp == nil || !strings.Contains(resp.Answer, "225 元/月") {
+	if resp == nil || !strings.Contains(resp.Answer, "250 元/月") {
 		t.Fatalf("expected retry answer, got %#v", resp)
 	}
 	if got := strings.Join(llmClient.calls, ","); got != "router,specialist,specialist" {
@@ -1949,9 +1941,9 @@ func TestAnswerRoutedSpecialistAcceptsMissingAnswerModeWithoutRetry(t *testing.T
 	llmClient := &customerRoutedPipelineTestLLM{
 		routerText: `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.95,"routing_reason":"用户补充数量，字段已足够报价。","intent":"static_ip_price_inquiry","rewritten_question":"客户询问共享型静态 IP 10M，购买 20 个的价格。","history_summary":"用户询问静态 IP 价格，选定共享型、10M 带宽，现回答数量为 20 个。","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"shared","ip_type":"datacenter","bandwidth":"10M","quantity":"20","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 共享型 10M 带宽 20个 价格 折扣"],"handoff_notes":"用户已确认静态 IP、共享型、10M 带宽、数量 20 个，需根据批量折扣规则计算报价。"}`,
 		// Provider dropped the answer_mode metadata field but returned a complete,
-		// well-sourced answer. We must not discard it or pay for a retry; the mode
-		// is inferred from the cited sources.
-		specialistText: `{"answer":"10M 20 个是 540 元/月。\n30 × 20 × 0.9 = 540，折后 27 元/个/月。","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
+		// well-sourced current-price answer. We must not discard it or pay for a
+		// retry; the mode is inferred from the cited sources.
+		specialistText: `{"answer":"10M 20 个首报价为 25 元/条/月，共 500 元/月。","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
 	}
 	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
 	settings := DefaultRuntimeSettings(svc.deps.Config)
@@ -1963,7 +1955,7 @@ func TestAnswerRoutedSpecialistAcceptsMissingAnswerModeWithoutRetry(t *testing.T
 	if err != nil {
 		t.Fatalf("answerRouted: %v", err)
 	}
-	if resp == nil || !strings.Contains(resp.Answer, "540 元/月") {
+	if resp == nil || !strings.Contains(resp.Answer, "500 元/月") {
 		t.Fatalf("expected answer to be delivered despite missing answer_mode, got %#v", resp)
 	}
 	if got := strings.Join(llmClient.calls, ","); got != "router,specialist" {

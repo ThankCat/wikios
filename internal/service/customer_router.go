@@ -389,9 +389,7 @@ func applyCustomerRouterHardRules(req CustomerChatRequest, output CustomerRouter
 		output.Slots.PrimaryProduct = "static_ip"
 		output.Slots.Products = []string{"static_ip"}
 		output.Slots.StaticType = "dedicated"
-		if output.Slots.IPType == "" || output.Slots.IPType == "unknown" {
-			output.Slots.IPType = "datacenter"
-		}
+		output.Slots.IPType = "residential"
 		output.RiskFlags = appendUniqueString(output.RiskFlags, "pricing")
 		output.MissingInfo = removeString(output.MissingInfo, "primary_product")
 		output.Ambiguity.AmbiguousFields = removeString(output.Ambiguity.AmbiguousFields, "primary_product")
@@ -402,7 +400,8 @@ func applyCustomerRouterHardRules(req CustomerChatRequest, output CustomerRouter
 		output.NeedsProductClarification = false
 		output.ClarificationTarget = "none"
 		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 独享 静态 IP 价格 5M 10M 20M"}
+		output.RetrievalQueries = []string{"四叶天 住宅 IP 住宅独享 价格 数量档位 5M 10M 20M"}
+		output.HandoffNotes = "客户询问独享价格；当前价格体系只对应住宅独享，报价前必须确认带宽和数量。"
 	}
 	if customerRouterLooksStaticBandwidthPrice(userText) {
 		output.Specialist = "pricing"
@@ -426,8 +425,8 @@ func applyCustomerRouterHardRules(req CustomerChatRequest, output CustomerRouter
 		output.NeedsProductClarification = false
 		output.ClarificationTarget = "none"
 		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 静态 IP " + output.Slots.Bandwidth + " 共享型 独享型 价格"}
-		output.HandoffNotes = "客户指定静态 IP 和带宽但未指定共享/独享时，直接同时回答共享型和独享型该带宽单价，不要追问类型。"
+		output.RetrievalQueries = []string{"四叶天 静态 IP 自建共享 机房静态 " + output.Slots.Bandwidth + " 数量档位 价格"}
+		output.HandoffNotes = "客户指定静态 IP 和带宽；自建共享与机房静态同价，但仍需数量才能报价。"
 	}
 	if customerRouterLooksRefundRequest(userText) {
 		output.Specialist = "billing_after_sales"
@@ -1048,7 +1047,7 @@ func customerRouterExplicitProductCueFromText(text string) string {
 	add("static_ip", customerRouterTextHasStaticCue(text))
 	add("overseas_ip", strings.Contains(text, "海外ip") || strings.Contains(text, "海外 ip"))
 	add("static_ip", customerRouterTextHasResidentialCue(text))
-	add("datacenter_ip", strings.Contains(text, "数据中心ip") || strings.Contains(text, "数据中心 ip") || strings.Contains(text, "机房ip") || strings.Contains(text, "机房 ip"))
+	add("static_ip", strings.Contains(text, "数据中心ip") || strings.Contains(text, "数据中心 ip") || strings.Contains(text, "机房ip") || strings.Contains(text, "机房 ip") || strings.Contains(text, "机房静态"))
 	if len(candidates) == 1 {
 		return candidates[0]
 	}
@@ -1093,7 +1092,7 @@ func customerRouterTextHasDynamicCue(text string) bool {
 }
 
 func customerRouterTextHasStaticCue(text string) bool {
-	for _, marker := range []string{"静态ip", "静态 ip", "固定ip", "固定 ip", "静态代理", "静态套餐", "静态产品"} {
+	for _, marker := range []string{"静态ip", "静态 ip", "固定ip", "固定 ip", "机房ip", "机房 ip", "机房静态", "静态代理", "静态套餐", "静态产品"} {
 		if strings.Contains(text, marker) {
 			return true
 		}
@@ -1102,7 +1101,7 @@ func customerRouterTextHasStaticCue(text string) bool {
 }
 
 func customerRouterTextHasResidentialCue(text string) bool {
-	for _, marker := range []string{"住宅ip", "住宅 ip", "家宽ip", "家宽 ip", "家庭宽带ip", "家庭宽带 ip"} {
+	for _, marker := range []string{"住宅ip", "住宅 ip", "家宽ip", "家宽 ip", "家庭ip", "家庭 ip", "家庭宽带ip", "家庭宽带 ip"} {
 		if strings.Contains(text, marker) {
 			return true
 		}
