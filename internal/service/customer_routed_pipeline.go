@@ -94,6 +94,12 @@ func (s *CustomerChatService) customerRoutedPreflight(ctx context.Context, trace
 		"session_id":    strings.TrimSpace(req.SessionID),
 		"simulation":    req.Simulation,
 	})
+	if err := s.customerKnowledgeVersionError(); err != nil {
+		customerTraceStepFinish(ctx, execution, "接收 routed customer 问答请求", "customer.routed.intake", intakeStart, nil, map[string]any{
+			"decision": "refuse_knowledge_version_mismatch",
+		}, err)
+		return nil, nil, err
+	}
 	customerTraceStepFinish(ctx, execution, "接收 routed customer 问答请求", "customer.routed.intake", intakeStart, nil, map[string]any{
 		"decision": "continue",
 	}, nil)
@@ -225,7 +231,7 @@ func (s *CustomerChatService) answerWithSpecialist(ctx context.Context, traceID 
 		s.maybeWriteCustomerChatErrorLog(traceID, req, "specialist_call", err, debugTrace)
 		return nil, err
 	}
-	userPrompt := s.customerSpecialistDecisionPrompt(req, receivedAt, routerOutput, evidence, runtimeSettings.Support, boundaryPrompt, runtimeSettings.CustomerChat.AppChannelEnabled)
+	userPrompt := s.customerSpecialistDecisionPrompt(req, receivedAt, routerOutput, evidence.Profile, evidence, runtimeSettings.Support, boundaryPrompt, runtimeSettings.CustomerChat.AppChannelEnabled)
 	conversationContext := formatCustomerSpecialistConversationContext(req.History)
 	debugTrace["specialist_conversation_context"] = conversationContext
 	debugTrace["specialist_input"] = customerSpecialistAuditLLMInput(req.Question, systemPrompt, userPrompt, conversationContext)
@@ -362,9 +368,9 @@ func (s *CustomerChatService) answerWithSpecialist(ctx context.Context, traceID 
 		return nil, err
 	}
 	parsed.AnswerText = answer
-	if sanitizedAnswer, sanitized := sanitizeCustomerVisibleAnswer(parsed.AnswerText, parsed, routerOutput); sanitized {
+	if sanitizedAnswer, sanitized, reason := sanitizeCustomerVisibleAnswerWithReason(parsed.AnswerText, parsed, routerOutput); sanitized {
 		debugTrace["answer_sanitized"] = map[string]any{
-			"reason":          "internal_context_removed",
+			"reason":          firstNonEmpty(reason, customerSanitizeInternalContext),
 			"original_chars":  len([]rune(parsed.AnswerText)),
 			"sanitized_chars": len([]rune(sanitizedAnswer)),
 		}
@@ -480,7 +486,7 @@ func (s *CustomerChatService) answerWithSpecialist(ctx context.Context, traceID 
 	return resp, nil
 }
 
-func (s *CustomerChatService) customerSpecialistDecisionPrompt(req CustomerChatRequest, receivedAt string, routerOutput *CustomerRouterOutput, evidence customerSpecialistEvidenceResult, support RuntimeSupportSettings, boundaryPrompt string, appChannelEnabled ...bool) string {
+func (s *CustomerChatService) customerSpecialistDecisionPrompt(req CustomerChatRequest, receivedAt string, routerOutput *CustomerRouterOutput, profile CustomerSpecialistProfile, evidence customerSpecialistEvidenceResult, support RuntimeSupportSettings, boundaryPrompt string, appChannelEnabled ...bool) string {
 	candidateText := strings.TrimSpace(strings.Join(evidence.ContentBlocks, "\n\n"))
 	if candidateText == "" {
 		candidateText = "[]"
@@ -516,6 +522,9 @@ func (s *CustomerChatService) customerSpecialistDecisionPrompt(req CustomerChatR
 		"",
 		"router_output:",
 		formatCustomerRouterOutputForSpecialist(routerOutput),
+		"",
+		"active_skills:",
+		s.formatCustomerActiveSkills(profile, routerOutput),
 		"",
 		"current_customer_contacts:",
 		s.supportContactPrompt(support),
@@ -579,6 +588,7 @@ func formatCustomerRouterOutputForSpecialist(output *CustomerRouterOutput) strin
 		"needs_retrieval: " + fmt.Sprintf("%t", output.NeedsRetrieval),
 		"retrieval_queries: " + strings.Join(output.RetrievalQueries, " | "),
 		"handoff_notes: " + output.HandoffNotes,
+		"skills: " + strings.Join(output.Skills, ", "),
 	}
 	return strings.Join(lines, "\n")
 }

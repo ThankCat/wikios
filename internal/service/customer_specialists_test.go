@@ -437,10 +437,10 @@ func TestRetrieveCustomerSpecialistEvidenceFiltersConflictingProductEvidence(t *
 		testRuntimeTool{name: "wiki.read_page", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
 			path, _ := args["path"].(string)
 			pages := map[string]string{
-				"wiki/procedures/si-ye-tian-connection-troubleshooting.md":       "---\ntitle: 连接排障\n---\n海外 IP 场景需确认海外网络环境。\n静态 IP 连接后异常时，可在会员中心对应产品页手动切换、重新分配静态 IP，入口为 https://www.siyetian.com/member/staticip.html。",
-				"wiki/procedures/si-ye-tian-static-ip-usage.md":                 "---\ntitle: 静态 IP 使用\n---\n静态 IP 可在会员中心手动切换、重新分配，每月 5 次。",
-				"wiki/knowledge/si-ye-tian-overseas-ip.md":                      "---\ntitle: 海外 IP\n---\n海外 IP 需要海外网络环境或海外服务器环境。",
-				"wiki/procedures/si-ye-tian-device-network-configuration.md":     "---\ntitle: 设备网络\n---\n连接后用 IP 查询站检查出口 IP。",
+				"wiki/procedures/si-ye-tian-connection-troubleshooting.md":   "---\ntitle: 连接排障\n---\n海外 IP 场景需确认海外网络环境。\n静态 IP 连接后异常时，可在会员中心对应产品页手动切换、重新分配静态 IP，入口为 https://www.siyetian.com/member/staticip.html。",
+				"wiki/procedures/si-ye-tian-static-ip-usage.md":              "---\ntitle: 静态 IP 使用\n---\n静态 IP 可在会员中心手动切换、重新分配，每月 5 次。",
+				"wiki/knowledge/si-ye-tian-overseas-ip.md":                   "---\ntitle: 海外 IP\n---\n海外 IP 需要海外网络环境或海外服务器环境。",
+				"wiki/procedures/si-ye-tian-device-network-configuration.md": "---\ntitle: 设备网络\n---\n连接后用 IP 查询站检查出口 IP。",
 			}
 			content := pages[path]
 			if content == "" {
@@ -702,6 +702,101 @@ func TestRetrieveCustomerSpecialistEvidenceMultiProductPricingReadsMultipleProdu
 	}
 	if len(result.CacheTrace.RetrievalResults) != 2 {
 		t.Fatalf("expected query-to-candidate trace for both product queries, got %+v", result.CacheTrace.RetrievalResults)
+	}
+}
+
+func TestRetrieveCustomerSpecialistEvidenceDropsDeprecatedPricingPages(t *testing.T) {
+	rt := testRuntime(
+		testRuntimeTool{name: "exec.qmd", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			raw, err := json.Marshal([]map[string]any{
+				{"path": "wiki/knowledge/si-ye-tian-static-ip-pricing.md", "score": 100},
+				{"path": "wiki/knowledge/si-ye-tian-proxy-ip-products.md", "score": 90},
+			})
+			if err != nil {
+				return runtime.ToolResult{}, err
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"stdout": string(raw)}}, nil
+		}},
+		testRuntimeTool{name: "wiki.search_pages"},
+		testRuntimeTool{name: "wiki.read_page", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			path, _ := args["path"].(string)
+			pages := map[string]string{
+				"wiki/knowledge/si-ye-tian-static-ip-pricing.md": "独享型数据中心 IP：5M 300元/个/月，独享型不参与数量折扣。",
+				"wiki/knowledge/si-ye-tian-proxy-ip-products.md": "共享型是多人共用带宽，独享型是独立带宽。",
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"content": pages[path]}}, nil
+		}},
+	)
+	svc := newTestCustomerChatService(t, rt)
+	result := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-stale-pricing", &CustomerRouterOutput{
+		Specialist:        "product",
+		RewrittenQuestion: "共享和独享有什么区别",
+		NeedsRetrieval:    true,
+		RetrievalQueries:  []string{"共享型 独享型 区别"},
+	}, RuntimeSettings{})
+	if result.Error != "" {
+		t.Fatalf("retrieveCustomerSpecialistEvidence: %s", result.Error)
+	}
+	for _, source := range result.Sources {
+		if source.Path == "wiki/knowledge/si-ye-tian-static-ip-pricing.md" {
+			t.Fatalf("expected stale pricing page to be dropped, got %+v", result.Sources)
+		}
+	}
+	if len(result.Sources) == 0 {
+		t.Fatal("expected current product page to remain after dropping stale pricing")
+	}
+}
+
+func TestRetrieveCustomerSpecialistEvidenceInvalidatesPageCacheWhenFileChanges(t *testing.T) {
+	root := t.TempDir()
+	path := "wiki/knowledge/si-ye-tian-proxy-ip-products.md"
+	writeTestWikiPage(t, root, path, "---\ntitle: 产品说明\n---\n动态 IP 适合更换出口。")
+	readCalls := 0
+	rt := testRuntime(
+		testRuntimeTool{name: "exec.qmd", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			raw, err := json.Marshal([]map[string]any{{"path": path, "score": 100}})
+			if err != nil {
+				return runtime.ToolResult{}, err
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"stdout": string(raw)}}, nil
+		}},
+		testRuntimeTool{name: "wiki.search_pages"},
+		testRuntimeTool{name: "wiki.read_page", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
+			readCalls++
+			page, _ := args["path"].(string)
+			raw, err := os.ReadFile(filepath.Join(env.WikiRoot, filepath.FromSlash(page)))
+			if err != nil {
+				return runtime.ToolResult{}, err
+			}
+			return runtime.ToolResult{Success: true, RiskLevel: runtime.RiskLow, Data: map[string]any{"content": string(raw)}}, nil
+		}},
+	)
+	svc := newTestCustomerChatServiceWithRoot(t, rt, root)
+	routerOutput := &CustomerRouterOutput{
+		Specialist:        "product",
+		RewrittenQuestion: "动态 IP 适合什么",
+		NeedsRetrieval:    true,
+		RetrievalQueries:  []string{"动态 IP 场景"},
+	}
+	first := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-page-cache-1", routerOutput, RuntimeSettings{})
+	if first.Error != "" || len(first.Sources) != 1 {
+		t.Fatalf("expected first read, got error=%q sources=%d", first.Error, len(first.Sources))
+	}
+	_ = svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-page-cache-2", routerOutput, RuntimeSettings{})
+	if readCalls != 1 {
+		t.Fatalf("expected unchanged file to hit page cache, got %d read calls", readCalls)
+	}
+	writeTestWikiPage(t, root, path, "---\ntitle: 产品说明\n---\n动态 IP 适合频繁更换出口的短时任务。")
+	third := svc.retrieveCustomerSpecialistEvidence(context.Background(), "trace-page-cache-3", routerOutput, RuntimeSettings{})
+	if third.Error != "" {
+		t.Fatalf("expected updated page read, got %s", third.Error)
+	}
+	if readCalls != 2 {
+		t.Fatalf("expected file change to invalidate page cache, got %d read calls", readCalls)
+	}
+	joined := strings.Join(third.ContentBlocks, "\n")
+	if !strings.Contains(joined, "频繁更换出口") {
+		t.Fatalf("expected updated page content to reach evidence, got %q", joined)
 	}
 }
 

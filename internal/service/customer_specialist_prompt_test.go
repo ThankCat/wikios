@@ -133,7 +133,10 @@ func TestCustomerSpecialistProductPromptCoversSpecListAndTypoPolicies(t *testing
 		"海外平台场景再看海外 IP",
 		"新手选型推荐句式",
 		"`住宅 IP 可选 5M、10M、20M。`",
-		"`游戏更建议先看静态 IP，稳定性要求高的话优先独享静态 IP；带宽可以从 10M 起看，实际体验还需要测试。`",
+		"`游戏更建议先看静态 IP；稳定性要求高再看住宅独享。带宽可以从 10M 起看，实际体验还需要测试。`",
+		"`静态 IP 当前是自建共享和机房静态，两种类型价格相同；您说的独享当前对应住宅独享。共享通常成本更低，独享通常成本更高、带宽更独立。`",
+		"没有“独享静态 IP”",
+		"compare_shared_dedicated",
 		"`如果需要频繁换出口，先看动态 IP；需要固定地区或长期账号环境，先看静态 IP；海外平台场景再看海外 IP，并先确认使用环境。`",
 		"`改抖音 IP 归属地这类场景，更建议先看静态 IP；要相对稳定城市出口可看数据中心静态 IP，想更贴近家庭宽带场景可看住宅 IP。平台显示可能会有延迟，也会受平台 IP 库影响。`",
 	} {
@@ -143,6 +146,25 @@ func TestCustomerSpecialistProductPromptCoversSpecListAndTypoPolicies(t *testing
 	}
 	if strings.Contains(prompt, "可补一句“确定带宽和数量后可以核算月费”") {
 		t.Fatalf("product prompt still allows sales quote tail:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "优先独享静态 IP") || strings.Contains(prompt, "独享静态 IP；") {
+		t.Fatalf("product prompt still recommends obsolete dedicated static SKU:\n%s", prompt)
+	}
+}
+
+func TestCustomerSpecialistProductPromptAllowsQualitativeCostDifference(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", "customer_specialist_product.md"))
+	if err != nil {
+		t.Fatalf("read product prompt: %v", err)
+	}
+	prompt := string(raw)
+	for _, want := range []string{
+		"共享通常成本更低、独享通常成本更高",
+		"不要报具体单价、起步价数字或旧折扣档位",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected product prompt to include %q, got:\n%s", want, prompt)
+		}
 	}
 }
 
@@ -163,15 +185,10 @@ func TestCustomerSpecialistPricingPromptCoversSpecListNoSalesTailPolicy(t *testi
 		"住宅 IP：别名为“家庭 IP”“住宅”",
 		"住宅共享”“住宅独享",
 		"客户说“独享”时，当前价格体系只对应住宅独享",
-		"报价前必须确定产品、必要类型、带宽和数量",
-		"缺少带宽或数量时不能先报任何单价",
-		"首次报价",
-		"即使客户首次就问“最低多少”“能优惠吗”",
-		"后续议价",
-		"最低价后申请",
-		"只回复可以提交申请、最终以审批结果为准、不能保证批准",
-		"只给一个单价，不展示“最低-最高”区间",
-		"月费计算为“单价 × 数量”",
+		"active_skills",
+		"缺少带宽或数量时不能先报单价或区间",
+		"月费 = 单价 × 数量",
+		"只给一个单价",
 		"元/条/月",
 		"不得使用百分比折扣换算",
 	} {
@@ -182,6 +199,31 @@ func TestCustomerSpecialistPricingPromptCoversSpecListNoSalesTailPolicy(t *testi
 	for _, obsolete := range []string{"22.5", "540 元/月", "9 折", "8 折", "300 元/个/月", "500 元/个/月", "800 元/个/月", "数据中心独享型"} {
 		if strings.Contains(prompt, obsolete) {
 			t.Fatalf("pricing prompt still contains obsolete pricing marker %q:\n%s", obsolete, prompt)
+		}
+	}
+}
+
+func TestCustomerSpecialistPricingPromptAllowsBillingDimensionBeforeExactQuote(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", "customer_specialist_pricing.md"))
+	if err != nil {
+		t.Fatalf("read pricing prompt: %v", err)
+	}
+	prompt := string(raw)
+	if !strings.Contains(prompt, "active_skills") {
+		t.Fatalf("expected pricing prompt to delegate flow to active_skills, got:\n%s", prompt)
+	}
+	skillRaw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", "skills/quote_static_ip.md"))
+	if err != nil {
+		t.Fatalf("read quote_static_ip skill: %v", err)
+	}
+	skill := string(skillRaw)
+	for _, want := range []string{
+		"不要追问共享还是独享",
+		"怎么收费",
+		"带宽和数量",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Fatalf("expected quote_static_ip skill to include %q, got:\n%s", want, skill)
 		}
 	}
 }
@@ -210,6 +252,88 @@ func TestSanitizeCustomerVisibleAnswerBlocksDeprecatedPricingAndSourceDisclosure
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("sanitized answer still contains source marker %q: %s", forbidden, got)
 		}
+	}
+}
+
+func TestSanitizeCustomerVisibleAnswerKeepsProductDifferenceAndStripsOnlyDeprecatedPriceSentences(t *testing.T) {
+	routerOutput := &CustomerRouterOutput{Specialist: "product"}
+	parsed := customerChatLLMOutput{AnswerMode: "evidence"}
+	mixed := "共享型是多人共用带宽，起步价通常更低，适合数量较多的场景。独享型是独立带宽，稳定性更好。独享型不参与数量折扣。"
+
+	got, changed := sanitizeCustomerVisibleAnswer(mixed, parsed, routerOutput)
+	if !changed {
+		t.Fatal("expected only the deprecated pricing sentence to be removed")
+	}
+	if !strings.Contains(got, "共用带宽") || !strings.Contains(got, "独立带宽") {
+		t.Fatalf("expected shared/dedicated product difference to remain, got %s", got)
+	}
+	if strings.Contains(got, "不参与数量折扣") || strings.Contains(got, "300 元") {
+		t.Fatalf("expected old pricing rule sentence to be removed, got %s", got)
+	}
+	if strings.Contains(got, "请告诉我需要静态 IP 还是住宅 IP") || strings.Contains(got, "请告诉我需要的带宽和数量") {
+		t.Fatalf("must not replace the whole product-difference answer, got %s", got)
+	}
+}
+
+func TestSanitizeCustomerVisibleAnswerBlocksHyphenDeprecatedPriceRange(t *testing.T) {
+	routerOutput := &CustomerRouterOutput{Specialist: "pricing"}
+	parsed := customerChatLLMOutput{AnswerMode: "evidence"}
+	got, changed := sanitizeCustomerVisibleAnswer("共享型起步价约 25-70 元/条/月，独享型约 300到800 元/条/月。", parsed, routerOutput)
+	if !changed {
+		t.Fatal("expected hyphen/到 deprecated price ranges to be sanitized")
+	}
+	for _, forbidden := range []string{"25-70", "300到800", "25", "300"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("sanitized answer still contains deprecated range %q: %s", forbidden, got)
+		}
+	}
+}
+
+func TestCustomerSpecialistPromptsAgreeOnCurrentProductTaxonomy(t *testing.T) {
+	read := func(name string) string {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return string(raw)
+	}
+	base := read("customer_specialist_base.md")
+	product := read("customer_specialist_product.md")
+	pricing := read("customer_specialist_pricing.md")
+	check := read("customer_specialist_check.md")
+	router := read("customer_router_system.md")
+
+	for _, prompt := range []string{base, product, pricing, check, router} {
+		if !strings.Contains(prompt, "住宅独享") {
+			t.Fatalf("expected current taxonomy to mention 住宅独享:\n%s", prompt)
+		}
+	}
+	if strings.Contains(base, "静态 IP 下的共享/独享") || strings.Contains(base, "住宅 IP”是静态 IP 的一种") {
+		t.Fatalf("base prompt still treats residential/dedicated as static subtypes:\n%s", base)
+	}
+	if strings.Contains(product, "优先独享静态 IP") {
+		t.Fatalf("product prompt still recommends dedicated static SKU:\n%s", product)
+	}
+	if strings.Contains(router, "`static_type=dedicated`，`ip_type=residential`") {
+		t.Fatalf("router prompt still encodes residential dedicated as static_type=dedicated:\n%s", router)
+	}
+	if !strings.Contains(check, "独享静态 IP") || !strings.Contains(check, "元/个") {
+		t.Fatalf("check prompt must reject obsolete SKU and old price units:\n%s", check)
+	}
+}
+
+func TestSanitizeCustomerVisibleAnswerAllowsQualitativeSharedDedicatedCostDifference(t *testing.T) {
+	routerOutput := &CustomerRouterOutput{Specialist: "product"}
+	parsed := customerChatLLMOutput{AnswerMode: "evidence"}
+	qualitative := "共享型通常起步价更低、适合预算敏感场景；独享型通常成本更高，但带宽独立、更稳定。您更看重成本还是稳定性？"
+
+	got, changed := sanitizeCustomerVisibleAnswer(qualitative, parsed, routerOutput)
+	if changed {
+		t.Fatalf("qualitative cost difference must not be treated as deprecated pricing, got %s", got)
+	}
+	if !strings.Contains(got, "起步价更低") || !strings.Contains(got, "成本更高") || !strings.Contains(got, "带宽独立") {
+		t.Fatalf("expected qualitative shared/dedicated difference to pass through, got %s", got)
 	}
 }
 

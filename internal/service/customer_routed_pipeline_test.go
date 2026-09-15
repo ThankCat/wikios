@@ -103,7 +103,7 @@ func TestAnswerRoutedPricingUsesSpecialistAnswer(t *testing.T) {
 func TestAnswerRoutedUsesConfiguredRouterAndSpecialistModels(t *testing.T) {
 	llmClient := &customerRoutedPipelineTestLLM{
 		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户是普通静态 IP 问价。"}`,
-		specialistText: `{"answer_mode":"evidence","answer":"共享型 25 元/个/月起。","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
+		specialistText: `{"answer_mode":"evidence","answer":"静态 IP 按条/月计费，请告诉我带宽和数量。","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
 	}
 	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
 	settings := DefaultRuntimeSettings(svc.deps.Config)
@@ -116,7 +116,7 @@ func TestAnswerRoutedUsesConfiguredRouterAndSpecialistModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("answerRouted: %v", err)
 	}
-	if resp == nil || resp.Answer != "共享型 25 元/个/月起。" {
+	if resp == nil || resp.Answer != "静态 IP 按条/月计费，请告诉我带宽和数量。" {
 		t.Fatalf("expected specialist answer, got %#v", resp)
 	}
 	if got := strings.Join(llmClient.models, ","); got != llmModelIDToken("router-fast")+","+llmModelIDToken("specialist-main") {
@@ -426,7 +426,7 @@ func TestAnswerRoutedHighRiskWithoutFinalSourcesCreatesReviewAndCountsFinalSourc
 
 func TestAnswerRoutedResidentialDedicatedPriceAsksForRequiredSlots(t *testing.T) {
 	llmClient := &customerRoutedPipelineTestLLM{
-		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.95,"routing_reason":"用户询问独享 IP 价格。","intent":"residential_dedicated_price_inquiry","rewritten_question":"客户想了解住宅独享 IP 一个月多少钱。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"dedicated","ip_type":"residential","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["bandwidth","quantity"],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 住宅 IP 住宅独享 价格 数量档位 5M 10M 20M"],"handoff_notes":"当前独享只对应住宅独享；报价前需确认带宽和数量。"}`,
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.95,"routing_reason":"用户询问独享 IP 价格。","intent":"residential_dedicated_price_inquiry","rewritten_question":"客户想了解住宅独享 IP 一个月多少钱。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"residential","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["bandwidth","quantity"],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 住宅 IP 住宅独享 价格 数量档位 5M 10M 20M"],"handoff_notes":"当前独享只对应住宅独享；报价前需确认带宽和数量。"}`,
 		specialistText: `{"answer_mode":"clarification","answer":"独享当前对应住宅独享；请问需要 5M、10M 还是 20M，以及需要多少条？","review_question":"","confidence_breakdown":{"evidence_coverage":0.95,"source_directness":0.95,"answer_specificity":0.7,"missing_info_impact":0.85,"risk_sensitivity":0.85},"confidence":0.86,"evidence_confidence":0.95,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
 	}
 	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
@@ -1195,10 +1195,10 @@ func TestPricingSpecialistPromptDefinesGenericStartingPrice(t *testing.T) {
 	}
 }
 
-func TestAnswerRoutedBlocksDeprecatedPricingFromSpecialistAnswer(t *testing.T) {
+func TestAnswerRoutedKeepsSharedDedicatedDifferenceWhenAnswerMentionsStartingPrice(t *testing.T) {
 	llmClient := &customerRoutedPipelineTestLLM{
 		routerText:     `{"contract_version":"customer_router.v1","specialist":"product","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_type_compare","rewritten_question":"客户想比较共享型和独享型静态 IP。","history_summary":"客户前面询问静态 IP 价格。","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":[],"needs_retrieval":true,"retrieval_queries":["共享型 独享型 静态 IP 区别"],"handoff_notes":"用户询问共享型和独享型静态 IP 的产品差异。"}`,
-		specialistText: `{"answer_mode":"evidence","answer":"共享型静态 IP 是多人共享带宽，起步价更低，适合预算敏感或数量较多的场景，也支持按数量享受折扣；独享型是独立带宽，稳定性更好，适合长期固定账号。您更看重成本还是稳定性？","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-proxy-ip-products.md","confidence":"high"}],"notes":""}`,
+		specialistText: `{"answer_mode":"evidence","answer":"共享型静态 IP 是多人共享带宽，起步价更低，适合预算敏感或数量较多的场景；独享型是独立带宽，稳定性更好，适合长期固定账号。您更看重成本还是稳定性？","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-proxy-ip-products.md","confidence":"high"}],"notes":""}`,
 	}
 	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
 	resp, err := svc.answerRouted(context.Background(), "trace-routed-product", CustomerChatRequest{
@@ -1206,17 +1206,146 @@ func TestAnswerRoutedBlocksDeprecatedPricingFromSpecialistAnswer(t *testing.T) {
 		PersistLog: boolPtr(false),
 		History: []ChatMessage{
 			{Role: "user", Content: "静态IP 怎么卖的?"},
-			{Role: "assistant", Content: "共享型 25 元/个/月起，独享型 300 元/个/月起。"},
+			{Role: "assistant", Content: "请告诉我带宽和数量，我按当前价格核算。"},
 		},
 	}, nil, DefaultRuntimeSettings(svc.deps.Config))
 	if err != nil {
 		t.Fatalf("answerRouted: %v", err)
 	}
-	if resp == nil || resp.Answer != "请告诉我需要静态 IP 还是住宅 IP、具体类型、带宽和数量，我按当前价格核算。" {
-		t.Fatalf("expected deprecated pricing guard answer, got %#v", resp)
+	if resp == nil || !strings.Contains(resp.Answer, "共享带宽") || !strings.Contains(resp.Answer, "独立带宽") {
+		t.Fatalf("expected shared/dedicated difference to reach the customer, got %#v", resp)
+	}
+	if resp.Answer == "请告诉我需要静态 IP 还是住宅 IP、具体类型、带宽和数量，我按当前价格核算。" ||
+		resp.Answer == "请告诉我需要的带宽和数量，我按当前价格核算。" {
+		t.Fatalf("deprecated pricing guard must not overwrite a product-difference answer, got %s", resp.Answer)
 	}
 	if strings.Contains(resp.Answer, "25 元") || strings.Contains(resp.Answer, "300 元") {
 		t.Fatalf("expected old pricing not to reach customer, got %s", resp.Answer)
+	}
+}
+
+func TestAnswerRoutedSharedDedicatedCompareThreeTurnConversationExplainsDifference(t *testing.T) {
+	priceRouter := `{"contract_version":"customer_router.v1","specialist":"pricing","question_stage":"pricing","answer_strategy":"ask_clarification","routing_confidence":0.9,"routing_reason":"用户询问静态 IP 价格。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":["bandwidth","quantity"],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 数量档位 价格"],"handoff_notes":"静态 IP 两种类型同价；缺少带宽和数量，不能报价。"}`
+	compareRouter := `{"contract_version":"customer_router.v1","specialist":"product","question_stage":"product_selection","answer_strategy":"answer_with_evidence","routing_confidence":0.95,"routing_reason":"用户询问共享和独享区别。","intent":"static_ip_shared_vs_dedicated_difference","rewritten_question":"客户想了解共享型和独享型的区别。","history_summary":"客户前面询问静态 IP 价格。","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":[],"needs_retrieval":true,"retrieval_queries":["四叶天 共享型 独享型 区别"],"handoff_notes":"直接回答共享和独享区别，不先追问。"}`
+	priceAnswer := `{"answer_mode":"clarification","answer":"静态 IP 按条/月计费，价格随带宽和数量档位变化。请告诉我带宽和数量，我按当前价格核算。","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`
+	compareAnswer := `{"answer_mode":"evidence","answer":"共享型是多人共用带宽，起步价通常更低；独享型是独立带宽，稳定性更好，也通常成本更高。您更看重成本还是稳定性？","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-proxy-ip-products.md","confidence":"high"}],"notes":""}`
+
+	svc := newCustomerRoutedPipelineTestService(t, &customerRoutedPipelineTestLLM{
+		routerText:     priceRouter,
+		specialistText: priceAnswer,
+	}, "")
+	first, err := svc.answerRouted(context.Background(), "trace-shared-dedicated-turn-1", CustomerChatRequest{
+		Question:   "静态IP 怎么卖的?",
+		PersistLog: boolPtr(false),
+	}, nil, DefaultRuntimeSettings(svc.deps.Config))
+	if err != nil {
+		t.Fatalf("turn 1 answerRouted: %v", err)
+	}
+	if first == nil || !strings.Contains(first.Answer, "带宽") || !strings.Contains(first.Answer, "数量") {
+		t.Fatalf("turn 1 should explain billing dimensions then ask bandwidth/quantity, got %#v", first)
+	}
+	if strings.Contains(first.Answer, "共享型还是独享型") || strings.Contains(first.Answer, "静态 IP 还是住宅 IP") {
+		t.Fatalf("turn 1 must not force shared/dedicated or product-type clarification, got %s", first.Answer)
+	}
+
+	history := []ChatMessage{
+		{Role: "user", Content: "静态IP 怎么卖的?"},
+		{Role: "assistant", Content: first.Answer},
+	}
+	compareClient := &customerRoutedPipelineTestLLM{routerText: compareRouter, specialistText: compareAnswer}
+	svc.deps.LLM = compareClient
+	second, err := svc.answerRouted(context.Background(), "trace-shared-dedicated-turn-2", CustomerChatRequest{
+		Question:   "共享和独享有什么区别?",
+		PersistLog: boolPtr(false),
+		History:    history,
+	}, nil, DefaultRuntimeSettings(svc.deps.Config))
+	if err != nil {
+		t.Fatalf("turn 2 answerRouted: %v", err)
+	}
+	assertSharedDedicatedDifferenceAnswer(t, "turn 2", second)
+
+	history = append(history,
+		ChatMessage{Role: "user", Content: "共享和独享有什么区别?"},
+		ChatMessage{Role: "assistant", Content: second.Answer},
+	)
+	third, err := svc.answerRouted(context.Background(), "trace-shared-dedicated-turn-3", CustomerChatRequest{
+		Question:   "我问的是共享和独享有什么区别",
+		PersistLog: boolPtr(false),
+		History:    history,
+	}, nil, DefaultRuntimeSettings(svc.deps.Config))
+	if err != nil {
+		t.Fatalf("turn 3 answerRouted: %v", err)
+	}
+	assertSharedDedicatedDifferenceAnswer(t, "turn 3", third)
+}
+
+func TestAnswerRoutedRecordsDeprecatedPricingSanitizeReasonInAudit(t *testing.T) {
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"product","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_type_compare","rewritten_question":"客户想比较共享型和独享型。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":[],"needs_retrieval":true,"retrieval_queries":["共享型 独享型 区别"],"handoff_notes":"用户询问共享型和独享型差异。"}`,
+		specialistText: `{"answer_mode":"evidence","answer":"共享型是多人共用带宽，适合批量使用。独享型 5M 是 300 元/个/月，独享型不参与数量折扣。独享型带宽独立，更适合长期固定账号。","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-proxy-ip-products.md","confidence":"high"}],"notes":""}`,
+	}
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	resp, err := svc.answerRouted(context.Background(), "trace-deprecated-pricing-audit", CustomerChatRequest{
+		Question:  "共享型和独享型有什么区别?",
+		SessionID: "deprecated-pricing-audit",
+	}, nil, DefaultRuntimeSettings(svc.deps.Config))
+	if err != nil {
+		t.Fatalf("answerRouted: %v", err)
+	}
+	if resp == nil || !strings.Contains(resp.Answer, "共用带宽") || !strings.Contains(resp.Answer, "带宽独立") {
+		t.Fatalf("expected product difference to remain after stripping old price, got %#v", resp)
+	}
+	if strings.Contains(resp.Answer, "300 元") || strings.Contains(resp.Answer, "不参与数量折扣") {
+		t.Fatalf("expected old price sentence to be removed, got %s", resp.Answer)
+	}
+	sanitized := auditMapValue(resp.Details["answer_sanitized"])
+	if sanitized["reason"] != "deprecated_pricing" {
+		t.Fatalf("expected details answer_sanitized.reason=deprecated_pricing, got %+v", resp.Details["answer_sanitized"])
+	}
+	record := customerRoutedLastAuditRecord(t, svc)
+	observability := auditMapValue(record["observability"])
+	auditSanitized := auditMapValue(observability["answer_sanitized"])
+	if auditSanitized["reason"] != "deprecated_pricing" {
+		t.Fatalf("expected audit observability.answer_sanitized.reason=deprecated_pricing, got %+v", observability["answer_sanitized"])
+	}
+}
+
+func TestAnswerRoutedRefusesTrafficWhenPricingKnowledgeIsDeprecated(t *testing.T) {
+	llmClient := &customerRoutedPipelineTestLLM{
+		routerText:     `{"contract_version":"customer_router.v1","specialist":"reception","routing_confidence":0.9,"routing_reason":"寒暄。","intent":"greeting","rewritten_question":"客户打招呼。","history_summary":"","slots":{"primary_product":"unknown","products":[],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":[],"needs_retrieval":false,"retrieval_queries":[],"handoff_notes":"寒暄。"}`,
+		specialistText: `{"answer_mode":"self_answer","answer":"您好，请问想咨询哪方面？","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[],"notes":""}`,
+	}
+	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
+	writeTestWikiPage(t, svc.deps.Config.MountedWiki.Root, "wiki/knowledge/si-ye-tian-static-ip-pricing.md", "独享型数据中心 IP：5M 300元/个/月，独享型不参与数量折扣。")
+	_, err := svc.answerRouted(context.Background(), "trace-knowledge-mismatch", CustomerChatRequest{
+		Question:   "在吗",
+		PersistLog: boolPtr(false),
+	}, nil, DefaultRuntimeSettings(svc.deps.Config))
+	if err == nil {
+		t.Fatal("expected stale pricing knowledge to refuse customer chat traffic")
+	}
+	if !strings.Contains(err.Error(), "knowledge version mismatch") {
+		t.Fatalf("expected knowledge version mismatch error, got %v", err)
+	}
+}
+
+func assertSharedDedicatedDifferenceAnswer(t *testing.T, label string, resp *CustomerChatResponse) {
+	t.Helper()
+	if resp == nil {
+		t.Fatalf("%s: expected response", label)
+	}
+	if !strings.Contains(resp.Answer, "共享") || !strings.Contains(resp.Answer, "独享") {
+		t.Fatalf("%s: expected answer to explain shared vs dedicated, got %s", label, resp.Answer)
+	}
+	if !strings.Contains(resp.Answer, "带宽") {
+		t.Fatalf("%s: expected bandwidth difference to remain, got %s", label, resp.Answer)
+	}
+	if resp.Answer == "请告诉我需要静态 IP 还是住宅 IP、具体类型、带宽和数量，我按当前价格核算。" ||
+		resp.Answer == "请告诉我需要的带宽和数量，我按当前价格核算。" {
+		t.Fatalf("%s: deprecated pricing guard overwrote the difference answer", label)
+	}
+	if strings.Contains(resp.Answer, "25 元") || strings.Contains(resp.Answer, "300 元") {
+		t.Fatalf("%s: old prices reached the customer: %s", label, resp.Answer)
 	}
 }
 
@@ -1723,6 +1852,7 @@ func TestCustomerSpecialistDecisionPromptDoesNotIncludeDerivedEvidence(t *testin
 			Ambiguity:         CustomerRouterAmbiguity{IsAmbiguous: false},
 			HandoffNotes:      "用户是普通静态 IP 问价。",
 		},
+		customerSpecialistProfile("pricing"),
 		customerSpecialistEvidenceResult{
 			Profile: customerSpecialistProfile("pricing"),
 			ContentBlocks: []string{
@@ -1741,6 +1871,7 @@ func TestCustomerSpecialistDecisionPromptDoesNotIncludeDerivedEvidence(t *testin
 	for _, want := range []string{
 		"conversation_context:",
 		"前面我问过静态 IP。",
+		"active_skills:",
 		"hard_boundary:",
 		"服务端行为",
 		"contract_version: customer_router.v1",
@@ -1782,6 +1913,7 @@ func TestCustomerSpecialistDecisionPromptPassesConversationContextWhenRouterSumm
 			Slots:             CustomerRouterSlots{PrimaryProduct: "unknown"},
 			Ambiguity:         CustomerRouterAmbiguity{IsAmbiguous: true, AmbiguousFields: []string{"primary_product"}},
 		},
+		customerSpecialistProfile("troubleshooting"),
 		customerSpecialistEvidenceResult{Profile: customerSpecialistProfile("troubleshooting")},
 		RuntimeSupportSettings{},
 		"boundary",
@@ -1811,6 +1943,7 @@ func TestCustomerSpecialistDecisionPromptIncludesMobileAppPolicy(t *testing.T) {
 			RewrittenQuestion: "客户想了解手机 App 是否可以使用动态 IP。",
 			Slots:             CustomerRouterSlots{PrimaryProduct: "dynamic_ip", Products: []string{"dynamic_ip"}},
 		},
+		customerSpecialistProfile("product"),
 		customerSpecialistEvidenceResult{Profile: customerSpecialistProfile("product")},
 		RuntimeSupportSettings{},
 		"boundary",
@@ -2085,7 +2218,7 @@ func newCustomerRoutedPipelineTestService(t *testing.T, llmClient llm.Client, pr
 		testRuntimeTool{name: "wiki.read_page", fn: func(ctx context.Context, env *runtime.ExecEnv, args map[string]any) (runtime.ToolResult, error) {
 			path, _ := args["path"].(string)
 			pages := map[string]string{
-				"wiki/knowledge/si-ye-tian-static-ip-pricing.md":               "---\ntitle: 静态 IP 价格\n---\n共享型数据中心 IP：5M 25元/个/月，10M 30元/个/月，20M 70元/个/月起。独享型数据中心 IP：5M 300元/个/月，10M 500元/个/月，20M 800元/个/月。",
+				"wiki/knowledge/si-ye-tian-static-ip-pricing.md":               "---\ntitle: 静态 IP 与住宅 IP 价格\n---\n当前按条/月报价的产品只有两类：静态 IP 和住宅 IP。静态 IP 包含自建共享、机房静态，二者价格相同；住宅 IP 包含住宅共享、住宅独享。单位为元/条/月。精确报价需要产品、带宽和数量。",
 				"wiki/knowledge/si-ye-tian-proxy-ip-pricing.md":                "---\ntitle: 代理 IP 价格\n---\n动态代理按套餐计费。",
 				"wiki/synthesis/si-ye-tian-purchase-guidance-rules.md":         "---\ntitle: 购买建议\n---\n普通问价只回答基础价。",
 				"wiki/knowledge/si-ye-tian-proxy-ip-products.md":               "---\ntitle: 产品说明\n---\n动态 IP 适合更换出口，静态 IP 适合固定账号环境。",
@@ -2180,6 +2313,28 @@ func writeCustomerRoutedTestPrompts(t *testing.T, root string, promptDir string)
 	for name, content := range prompts {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			t.Fatalf("write prompt %s: %v", name, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, customerRouterSkillsCatalogFile), []byte("skills catalog"), 0o644); err != nil {
+		t.Fatalf("write skills catalog: %v", err)
+	}
+	skillsDir := filepath.Join(dir, "skills")
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		t.Fatalf("mkdir skills: %v", err)
+	}
+	for _, id := range customerRouterSkillIDs() {
+		def := customerSkillDefinitions[id]
+		src := filepath.Join("..", "llm", "prompts", filepath.FromSlash(def.PromptFile))
+		raw, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatalf("read skill %s: %v", def.PromptFile, err)
+		}
+		dst := filepath.Join(dir, filepath.FromSlash(def.PromptFile))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			t.Fatalf("mkdir skill parent: %v", err)
+		}
+		if err := os.WriteFile(dst, raw, 0o644); err != nil {
+			t.Fatalf("write skill %s: %v", def.PromptFile, err)
 		}
 	}
 }

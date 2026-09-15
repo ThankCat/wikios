@@ -35,6 +35,7 @@ type CustomerRouterOutput struct {
 	NeedsRetrieval            bool                        `json:"needs_retrieval"`
 	RetrievalQueries          []string                    `json:"retrieval_queries"`
 	HandoffNotes              string                      `json:"handoff_notes"`
+	Skills                    []string                    `json:"skills"`
 	UserIntentSignals         CustomerRouterIntentSignals `json:"user_intent_signals"`
 }
 
@@ -110,6 +111,9 @@ func (s *CustomerChatService) loadCustomerRouterSystemPrompt() (string, error) {
 	}
 	if block := customerSafetyTermsPromptBlock(s.deps.SafetyTerms); block != "" {
 		systemPrompt = strings.TrimSpace(systemPrompt) + customerSpecialistPromptSeparator + block
+	}
+	if catalog, err := s.loadPrompt(customerRouterSkillsCatalogFile); err == nil && strings.TrimSpace(catalog) != "" {
+		systemPrompt = strings.TrimSpace(systemPrompt) + customerSpecialistPromptSeparator + strings.TrimSpace(catalog)
 	}
 	return systemPrompt, nil
 }
@@ -199,6 +203,7 @@ func normalizeCustomerRouterOutput(output CustomerRouterOutput, req CustomerChat
 	output.Ambiguity = normalizeCustomerRouterAmbiguity(output.Ambiguity)
 	output.MissingInfo = normalizeCustomerRouterEnumList(output.MissingInfo, 12, normalizeCustomerRouterMissingInfo)
 	output.RiskFlags = normalizeCustomerRouterEnumList(output.RiskFlags, 12, normalizeCustomerRouterRiskFlag)
+	output.Skills = normalizeCustomerRouterSkills(output.Skills)
 	if customerRequestClientChannel(req) == "mobile_app" {
 		output.RiskFlags = appendUniqueString(output.RiskFlags, "app_channel_policy")
 	}
@@ -380,53 +385,6 @@ func applyCustomerRouterHardRules(req CustomerChatRequest, output CustomerRouter
 		output.RetrievalQueries = nil
 		output.HandoffNotes = "多产品上下文下的指代问价，必须先问客户指动态 IP 还是静态 IP，不要直接报价。"
 		return output
-	}
-	if customerRouterLooksDedicatedPrice(userText) {
-		output.Specialist = "pricing"
-		output.QuestionStage = "pricing"
-		output.AnswerStrategy = "quote_or_price"
-		output.RiskBoundary = "pricing_review"
-		output.Slots.PrimaryProduct = "static_ip"
-		output.Slots.Products = []string{"static_ip"}
-		output.Slots.StaticType = "dedicated"
-		output.Slots.IPType = "residential"
-		output.RiskFlags = appendUniqueString(output.RiskFlags, "pricing")
-		output.MissingInfo = removeString(output.MissingInfo, "primary_product")
-		output.Ambiguity.AmbiguousFields = removeString(output.Ambiguity.AmbiguousFields, "primary_product")
-		if len(output.Ambiguity.AmbiguousFields) == 0 {
-			output.Ambiguity.IsAmbiguous = false
-			output.Ambiguity.Reason = ""
-		}
-		output.NeedsProductClarification = false
-		output.ClarificationTarget = "none"
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 住宅 IP 住宅独享 价格 数量档位 5M 10M 20M"}
-		output.HandoffNotes = "客户询问独享价格；当前价格体系只对应住宅独享，报价前必须确认带宽和数量。"
-	}
-	if customerRouterLooksStaticBandwidthPrice(userText) {
-		output.Specialist = "pricing"
-		output.QuestionStage = "pricing"
-		output.AnswerStrategy = "quote_or_price"
-		output.RiskBoundary = "pricing_review"
-		output.Slots.PrimaryProduct = "static_ip"
-		output.Slots.Products = []string{"static_ip"}
-		if output.Slots.Bandwidth == "" {
-			output.Slots.Bandwidth = customerRouterBandwidthFromText(userText)
-		}
-		output.RiskFlags = appendUniqueString(output.RiskFlags, "pricing")
-		output.MissingInfo = removeString(output.MissingInfo, "primary_product")
-		output.MissingInfo = removeString(output.MissingInfo, "static_type")
-		output.Ambiguity.AmbiguousFields = removeString(output.Ambiguity.AmbiguousFields, "primary_product")
-		output.Ambiguity.AmbiguousFields = removeString(output.Ambiguity.AmbiguousFields, "static_type")
-		if len(output.Ambiguity.AmbiguousFields) == 0 {
-			output.Ambiguity.IsAmbiguous = false
-			output.Ambiguity.Reason = ""
-		}
-		output.NeedsProductClarification = false
-		output.ClarificationTarget = "none"
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 静态 IP 自建共享 机房静态 " + output.Slots.Bandwidth + " 数量档位 价格"}
-		output.HandoffNotes = "客户指定静态 IP 和带宽；自建共享与机房静态同价，但仍需数量才能报价。"
 	}
 	if customerRouterLooksRefundRequest(userText) {
 		output.Specialist = "billing_after_sales"
@@ -657,19 +615,7 @@ func applyCustomerRouterHardRules(req CustomerChatRequest, output CustomerRouter
 		output.RewrittenQuestion = "客户询问住宅 IP 是否固定。"
 		output.HandoffNotes = "按住宅静态 IP 固定性边界回答：更接近家庭宽带，但不承诺完全固定，可能同城轮换。"
 	}
-	if customerRouterLooksSharedDedicatedCompare(userText) && !customerRouterLooksPriceQuestion(userText) {
-		output.Specialist = "product"
-		output.QuestionStage = "product_selection"
-		output.AnswerStrategy = "answer_with_evidence"
-		output.RiskBoundary = "none"
-		output.Slots.PrimaryProduct = "static_ip"
-		output.Slots.Products = []string{"static_ip"}
-		output.NeedsProductClarification = false
-		output.ClarificationTarget = "none"
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 共享型 独享型 静态 IP 区别"}
-	}
-	return output
+	return applyCustomerRouterSkillFallbacks(req, output)
 }
 
 func clearCustomerRouterProductClarification(output CustomerRouterOutput) CustomerRouterOutput {
@@ -1606,6 +1552,19 @@ func customerRouterLooksSharedDedicatedCompare(text string) bool {
 	return (strings.Contains(text, "共享") && strings.Contains(text, "独享")) ||
 		strings.Contains(text, "共享型和独享型") ||
 		strings.Contains(text, "共享和独享")
+}
+
+func customerRouterLooksQuantityCompare(text string) bool {
+	if text == "" || customerRouterLooksSharedDedicatedCompare(text) {
+		return false
+	}
+	if strings.Count(text, "条") < 2 {
+		return false
+	}
+	if !containsAny(text, "区别", "差异", "有什么不同", "哪个划算", "差多少") {
+		return false
+	}
+	return containsAny(text, "和", "跟", "还是", "与")
 }
 
 func customerRouterListContains(items []string, want string) bool {

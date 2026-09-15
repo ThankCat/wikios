@@ -197,7 +197,7 @@ func (s *CustomerChatService) customerTraceDetails(req CustomerChatRequest, pars
 func customerTraceKeyAllowedInPersistentDetails(key string) bool {
 	switch key {
 	case "trace_id", "received_at", "simulation", "persist_log", "history_turns", "question_chars",
-		"client_channel", "app_policy", "app_guard", "internal_boundary_guard", "scenario_answer_guard", "unsafe_answer_guard", "human_contact_guard",
+		"client_channel", "app_policy", "app_guard", "internal_boundary_guard", "scenario_answer_guard", "unsafe_answer_guard", "human_contact_guard", "answer_sanitized",
 		"retrieval_question", "candidate_top_k", "max_evidence_chars", "retrieved_candidates",
 		"fallback_candidates", "evidence", "sources", "retrieved_paths", "final_sources", "model_json_parsed",
 		"review_decision", "retrieval_cache", "decision", "clarification", "hard_stop",
@@ -505,6 +505,7 @@ func (s *CustomerChatService) writeCustomerChatAuditLog(traceID string, req Cust
 		"internal_boundary_guard": auditMapValue(details["internal_boundary_guard"]),
 		"scenario_answer_guard":   auditMapValue(details["scenario_answer_guard"]),
 		"unsafe_answer_guard":     auditMapValue(details["unsafe_answer_guard"]),
+		"answer_sanitized":        auditMapValue(details["answer_sanitized"]),
 	}
 	receivedAt := firstNonEmpty(strings.TrimSpace(req.ReceivedAt), strings.TrimSpace(resp.ReceivedAt))
 	answeredAt := strings.TrimSpace(resp.AnsweredAt)
@@ -1167,45 +1168,74 @@ func roundConfidence(value float64) float64 {
 	return math.Round(clampConfidence(value)*100) / 100
 }
 
+const (
+	customerDeprecatedPricingFallback = "请告诉我需要的带宽和数量，我按当前价格核算。"
+	customerInternalContextFallback   = "我可以直接回答产品、价格、购买或配置问题。"
+	customerSanitizeDeprecatedPricing = "deprecated_pricing"
+	customerSanitizeInternalContext   = "internal_context_removed"
+	customerPricingKnowledgePagePath  = "wiki/knowledge/si-ye-tian-static-ip-pricing.md"
+)
+
+var errCustomerKnowledgeVersionMismatch = errors.New("knowledge version mismatch: pricing page is incompatible with current customer chat rules")
+
 func sanitizeCustomerVisibleAnswer(answer string, parsed customerChatLLMOutput, routerOutput *CustomerRouterOutput) (string, bool) {
+	sanitized, changed, _ := sanitizeCustomerVisibleAnswerWithReason(answer, parsed, routerOutput)
+	return sanitized, changed
+}
+
+func sanitizeCustomerVisibleAnswerWithReason(answer string, parsed customerChatLLMOutput, routerOutput *CustomerRouterOutput) (string, bool, string) {
 	answer = strings.TrimSpace(answer)
 	if answer == "" {
-		return "", false
-	}
-	// Deprecated pricing must never reach a customer, even if the router
-	// misclassifies the turn as product/purchase instead of pricing.
-	if customerAnswerUsesDeprecatedPricing(answer) {
-		return "请告诉我需要静态 IP 还是住宅 IP、具体类型、带宽和数量，我按当前价格核算。", true
+		return "", false, ""
 	}
 	if customerAnswerIsAllowedInternalBoundaryRefusal(answer, parsed, routerOutput) {
-		return answer, false
+		return answer, false, ""
 	}
 	parts := splitCustomerAnswerSentences(answer)
 	if len(parts) == 0 {
-		return answer, false
+		parts = []string{answer}
 	}
 	kept := make([]string, 0, len(parts))
-	changed := false
+	pricingChanged := false
+	leakChanged := false
 	for _, part := range parts {
 		if customerVisibleAnswerLeaksInternalContext(part) {
-			changed = true
+			leakChanged = true
+			continue
+		}
+		if customerAnswerUsesDeprecatedPricing(part) {
+			pricingChanged = true
 			continue
 		}
 		kept = append(kept, part)
 	}
-	if !changed {
-		return answer, false
+	if !pricingChanged && !leakChanged {
+		return answer, false, ""
 	}
 	sanitized := strings.TrimSpace(strings.Join(kept, ""))
 	if sanitized == "" {
-		return "我可以直接回答产品、价格、购买或配置问题。", true
+		if pricingChanged {
+			return customerDeprecatedPricingFallback, true, customerSanitizeDeprecatedPricing
+		}
+		return customerInternalContextFallback, true, customerSanitizeInternalContext
 	}
-	return sanitized, true
+	reason := customerSanitizeInternalContext
+	if pricingChanged {
+		reason = customerSanitizeDeprecatedPricing
+	}
+	return sanitized, true, reason
+}
+
+func compactCustomerVisibleText(text string) string {
+	compact := strings.ToLower(strings.TrimSpace(text))
+	return strings.NewReplacer(" ", "", "\n", "", "\r", "", "\t", "").Replace(compact)
 }
 
 func customerAnswerUsesDeprecatedPricing(answer string) bool {
-	compact := strings.ToLower(strings.TrimSpace(answer))
-	compact = strings.NewReplacer(" ", "", "\n", "", "\r", "", "\t", "").Replace(compact)
+	compact := compactCustomerVisibleText(answer)
+	if compact == "" {
+		return false
+	}
 	for _, marker := range []string{
 		"5-20个9折",
 		"21-50个8折",
@@ -1213,33 +1243,72 @@ func customerAnswerUsesDeprecatedPricing(answer string) bool {
 		"101-200个6折",
 		"201-300个5折",
 		"300个以上4折",
-		"折后",
-		"多买多优惠",
-		"数量越多越划算",
-		"买5个",
-		"起步价",
 		"25至70元/个/月",
 		"300至800元/个/月",
 		"25至70",
 		"300至800",
+		"25-70",
+		"25到70",
+		"25~70",
+		"300-800",
+		"300到800",
+		"300~800",
 		"17.5元/个",
 		"52.5元/个",
 		"22.5元/个/月",
 		"独享型不参与数量折扣",
 		"独享不参与数量折扣",
-		"数据中心独享",
+		"元/个/月",
+		"元/个",
+		"4折",
+		"5折",
+		"6折",
+		"7折",
+		"8折",
+		"9折",
+		"折后",
+		"多买多优惠",
 	} {
 		if strings.Contains(compact, marker) {
 			return true
 		}
 	}
-	if strings.Contains(compact, "独享") &&
-		(strings.Contains(compact, "300元/个/月") ||
-			strings.Contains(compact, "500元/个/月") ||
-			strings.Contains(compact, "800元/个/月")) {
-		return true
-	}
 	return false
+}
+
+func customerKnowledgePageHasDeprecatedPricing(content string) bool {
+	return customerAnswerUsesDeprecatedPricing(content)
+}
+
+func customerPricingKnowledgeCompatible(content string) bool {
+	if strings.TrimSpace(content) == "" {
+		return false
+	}
+	if customerKnowledgePageHasDeprecatedPricing(content) {
+		return false
+	}
+	return strings.Contains(content, "自建共享") && strings.Contains(content, "住宅独享")
+}
+
+func (s *CustomerChatService) customerKnowledgeVersionError() error {
+	if s == nil || s.deps.Config == nil {
+		return nil
+	}
+	root := strings.TrimSpace(s.deps.Config.MountedWiki.Root)
+	if root == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(customerPricingKnowledgePagePath)))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if customerPricingKnowledgeCompatible(string(raw)) {
+		return nil
+	}
+	return errCustomerKnowledgeVersionMismatch
 }
 
 func customerAnswerIsAllowedInternalBoundaryRefusal(answer string, parsed customerChatLLMOutput, routerOutput *CustomerRouterOutput) bool {
@@ -1659,7 +1728,7 @@ func customerScenarioAnswerTemplateGuard(req CustomerChatRequest, parsed custome
 	case customerScenarioIsLiveStreamingSelection(req, routerOutput, decisionText) && (!customerAnswerHasLiveStreamingSelectionTerms(answer) || customerAnswerHasLiveStreamingSelectionForbiddenTerms(answer)):
 		return customerScenarioAnswerGuardResult{
 			Triggered:             true,
-			Answer:                "直播场景一般优先看独享静态 IP，带宽可先按 10M 起评估，并在正式使用前测试实际线路表现。",
+			Answer:                "直播场景一般优先看静态 IP；稳定性要求高再看住宅独享。带宽可先按 10M 起评估，并在正式使用前测试实际线路表现。",
 			AnswerMode:            "evidence",
 			Reason:                "live_streaming_selection_terms",
 			FallbackSources:       []customerChatSource{{Path: "wiki/comparisons/shared-vs-dedicated-static-ip.md", Confidence: "high"}, {Path: "wiki/comparisons/si-ye-tian-platform-scenario-selection.md", Confidence: "high"}},
@@ -2865,7 +2934,7 @@ func customerScenarioIsLiveStreamingSelection(req CustomerChatRequest, routerOut
 
 func customerAnswerHasLiveStreamingSelectionTerms(answer string) bool {
 	text := normalizeCustomerReviewText(answer)
-	return strings.Contains(text, "独享静态ip") &&
+	return (strings.Contains(text, "静态ip") || strings.Contains(text, "住宅独享")) &&
 		strings.Contains(text, "10m") &&
 		strings.Contains(text, "测试")
 }

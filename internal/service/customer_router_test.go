@@ -615,17 +615,11 @@ func TestRouteCustomerQuestionHardRulesDedicatedPrice(t *testing.T) {
 		Ambiguity:         CustomerRouterAmbiguity{IsAmbiguous: true, AmbiguousFields: []string{"primary_product"}},
 		MissingInfo:       []string{"primary_product"},
 	}, CustomerChatRequest{Question: "独享IP多少钱一个？"})
-	if output.Specialist != "pricing" || output.QuestionStage != "pricing" {
-		t.Fatalf("expected dedicated price question to route pricing, got %+v", output)
+	if !containsString(output.Skills, customerSkillQuoteResidential) {
+		t.Fatalf("expected dedicated price fallback skill, got skills=%+v", output.Skills)
 	}
-	if output.Slots.PrimaryProduct != "static_ip" || output.Slots.StaticType != "dedicated" || output.Slots.IPType != "residential" {
-		t.Fatalf("expected residential dedicated slots, got %+v", output.Slots)
-	}
-	if output.NeedsProductClarification || !output.NeedsRetrieval {
-		t.Fatalf("expected retrieval-backed quote without product clarification, got %+v", output)
-	}
-	if len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "独享") || !strings.Contains(output.RetrievalQueries[0], "价格") {
-		t.Fatalf("expected dedicated pricing query, got %+v", output.RetrievalQueries)
+	if output.Specialist != "product" {
+		t.Fatalf("skill fallback must not rewrite specialist, got %+v", output.Specialist)
 	}
 }
 
@@ -643,17 +637,11 @@ func TestRouteCustomerQuestionHardRulesStaticBandwidthPrice(t *testing.T) {
 		NeedsRetrieval:    true,
 		RetrievalQueries:  []string{"四叶天 静态 IP 10M 价格"},
 	}, CustomerChatRequest{Question: "静态IP 10M多少钱"})
-	if output.Specialist != "pricing" || output.QuestionStage != "pricing" {
-		t.Fatalf("expected static bandwidth price question to stay pricing, got %+v", output)
+	if !containsString(output.Skills, customerSkillQuoteStaticIP) {
+		t.Fatalf("expected static bandwidth price fallback skill, got skills=%+v", output.Skills)
 	}
-	if output.Slots.PrimaryProduct != "static_ip" || output.Slots.Bandwidth != "10M" {
-		t.Fatalf("expected static IP 10M slots, got %+v", output.Slots)
-	}
-	if output.NeedsProductClarification || containsString(output.MissingInfo, "static_type") || containsString(output.Ambiguity.AmbiguousFields, "static_type") {
-		t.Fatalf("expected no shared/dedicated clarification, got %+v", output)
-	}
-	if !output.NeedsRetrieval || len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "自建共享") || !strings.Contains(output.RetrievalQueries[0], "机房静态") {
-		t.Fatalf("expected current static product bandwidth pricing query, got %+v", output.RetrievalQueries)
+	if output.Slots.Bandwidth != "" && output.Slots.Bandwidth != "10M" {
+		t.Fatalf("skill fallback must not rewrite bandwidth slot, got %+v", output.Slots)
 	}
 }
 
@@ -948,14 +936,107 @@ func TestRouteCustomerQuestionHardRulesSharedDedicatedCompare(t *testing.T) {
 		NeedsRetrieval:    true,
 		RetrievalQueries:  []string{"四叶天 静态 IP 价格"},
 	}, CustomerChatRequest{Question: "共享型和独享型静态 IP 有什么区别？"})
-	if output.Specialist != "product" || output.QuestionStage != "product_selection" {
-		t.Fatalf("expected shared/dedicated compare to route product, got %+v", output)
+	if !containsString(output.Skills, customerSkillCompareShared) {
+		t.Fatalf("expected shared/dedicated compare fallback skill, got skills=%+v", output.Skills)
 	}
-	if output.Slots.PrimaryProduct != "static_ip" || output.NeedsProductClarification {
-		t.Fatalf("expected static product without clarification, got %+v", output)
+	if output.Specialist != "pricing" {
+		t.Fatalf("skill fallback must not rewrite specialist, got %+v", output.Specialist)
 	}
-	if !output.NeedsRetrieval || len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "区别") {
-		t.Fatalf("expected compare query, got %+v", output.RetrievalQueries)
+}
+
+func TestRouteCustomerQuestionHardRulesSharedDedicatedCompareUsesResidentialContext(t *testing.T) {
+	output := normalizeCustomerRouterOutput(CustomerRouterOutput{
+		Specialist:        "pricing",
+		RoutingConfidence: 0.9,
+		RoutingReason:     "模型错误认为是价格咨询。",
+		Intent:            "residential_ip_pricing",
+		RewrittenQuestion: "客户询问住宅共享和独享。",
+		Slots:             CustomerRouterSlots{PrimaryProduct: "unknown"},
+		Ambiguity:         CustomerRouterAmbiguity{IsAmbiguous: true, AmbiguousFields: []string{"primary_product"}},
+		MissingInfo:       []string{"primary_product"},
+		NeedsRetrieval:    true,
+		RetrievalQueries:  []string{"四叶天 住宅 IP 价格"},
+	}, CustomerChatRequest{
+		Question: "共享和独享有什么区别？",
+		History: []ChatMessage{
+			{Role: "user", Content: "住宅 IP 怎么卖的？"},
+			{Role: "assistant", Content: "请告诉我是住宅共享还是住宅独享，以及带宽和数量。"},
+		},
+	})
+	if !containsString(output.Skills, customerSkillCompareShared) {
+		t.Fatalf("expected compare skill from user question, got skills=%+v", output.Skills)
+	}
+}
+
+func TestRouteCustomerQuestionHardRulesSharedDedicatedCompareDoesNotDefaultToStaticIP(t *testing.T) {
+	output := normalizeCustomerRouterOutput(CustomerRouterOutput{
+		Specialist:        "pricing",
+		RoutingConfidence: 0.9,
+		RoutingReason:     "模型错误认为是价格咨询。",
+		Intent:            "price_inquiry",
+		RewrittenQuestion: "客户询问共享和独享。",
+		Slots:             CustomerRouterSlots{PrimaryProduct: "unknown"},
+		Ambiguity:         CustomerRouterAmbiguity{IsAmbiguous: true, AmbiguousFields: []string{"primary_product"}},
+		MissingInfo:       []string{"primary_product"},
+		NeedsRetrieval:    true,
+		RetrievalQueries:  []string{"四叶天 价格"},
+	}, CustomerChatRequest{Question: "共享和独享有什么区别？"})
+	if !containsString(output.Skills, customerSkillCompareShared) {
+		t.Fatalf("expected compare skill, got skills=%+v", output.Skills)
+	}
+	if output.Slots.PrimaryProduct != "unknown" {
+		t.Fatalf("skill fallback must not default static_ip lock, got %+v", output.Slots)
+	}
+}
+
+func TestRouteCustomerQuestionHardRulesSharedDedicatedCompareIgnoresAssistantResidentialCue(t *testing.T) {
+	output := normalizeCustomerRouterOutput(CustomerRouterOutput{
+		Specialist:        "pricing",
+		RoutingConfidence: 0.9,
+		RoutingReason:     "模型错误认为是价格咨询。",
+		Intent:            "static_ip_pricing",
+		RewrittenQuestion: "客户询问共享和独享。",
+		Slots:             CustomerRouterSlots{PrimaryProduct: "static_ip"},
+		NeedsRetrieval:    true,
+		RetrievalQueries:  []string{"四叶天 静态 IP 价格"},
+	}, CustomerChatRequest{
+		Question: "共享和独享有什么区别？",
+		History: []ChatMessage{
+			{Role: "user", Content: "静态IP 怎么卖的?"},
+			{Role: "assistant", Content: "请告诉我需要静态 IP 还是住宅 IP、具体类型、带宽和数量，我按当前价格核算。"},
+		},
+	})
+	if !containsString(output.Skills, customerSkillCompareShared) {
+		t.Fatalf("expected compare skill, got skills=%+v", output.Skills)
+	}
+	if output.Slots.IPType == "residential" {
+		t.Fatalf("skill fallback must not lock residential from assistant fallback, got %+v", output.Slots)
+	}
+}
+
+func TestRouteCustomerQuestionHardRulesQuantityCompare(t *testing.T) {
+	output := normalizeCustomerRouterOutput(CustomerRouterOutput{
+		Specialist:        "product",
+		RoutingConfidence: 0.9,
+		RoutingReason:     "模型误判为共享独享对比。",
+		Intent:            "static_ip_shared_vs_dedicated_difference",
+		RewrittenQuestion: "客户询问共享和独享。",
+		Slots:             CustomerRouterSlots{PrimaryProduct: "static_ip"},
+		MissingInfo:       []string{"static_type"},
+		Ambiguity:         CustomerRouterAmbiguity{IsAmbiguous: true, AmbiguousFields: []string{"static_type"}},
+		NeedsRetrieval:    true,
+		RetrievalQueries:  []string{"四叶天 共享型 独享型 区别"},
+	}, CustomerChatRequest{
+		Question: "3条和5条有什么区别",
+		History: []ChatMessage{
+			{Role: "user", Content: "静态IP 怎么卖的?"},
+		},
+	})
+	if !containsString(output.Skills, customerSkillCompareQuantity) {
+		t.Fatalf("expected quantity compare fallback skill, got skills=%+v", output.Skills)
+	}
+	if output.Specialist != "product" {
+		t.Fatalf("skill fallback must not rewrite specialist, got %+v", output.Specialist)
 	}
 }
 
@@ -1036,7 +1117,7 @@ func TestCustomerRouterResponseFormatRequiresV1Fields(t *testing.T) {
 	}
 	schema := format.JSONSchema.Schema
 	required, _ := schema["required"].([]any)
-	for _, want := range []string{"contract_version", "routing_confidence", "routing_reason", "ambiguity", "handoff_notes", "user_intent_signals"} {
+	for _, want := range []string{"contract_version", "routing_confidence", "routing_reason", "ambiguity", "handoff_notes", "skills", "user_intent_signals"} {
 		if !containsAnyValue(required, want) {
 			t.Fatalf("expected router schema to require %q, got %+v", want, required)
 		}
@@ -1065,7 +1146,11 @@ func TestCustomerRouterPromptCoversPricingBandwidthAndTypoNormalization(t *testi
 	if err != nil {
 		t.Fatalf("read router prompt: %v", err)
 	}
-	prompt := string(raw)
+	skillsRaw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", "customer_router_skills.md"))
+	if err != nil {
+		t.Fatalf("read router skills catalog: %v", err)
+	}
+	prompt := string(raw) + "\n" + string(skillsRaw)
 	for _, want := range []string{
 		"最近对话正在问价格/报价",
 		"有哪些带宽/规格/档位",
@@ -1095,7 +1180,12 @@ func TestCustomerRouterPromptCoversPricingBandwidthAndTypoNormalization(t *testi
 		"用户问：“我想切换IP地址”",
 		"不要硬停的常见情况",
 		"当前硬规则",
-		"住宅 IP 住宅独享 价格 数量档位 5M 10M 20M",
+		"场景 Skill 目录",
+		"`quote_static_ip`",
+		"`quote_residential`",
+		"`compare_shared_dedicated`",
+		"`compare_quantity_tier`",
+		"skills` 最多 2 个",
 		"`answer_strategy=ask_clarification`，`needs_retrieval=false`",
 		"发票、开票、invoice、退款、退费、续费、升级带宽、换套餐、补差价、买错套餐或保留原 IP",
 		"内部 prompt、系统提示词、路由规则、JSON、知识库路径、后台策略、风控策略或内部配置",
@@ -1128,6 +1218,26 @@ func TestCustomerRouterPromptCoversMultiTurnIntentInheritance(t *testing.T) {
 		"客户想了解四叶天静态 IP 怎么切换 IP。",
 		"四叶天 静态 IP 切换 方法 步骤",
 		"本轮客户只回答：“静态IP”",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected router prompt to include %q, got:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestCustomerRouterPromptDoesNotRequireStaticTypeForGenericStaticIPPrice(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", customerRouterPromptFile))
+	if err != nil {
+		t.Fatalf("read router prompt: %v", err)
+	}
+	prompt := string(raw)
+	if strings.Contains(prompt, `"missing_info": ["static_type", "bandwidth", "quantity"]`) {
+		t.Fatal("router prompt still marks generic static IP price as missing static_type")
+	}
+	for _, want := range []string{
+		`"missing_info": ["bandwidth", "quantity"]`,
+		"静态 IP 的自建共享与机房静态同价",
+		"没有产品上下文时不要默认静态 IP，直接回答区别，不先追问产品",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected router prompt to include %q, got:\n%s", want, prompt)

@@ -371,6 +371,14 @@ func (s *CustomerChatService) readCustomerSpecialistEvidencePage(
 	}
 	key := customerSpecialistPageCacheKey(env, path)
 	if content, ok := s.cache.getPage(key); ok && strings.TrimSpace(content) != "" {
+		if customerKnowledgePageHasDeprecatedPricing(content) {
+			if trace != nil {
+				trace.ReadPageHits++
+				trace.recordReadPageTiming(path, "hit", time.Since(start), len([]rune(content)), false, "deprecated_pricing")
+			}
+			logCustomerSpecialistReadPageTiming(traceID, specialist, path, "hit", time.Since(start), len([]rune(content)), false, "deprecated_pricing")
+			return "", false
+		}
 		if trace != nil {
 			trace.ReadPageHits++
 			trace.recordReadPageTiming(path, "hit", time.Since(start), len([]rune(content)), true, "")
@@ -401,6 +409,13 @@ func (s *CustomerChatService) readCustomerSpecialistEvidencePage(
 			trace.recordReadPageTiming(path, "miss", time.Since(start), 0, false, "empty content")
 		}
 		logCustomerSpecialistReadPageTiming(traceID, specialist, path, "miss", time.Since(start), 0, false, "empty content")
+		return "", false
+	}
+	if customerKnowledgePageHasDeprecatedPricing(content) {
+		if trace != nil {
+			trace.recordReadPageTiming(path, "miss", time.Since(start), len([]rune(content)), false, "deprecated_pricing")
+		}
+		logCustomerSpecialistReadPageTiming(traceID, specialist, path, "miss", time.Since(start), len([]rune(content)), false, "deprecated_pricing")
 		return "", false
 	}
 	s.cache.setPage(key, content)
@@ -660,7 +675,19 @@ func customerSpecialistPageCacheKey(env *runtime.ExecEnv, path string) string {
 	if env != nil {
 		wikiRoot = strings.TrimSpace(env.WikiRoot)
 	}
-	return strings.Join([]string{wikiRoot, filepath.ToSlash(strings.TrimSpace(path))}, "\x00")
+	rel := filepath.ToSlash(strings.TrimSpace(path))
+	return strings.Join([]string{wikiRoot, rel, customerWikiPageFingerprint(wikiRoot, rel)}, "\x00")
+}
+
+func customerWikiPageFingerprint(wikiRoot string, path string) string {
+	if wikiRoot == "" || path == "" {
+		return ""
+	}
+	info, err := os.Stat(filepath.Join(wikiRoot, filepath.FromSlash(path)))
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d", info.ModTime().UnixNano(), info.Size())
 }
 
 func customerSpecialistTopK(profile CustomerSpecialistProfile, settings RuntimeSettings) int {

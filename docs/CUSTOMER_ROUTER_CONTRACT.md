@@ -56,9 +56,12 @@ Router 不做：
   "risk_flags": ["pricing"],
   "needs_retrieval": true,
   "retrieval_queries": ["四叶天 静态 IP 价格 共享 独享 带宽"],
-  "handoff_notes": "用户是普通静态 IP 问价，未指定共享/独享、带宽和数量。"
+  "handoff_notes": "用户是普通静态 IP 问价，未指定共享/独享、带宽和数量。",
+  "skills": ["quote_static_ip"]
 }
 ```
+
+`skills`：0～2 个场景流程 id（见 `customer_router_skills.md`），供专家 user 消息中的 `active_skills` 注入；Router 只选 skill，不在 `handoff_notes` 里重复完整流程。
 
 ## 3. 字段分层
 

@@ -1689,13 +1689,10 @@ func TestCustomerChatOrdinaryStaticPriceBlocksDeprecatedModelAnswer(t *testing.T
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	for _, forbidden := range []string{"25 至 70", "300 至 800", "数量越多", "买 5 个", "折扣"} {
+	for _, forbidden := range []string{"25 至 70", "300 至 800", "数量越多", "买 5 个", "折扣", "元/个/月"} {
 		if strings.Contains(payload.Answer, forbidden) {
 			t.Fatalf("deprecated pricing marker %q must not be exposed, got %s", forbidden, payload.Answer)
 		}
-	}
-	if !strings.Contains(payload.Answer, "按当前价格核算") {
-		t.Fatalf("expected safe current-pricing clarification, got %s", payload.Answer)
 	}
 }
 
@@ -1737,9 +1734,6 @@ func TestCustomerChatMissingStaticSubtypeBlocksDeprecatedModelAnswer(t *testing.
 		if strings.Contains(payload.Answer, forbidden) {
 			t.Fatalf("deprecated pricing marker %q must not be exposed, got %s", forbidden, payload.Answer)
 		}
-	}
-	if !strings.Contains(payload.Answer, "按当前价格核算") {
-		t.Fatalf("expected safe current-pricing clarification, got %s", payload.Answer)
 	}
 }
 
@@ -1784,8 +1778,8 @@ func TestCustomerChatBandwidthQuestionBlocksDeprecatedModelAnswer(t *testing.T) 
 			t.Fatalf("deprecated pricing marker %q must not be exposed, got %s", forbidden, payload.Answer)
 		}
 	}
-	if !strings.Contains(payload.Answer, "按当前价格核算") {
-		t.Fatalf("expected safe current-pricing clarification, got %s", payload.Answer)
+	if !strings.Contains(payload.Answer, "带宽") {
+		t.Fatalf("expected bandwidth difference to remain after stripping old prices, got %s", payload.Answer)
 	}
 }
 
@@ -1878,7 +1872,7 @@ func TestAdminCustomerChatAuditStreamResultEmitsModelAnswer(t *testing.T) {
 func discountInquiryLLMText() string {
 	return `{
   "answer_mode": "evidence",
-  "answer": "可以帮您按 5M 共享型静态 IP 10 个的方案申请 90元/个，最终以人工确认为准。",
+  "answer": "可以帮您按 5M 共享型静态 IP 10 个的方案申请，最终以审批结果为准。",
   "review_question": "",
   "confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence": 0.9,
   "evidence_confidence": 0.9,
