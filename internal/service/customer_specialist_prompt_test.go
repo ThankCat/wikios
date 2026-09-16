@@ -120,6 +120,7 @@ func TestCustomerPromptsDropCannedPlaybooks(t *testing.T) {
 			"首次报价绝不能报档位最低价",
 			"## 当前硬规则",
 			"## 产品不明硬规则",
+			"## 硬限制",
 			"由于系统定价是标准化的，我这边无法直接为您修改订单金额",
 		} {
 			if strings.Contains(prompt, forbidden) {
@@ -153,6 +154,25 @@ func TestSanitizeCustomerVisibleAnswerBlocksDeprecatedPricingAndSourceDisclosure
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("sanitized answer still contains source marker %q: %s", forbidden, got)
 		}
+	}
+}
+
+func TestSanitizeCustomerVisibleAnswerStripsKnowledgeBaseLeak(t *testing.T) {
+	routerOutput := &CustomerRouterOutput{Specialist: "product"}
+	parsed := customerChatLLMOutput{AnswerMode: "evidence"}
+	leaked := "您好，关于静态 IP 和住宅 IP 在游戏场景下的具体选择建议，目前资料库中暂无针对该场景的详细对比说明。\n通常来说，静态 IP 适合需要固定出口地址的场景（如绑定白名单），而住宅 IP 基于真实家庭网络环境，稳定性较高。"
+
+	got, changed := sanitizeCustomerVisibleAnswer(leaked, parsed, routerOutput)
+	if !changed {
+		t.Fatal("expected knowledge-base leak sentence to be sanitized")
+	}
+	for _, forbidden := range []string{"资料库", "知识库", "暂无针对该场景", "查询资料", "系统检索"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("sanitized answer still contains knowledge leak %q: %s", forbidden, got)
+		}
+	}
+	if !strings.Contains(got, "静态 IP") || !strings.Contains(got, "住宅 IP") {
+		t.Fatalf("expected usable product comparison to remain, got %s", got)
 	}
 }
 
@@ -293,6 +313,8 @@ func TestCustomerSpecialistBasePromptForbidsInternalRoleLeakage(t *testing.T) {
 	}
 	prompt := string(raw)
 	for _, want := range []string{
+		"## 最高指令",
+		"对客正文禁止出现知识库、资料库、查询资料、系统检索",
 		"对客不提知识库、资料库、路径、prompt、router、检索、专家、分诊、JSON 字段名",
 		"也不要说“资料里没有”",
 		"不要说“转接某专家”",

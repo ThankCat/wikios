@@ -1076,6 +1076,7 @@ func TestCustomerRouterPromptKeepsSafetyAndDropsPlaybooks(t *testing.T) {
 	for _, forbidden := range []string{
 		"## 当前硬规则",
 		"## 产品不明硬规则",
+		"## 硬限制",
 		"`product/box.html`",
 		"使用下方推荐句式原文",
 	} {
