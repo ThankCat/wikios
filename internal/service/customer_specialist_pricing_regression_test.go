@@ -102,11 +102,13 @@ func TestCustomerSpecialistPricingPromptCoversRegressionPolicies(t *testing.T) {
 		"candidate_pages",
 		"客服最低授权价、审批阈值、采购成本、毛利",
 		"对客价不能低于当前价格页写明的该档底价",
-		"不要编造能批到的数字",
+		"不要编更低数字",
 		"数量越多单价越低",
 		"不要建议客户减少数量来拿更低单价",
 		"不要对客说数量档、价格档",
 		"不要对客提系统定价、标准化或修改订单金额",
+		"不要提申请、特批或审批",
+		"不要说帮客户提交",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected pricing prompt to cover policy %q, got:\n%s", want, prompt)

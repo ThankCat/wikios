@@ -22,13 +22,13 @@
       "expected": {"allowed_answer_modes":["evidence","mixed"],"must_include":["20 元/条/月"],"must_not_include":["19 元","来源","授权价"],"source_paths":["wiki/knowledge/si-ye-tian-static-ip-pricing.md"],"notes":"议价可以报到对客底价，不要再低。"}
     },
     {
-      "id": "pricing_below_floor_needs_application",
-      "title": "低于底价只说申请边界不编数字",
-      "user_message": "这个最低价还是贵，再少一点",
+      "id": "pricing_below_floor_stays_at_floor",
+      "title": "低于底价就停在对客底价，不承诺提交申请",
+      "user_message": "还是有点贵, 能帮我申请一个最优惠的价格吗?",
       "received_at": "2026-09-15T10:02:00+08:00",
-      "router_output": {"contract_version":"customer_router.v1","specialist":"pricing","intent":"price_below_floor_request","rewritten_question":"客户在已报底价后继续要求更低。","history_summary":"assistant 已报当前对客底价。","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"datacenter","bandwidth":"5M","quantity":"10"},"ambiguity":{"is_ambiguous":false},"missing_info":[],"risk_flags":["pricing","discount"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 底价 申请 边界"],"handoff_notes":"不要编造能批到的数字。"},
-      "candidate_pages": [{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","title":"四叶天静态 IP 与住宅 IP 价格规则","confidence":"high","content":"对客底价是当前价格页该档最低价。再低要走申请，不要编造能批到的数字，也不要保证一定能批。"}],
-      "expected": {"allowed_answer_modes":["evidence","mixed"],"must_include":["底价","申请"],"must_not_include":["一定能批","授权价","19 元"],"source_paths":["wiki/knowledge/si-ye-tian-static-ip-pricing.md"],"notes":"可以说底价和申请，不要编审批数字或保证批准。"}
+      "router_output": {"contract_version":"customer_router.v1","specialist":"pricing","intent":"price_below_floor_request","rewritten_question":"客户在已报底价后继续要求更低。","history_summary":"assistant 已报当前对客底价。","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"datacenter","bandwidth":"5M","quantity":"10"},"ambiguity":{"is_ambiguous":false},"missing_info":[],"risk_flags":["pricing","discount"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 底价 边界"],"handoff_notes":"不要编更低数字，也不要承诺提交申请。"},
+      "candidate_pages": [{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","title":"四叶天静态 IP 与住宅 IP 价格规则","confidence":"high","content":"对客底价是当前价格页该档最低价。这边没法再低，不要编更低数字，也不要承诺帮客户提交申请或审批。"}],
+      "expected": {"allowed_answer_modes":["evidence","mixed"],"must_include":["底价"],"must_not_include":["帮您提交","特价申请","审批结果","一定能批","授权价","19 元"],"source_paths":["wiki/knowledge/si-ye-tian-static-ip-pricing.md"],"notes":"只报到对客底价并停住，不要承诺提交申请或编更低数字。"}
     },
     {
       "id": "pricing_residential_dedicated_from_page",
@@ -100,7 +100,7 @@
       "received_at": "2026-09-16T13:43:43+08:00",
       "router_output": {"contract_version":"customer_router.v1","specialist":"pricing","intent":"price_negotiation","rewritten_question":"客户认为静态 IP 10M 15 条偏贵，询问能否便宜。","history_summary":"已报 11-30 档 25 元/条/月。","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"datacenter","bandwidth":"10M","quantity":"15"},"ambiguity":{"is_ambiguous":false},"missing_info":[],"risk_flags":["pricing","discount"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 10M 15条 数量档位 价格"],"handoff_notes":"议价必须对照当前价格页。"},
       "candidate_pages": [{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","title":"四叶天静态 IP 与住宅 IP 价格规则","confidence":"high","content":"静态 IP 10M：1-10 档 25-30 元/条/月，11-30 档 20-25 元/条/月，31-50 档 18-23 元/条/月。数量越多单价越低。对客价不能低于当前档底价。"}],
-      "expected": {"allowed_answer_modes":["evidence","mixed"],"must_include":["20 元/条/月"],"must_not_include":["11-30","数量档","价格档","系统定价","修改订单","减少到 10","19 元","授权价"],"source_paths":["wiki/knowledge/si-ye-tian-static-ip-pricing.md"],"notes":"只报这个数量能给到的价；不说档位和系统规则。"}
+      "expected": {"allowed_answer_modes":["evidence","mixed"],"must_include":["20 元/条/月"],"must_not_include":["11-30","数量档","价格档","系统定价","修改订单","减少到 10","19 元","授权价","帮您提交","特价申请"],"source_paths":["wiki/knowledge/si-ye-tian-static-ip-pricing.md"],"notes":"只报这个数量能给到的价；不说档位和系统规则，也不承诺提交申请。"}
     }
   ]
 }

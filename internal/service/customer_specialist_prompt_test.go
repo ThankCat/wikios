@@ -91,6 +91,9 @@ func TestCustomerPromptsKeepHardSafetyEvidenceAndFloor(t *testing.T) {
 	if !strings.Contains(pricing, "不要对客说数量档、价格档") || !strings.Contains(pricing, "不要对客提系统定价、标准化或修改订单金额") {
 		t.Fatal("pricing prompt must hide tiers and system pricing from customers")
 	}
+	if !strings.Contains(base, "不能替客户提交申请") || !strings.Contains(pricing, "不要说帮客户提交") || !strings.Contains(check, "承诺帮客户提交申请") {
+		t.Fatal("prompts must forbid promising backend operations the chat cannot do")
+	}
 }
 
 func TestCustomerPromptsDropCannedPlaybooks(t *testing.T) {
@@ -122,6 +125,7 @@ func TestCustomerPromptsDropCannedPlaybooks(t *testing.T) {
 			"## 产品不明硬规则",
 			"## 硬限制",
 			"由于系统定价是标准化的，我这边无法直接为您修改订单金额",
+			"再低要走申请",
 		} {
 			if strings.Contains(prompt, forbidden) {
 				t.Fatalf("%s still contains playbook %q", name, forbidden)
@@ -173,6 +177,20 @@ func TestSanitizeCustomerVisibleAnswerStripsKnowledgeBaseLeak(t *testing.T) {
 	}
 	if !strings.Contains(got, "静态 IP") || !strings.Contains(got, "住宅 IP") {
 		t.Fatalf("expected usable product comparison to remain, got %s", got)
+	}
+}
+
+func TestSanitizeCustomerVisibleAnswerDoesNotRewriteSubmitApplicationWording(t *testing.T) {
+	routerOutput := &CustomerRouterOutput{Specialist: "pricing"}
+	parsed := customerChatLLMOutput{AnswerMode: "evidence"}
+	answer := "您好，11条静态IP（10M带宽）目前最低可以给您申请到20元/条/月。这个价格已经是当前数量档位的底价了，确实无法再直接优惠。\n如果您觉得还是偏高，我可以帮您提交特价申请，最终以审批结果为准，不能保证一定能批下来。您看需要我这边帮您提交吗？"
+
+	got, changed := sanitizeCustomerVisibleAnswer(answer, parsed, routerOutput)
+	if changed {
+		t.Fatalf("code must not hard-rewrite submit-application wording, got %s", got)
+	}
+	if got != answer {
+		t.Fatalf("expected original answer to pass through, got %s", got)
 	}
 }
 
@@ -319,6 +337,7 @@ func TestCustomerSpecialistBasePromptForbidsInternalRoleLeakage(t *testing.T) {
 		"也不要说“资料里没有”",
 		"不要说“转接某专家”",
 		"不要对客提系统定价、标准化计价或修改订单金额",
+		"不能替客户提交申请、改订单、走审批",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected base prompt to include %q, got:\n%s", want, prompt)
