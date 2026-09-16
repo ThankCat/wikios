@@ -94,6 +94,12 @@ func TestCustomerPromptsKeepHardSafetyEvidenceAndFloor(t *testing.T) {
 	if !strings.Contains(base, "不能替客户提交申请") || !strings.Contains(pricing, "不要说帮客户提交") || !strings.Contains(check, "承诺帮客户提交申请") {
 		t.Fatal("prompts must forbid promising backend operations the chat cannot do")
 	}
+	if !strings.Contains(pricing, "底价看价格页，不看自己上一轮报过的价") || !strings.Contains(check, "把中间价") {
+		t.Fatal("pricing/check prompts must not treat a mid-range quote as the floor")
+	}
+	if !strings.Contains(pricing, "不要整段复述上一轮") || !strings.Contains(router, "闲聊或测试") {
+		t.Fatal("prompts must break repeated price-refusal loops on a new turn")
+	}
 }
 
 func TestCustomerPromptsDropCannedPlaybooks(t *testing.T) {
@@ -338,6 +344,7 @@ func TestCustomerSpecialistBasePromptForbidsInternalRoleLeakage(t *testing.T) {
 		"不要说“转接某专家”",
 		"不要对客提系统定价、标准化计价或修改订单金额",
 		"不能替客户提交申请、改订单、走审批",
+		"本轮是寒暄就只寒暄，不要重复上一轮正文",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected base prompt to include %q, got:\n%s", want, prompt)

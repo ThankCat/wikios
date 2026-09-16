@@ -330,6 +330,52 @@ func TestRouteCustomerQuestionFixedCityAfterRiskReturnsProduct(t *testing.T) {
 	}
 }
 
+func TestRouteCustomerQuestionUnsticksGreetingAfterPricing(t *testing.T) {
+	output := normalizeCustomerRouterOutput(CustomerRouterOutput{
+		Specialist:        "pricing",
+		QuestionStage:     "pricing",
+		AnswerStrategy:    "quote_or_price",
+		RoutingConfidence: 0.95,
+		RoutingReason:     "沿用上一轮议价。",
+		Intent:            "price_below_floor_request",
+		RewrittenQuestion: "客户继续要求更低价格。",
+		HistorySummary:    "assistant 已报 20 元/条/月。",
+		Slots:             CustomerRouterSlots{PrimaryProduct: "static_ip", Products: []string{"static_ip"}, Bandwidth: "5M", Quantity: "15"},
+		RiskFlags:         []string{"pricing", "discount"},
+		NeedsRetrieval:    true,
+		RetrievalQueries:  []string{"四叶天 静态 IP 5M 15条 价格"},
+	}, CustomerChatRequest{
+		Question: "你好",
+		History: []ChatMessage{
+			{Role: "user", Content: "你能帮我申请一下吗 我想10元一条每月"},
+			{Role: "assistant", Content: "抱歉，这边无法直接帮您申请或修改价格。目前该数量档位的最低底价确实已经是20元/条/月了。"},
+		},
+	})
+	if output.Specialist != "reception" || output.AnswerStrategy != "smalltalk" {
+		t.Fatalf("greeting must unstick from pricing, got %+v", output)
+	}
+	if output.NeedsRetrieval || len(output.RetrievalQueries) > 0 {
+		t.Fatalf("greeting must not retrieve, got %+v", output)
+	}
+}
+
+func TestRouteCustomerQuestionUnsticksGreetingAfterProduct(t *testing.T) {
+	output := normalizeCustomerRouterOutput(CustomerRouterOutput{
+		Specialist:        "product",
+		QuestionStage:     "product_selection",
+		AnswerStrategy:    "answer_with_evidence",
+		RoutingConfidence: 0.9,
+		Intent:            "static_ip_definition",
+		RewrittenQuestion: "客户询问什么是静态 IP。",
+		Slots:             CustomerRouterSlots{PrimaryProduct: "static_ip", Products: []string{"static_ip"}},
+		NeedsRetrieval:    true,
+		RetrievalQueries:  []string{"四叶天 静态 IP 定义"},
+	}, CustomerChatRequest{Question: "你好"})
+	if output.Specialist != "reception" {
+		t.Fatalf("greeting must unstick from product, got %+v", output)
+	}
+}
+
 func TestRouteCustomerQuestionForcesWechatPurchaseToPaymentMethod(t *testing.T) {
 	output := normalizeCustomerRouterOutput(CustomerRouterOutput{
 		Specialist:        "reception",

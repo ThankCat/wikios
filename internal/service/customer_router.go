@@ -231,6 +231,24 @@ func normalizeCustomerRouterOutput(output CustomerRouterOutput, req CustomerChat
 
 func applyCustomerRouterHardRules(req CustomerChatRequest, output CustomerRouterOutput) CustomerRouterOutput {
 	userText := strings.ToLower(strings.TrimSpace(req.Question))
+	if customerRouterLooksGreetingTurn(req.Question) {
+		output.Specialist = "reception"
+		output.QuestionStage = "reception"
+		output.AnswerStrategy = "smalltalk"
+		output.RiskBoundary = "none"
+		output.RiskFlags = removeString(output.RiskFlags, "pricing")
+		output.RiskFlags = removeString(output.RiskFlags, "discount")
+		output.NeedsRetrieval = false
+		output.RetrievalQueries = nil
+		output.NeedsProductClarification = false
+		output.ClarificationTarget = "none"
+		output.Intent = "greeting"
+		output.UserGoal = "寒暄"
+		output.RewrittenQuestion = "客户打招呼或致谢。"
+		output.RoutingReason = "本轮是寒暄，不要沿用上一轮价格或产品答案。"
+		output.HandoffNotes = "本轮是寒暄，短回即可，不要重复上一轮正文。"
+		return output
+	}
 	if customerRouterMentionsInternalInfoRequest(userText) {
 		output.Specialist = "safety"
 		output.QuestionStage = "safety_boundary"
@@ -925,6 +943,16 @@ func customerRouterLooksAmbiguousPriceReference(req CustomerChatRequest, output 
 	}
 	addProducts(strings.ToLower(output.HistorySummary))
 	return len(products) > 1
+}
+
+func customerRouterLooksGreetingTurn(text string) bool {
+	compact := strings.ToLower(strings.TrimSpace(text))
+	compact = strings.NewReplacer("。", "", "！", "", "!", "", "？", "", "?", "", "，", "", ",", "", " ", "", "\n", "").Replace(compact)
+	switch compact {
+	case "你好", "您好", "hello", "hi", "nihao", "在吗", "在嘛", "在不", "谢谢", "谢谢你", "谢谢您", "拜拜", "再见", "你好在吗", "您好在吗":
+		return true
+	}
+	return false
 }
 
 func customerRouterLooksPriceQuestion(text string) bool {

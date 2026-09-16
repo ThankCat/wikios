@@ -109,6 +109,9 @@ func TestCustomerSpecialistPricingPromptCoversRegressionPolicies(t *testing.T) {
 		"不要对客提系统定价、标准化或修改订单金额",
 		"不要提申请、特批或审批",
 		"不要说帮客户提交",
+		"底价看价格页，不看自己上一轮报过的价",
+		"不要整段复述上一轮",
+		"不要主动给电话、企业微信或购买链接",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected pricing prompt to cover policy %q, got:\n%s", want, prompt)
