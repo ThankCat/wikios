@@ -1871,7 +1871,6 @@ func TestCustomerSpecialistDecisionPromptDoesNotIncludeDerivedEvidence(t *testin
 	for _, want := range []string{
 		"conversation_context:",
 		"前面我问过静态 IP。",
-		"active_skills:",
 		"hard_boundary:",
 		"服务端行为",
 		"contract_version: customer_router.v1",
@@ -2313,28 +2312,6 @@ func writeCustomerRoutedTestPrompts(t *testing.T, root string, promptDir string)
 	for name, content := range prompts {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			t.Fatalf("write prompt %s: %v", name, err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(dir, customerRouterSkillsCatalogFile), []byte("skills catalog"), 0o644); err != nil {
-		t.Fatalf("write skills catalog: %v", err)
-	}
-	skillsDir := filepath.Join(dir, "skills")
-	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
-		t.Fatalf("mkdir skills: %v", err)
-	}
-	for _, id := range customerRouterSkillIDs() {
-		def := customerSkillDefinitions[id]
-		src := filepath.Join("..", "llm", "prompts", filepath.FromSlash(def.PromptFile))
-		raw, err := os.ReadFile(src)
-		if err != nil {
-			t.Fatalf("read skill %s: %v", def.PromptFile, err)
-		}
-		dst := filepath.Join(dir, filepath.FromSlash(def.PromptFile))
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			t.Fatalf("mkdir skill parent: %v", err)
-		}
-		if err := os.WriteFile(dst, raw, 0o644); err != nil {
-			t.Fatalf("write skill %s: %v", def.PromptFile, err)
 		}
 	}
 }

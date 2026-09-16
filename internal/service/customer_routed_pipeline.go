@@ -487,6 +487,7 @@ func (s *CustomerChatService) answerWithSpecialist(ctx context.Context, traceID 
 }
 
 func (s *CustomerChatService) customerSpecialistDecisionPrompt(req CustomerChatRequest, receivedAt string, routerOutput *CustomerRouterOutput, profile CustomerSpecialistProfile, evidence customerSpecialistEvidenceResult, support RuntimeSupportSettings, boundaryPrompt string, appChannelEnabled ...bool) string {
+	_ = profile
 	candidateText := strings.TrimSpace(strings.Join(evidence.ContentBlocks, "\n\n"))
 	if candidateText == "" {
 		candidateText = "[]"
@@ -522,9 +523,6 @@ func (s *CustomerChatService) customerSpecialistDecisionPrompt(req CustomerChatR
 		"",
 		"router_output:",
 		formatCustomerRouterOutputForSpecialist(routerOutput),
-		"",
-		"active_skills:",
-		s.formatCustomerActiveSkills(profile, routerOutput),
 		"",
 		"current_customer_contacts:",
 		s.supportContactPrompt(support),
@@ -588,7 +586,6 @@ func formatCustomerRouterOutputForSpecialist(output *CustomerRouterOutput) strin
 		"needs_retrieval: " + fmt.Sprintf("%t", output.NeedsRetrieval),
 		"retrieval_queries: " + strings.Join(output.RetrievalQueries, " | "),
 		"handoff_notes: " + output.HandoffNotes,
-		"skills: " + strings.Join(output.Skills, ", "),
 	}
 	return strings.Join(lines, "\n")
 }

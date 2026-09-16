@@ -35,7 +35,6 @@ type CustomerRouterOutput struct {
 	NeedsRetrieval            bool                        `json:"needs_retrieval"`
 	RetrievalQueries          []string                    `json:"retrieval_queries"`
 	HandoffNotes              string                      `json:"handoff_notes"`
-	Skills                    []string                    `json:"skills"`
 	UserIntentSignals         CustomerRouterIntentSignals `json:"user_intent_signals"`
 }
 
@@ -111,9 +110,6 @@ func (s *CustomerChatService) loadCustomerRouterSystemPrompt() (string, error) {
 	}
 	if block := customerSafetyTermsPromptBlock(s.deps.SafetyTerms); block != "" {
 		systemPrompt = strings.TrimSpace(systemPrompt) + customerSpecialistPromptSeparator + block
-	}
-	if catalog, err := s.loadPrompt(customerRouterSkillsCatalogFile); err == nil && strings.TrimSpace(catalog) != "" {
-		systemPrompt = strings.TrimSpace(systemPrompt) + customerSpecialistPromptSeparator + strings.TrimSpace(catalog)
 	}
 	return systemPrompt, nil
 }
@@ -203,7 +199,6 @@ func normalizeCustomerRouterOutput(output CustomerRouterOutput, req CustomerChat
 	output.Ambiguity = normalizeCustomerRouterAmbiguity(output.Ambiguity)
 	output.MissingInfo = normalizeCustomerRouterEnumList(output.MissingInfo, 12, normalizeCustomerRouterMissingInfo)
 	output.RiskFlags = normalizeCustomerRouterEnumList(output.RiskFlags, 12, normalizeCustomerRouterRiskFlag)
-	output.Skills = normalizeCustomerRouterSkills(output.Skills)
 	if customerRequestClientChannel(req) == "mobile_app" {
 		output.RiskFlags = appendUniqueString(output.RiskFlags, "app_channel_policy")
 	}
@@ -615,7 +610,7 @@ func applyCustomerRouterHardRules(req CustomerChatRequest, output CustomerRouter
 		output.RewrittenQuestion = "客户询问住宅 IP 是否固定。"
 		output.HandoffNotes = "按住宅静态 IP 固定性边界回答：更接近家庭宽带，但不承诺完全固定，可能同城轮换。"
 	}
-	return applyCustomerRouterSkillFallbacks(req, output)
+	return output
 }
 
 func clearCustomerRouterProductClarification(output CustomerRouterOutput) CustomerRouterOutput {

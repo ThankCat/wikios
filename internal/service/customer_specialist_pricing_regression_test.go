@@ -97,12 +97,12 @@ func TestCustomerSpecialistPricingPromptCoversRegressionPolicies(t *testing.T) {
 	prompt := string(content)
 	for _, want := range []string{
 		"## 报价流程",
-		"active_skills",
+		"按客户本轮问题自然回答",
 		"`conversation_context`",
-		"规格由产品、类型、带宽和数量共同确定",
+		"还缺带宽或数量",
 		"只给一个单价",
 		"月费 = 单价 × 数量",
-		"不得使用百分比折扣换算",
+		"不用百分比折扣换算",
 		"来源文件、知识库路径",
 		"结构化 JSON 的 `sources` 只用于系统内部审计",
 		"## 价格边界",

@@ -33,7 +33,6 @@ func customerRouterResponseFormat() *llm.ResponseFormat {
 					"needs_retrieval",
 					"retrieval_queries",
 					"handoff_notes",
-					"skills",
 					"user_intent_signals",
 				},
 				"properties": map[string]any{
@@ -67,7 +66,6 @@ func customerRouterResponseFormat() *llm.ResponseFormat {
 					"needs_retrieval":             map[string]any{"type": "boolean"},
 					"retrieval_queries":           stringArraySchemaWithMax(3),
 					"handoff_notes":               map[string]any{"type": "string"},
-					"skills":                      customerRouterSkillsSchema(),
 					"user_intent_signals":         customerRouterUserIntentSignalsSchema(),
 				},
 			},
@@ -253,10 +251,3 @@ func enumStringArraySchema(values []any, maxItems int) map[string]any {
 	return schema
 }
 
-func customerRouterSkillsSchema() map[string]any {
-	values := make([]any, 0, len(customerRouterSkillIDs()))
-	for _, id := range customerRouterSkillIDs() {
-		values = append(values, id)
-	}
-	return enumStringArraySchema(values, 2)
-}

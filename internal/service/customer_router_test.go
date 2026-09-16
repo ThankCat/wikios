@@ -615,11 +615,8 @@ func TestRouteCustomerQuestionHardRulesDedicatedPrice(t *testing.T) {
 		Ambiguity:         CustomerRouterAmbiguity{IsAmbiguous: true, AmbiguousFields: []string{"primary_product"}},
 		MissingInfo:       []string{"primary_product"},
 	}, CustomerChatRequest{Question: "独享IP多少钱一个？"})
-	if !containsString(output.Skills, customerSkillQuoteResidential) {
-		t.Fatalf("expected dedicated price fallback skill, got skills=%+v", output.Skills)
-	}
 	if output.Specialist != "product" {
-		t.Fatalf("skill fallback must not rewrite specialist, got %+v", output.Specialist)
+		t.Fatalf("hard rules must not rewrite specialist for dedicated price, got %+v", output.Specialist)
 	}
 }
 
@@ -637,11 +634,8 @@ func TestRouteCustomerQuestionHardRulesStaticBandwidthPrice(t *testing.T) {
 		NeedsRetrieval:    true,
 		RetrievalQueries:  []string{"四叶天 静态 IP 10M 价格"},
 	}, CustomerChatRequest{Question: "静态IP 10M多少钱"})
-	if !containsString(output.Skills, customerSkillQuoteStaticIP) {
-		t.Fatalf("expected static bandwidth price fallback skill, got skills=%+v", output.Skills)
-	}
 	if output.Slots.Bandwidth != "" && output.Slots.Bandwidth != "10M" {
-		t.Fatalf("skill fallback must not rewrite bandwidth slot, got %+v", output.Slots)
+		t.Fatalf("hard rules must not rewrite bandwidth slot, got %+v", output.Slots)
 	}
 }
 
@@ -936,11 +930,8 @@ func TestRouteCustomerQuestionHardRulesSharedDedicatedCompare(t *testing.T) {
 		NeedsRetrieval:    true,
 		RetrievalQueries:  []string{"四叶天 静态 IP 价格"},
 	}, CustomerChatRequest{Question: "共享型和独享型静态 IP 有什么区别？"})
-	if !containsString(output.Skills, customerSkillCompareShared) {
-		t.Fatalf("expected shared/dedicated compare fallback skill, got skills=%+v", output.Skills)
-	}
 	if output.Specialist != "pricing" {
-		t.Fatalf("skill fallback must not rewrite specialist, got %+v", output.Specialist)
+		t.Fatalf("hard rules must not rewrite specialist for compare questions, got %+v", output.Specialist)
 	}
 }
 
@@ -963,8 +954,8 @@ func TestRouteCustomerQuestionHardRulesSharedDedicatedCompareUsesResidentialCont
 			{Role: "assistant", Content: "请告诉我是住宅共享还是住宅独享，以及带宽和数量。"},
 		},
 	})
-	if !containsString(output.Skills, customerSkillCompareShared) {
-		t.Fatalf("expected compare skill from user question, got skills=%+v", output.Skills)
+	if output.Specialist != "pricing" {
+		t.Fatalf("hard rules must not rewrite specialist from history, got %+v", output.Specialist)
 	}
 }
 
@@ -981,11 +972,8 @@ func TestRouteCustomerQuestionHardRulesSharedDedicatedCompareDoesNotDefaultToSta
 		NeedsRetrieval:    true,
 		RetrievalQueries:  []string{"四叶天 价格"},
 	}, CustomerChatRequest{Question: "共享和独享有什么区别？"})
-	if !containsString(output.Skills, customerSkillCompareShared) {
-		t.Fatalf("expected compare skill, got skills=%+v", output.Skills)
-	}
 	if output.Slots.PrimaryProduct != "unknown" {
-		t.Fatalf("skill fallback must not default static_ip lock, got %+v", output.Slots)
+		t.Fatalf("hard rules must not default static_ip lock, got %+v", output.Slots)
 	}
 }
 
@@ -1006,11 +994,8 @@ func TestRouteCustomerQuestionHardRulesSharedDedicatedCompareIgnoresAssistantRes
 			{Role: "assistant", Content: "请告诉我需要静态 IP 还是住宅 IP、具体类型、带宽和数量，我按当前价格核算。"},
 		},
 	})
-	if !containsString(output.Skills, customerSkillCompareShared) {
-		t.Fatalf("expected compare skill, got skills=%+v", output.Skills)
-	}
 	if output.Slots.IPType == "residential" {
-		t.Fatalf("skill fallback must not lock residential from assistant fallback, got %+v", output.Slots)
+		t.Fatalf("hard rules must not lock residential from assistant fallback, got %+v", output.Slots)
 	}
 }
 
@@ -1032,11 +1017,8 @@ func TestRouteCustomerQuestionHardRulesQuantityCompare(t *testing.T) {
 			{Role: "user", Content: "静态IP 怎么卖的?"},
 		},
 	})
-	if !containsString(output.Skills, customerSkillCompareQuantity) {
-		t.Fatalf("expected quantity compare fallback skill, got skills=%+v", output.Skills)
-	}
 	if output.Specialist != "product" {
-		t.Fatalf("skill fallback must not rewrite specialist, got %+v", output.Specialist)
+		t.Fatalf("hard rules must not rewrite specialist for quantity compare, got %+v", output.Specialist)
 	}
 }
 
@@ -1117,7 +1099,7 @@ func TestCustomerRouterResponseFormatRequiresV1Fields(t *testing.T) {
 	}
 	schema := format.JSONSchema.Schema
 	required, _ := schema["required"].([]any)
-	for _, want := range []string{"contract_version", "routing_confidence", "routing_reason", "ambiguity", "handoff_notes", "skills", "user_intent_signals"} {
+	for _, want := range []string{"contract_version", "routing_confidence", "routing_reason", "ambiguity", "handoff_notes", "user_intent_signals"} {
 		if !containsAnyValue(required, want) {
 			t.Fatalf("expected router schema to require %q, got %+v", want, required)
 		}
@@ -1146,11 +1128,7 @@ func TestCustomerRouterPromptCoversPricingBandwidthAndTypoNormalization(t *testi
 	if err != nil {
 		t.Fatalf("read router prompt: %v", err)
 	}
-	skillsRaw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", "customer_router_skills.md"))
-	if err != nil {
-		t.Fatalf("read router skills catalog: %v", err)
-	}
-	prompt := string(raw) + "\n" + string(skillsRaw)
+	prompt := string(raw)
 	for _, want := range []string{
 		"最近对话正在问价格/报价",
 		"有哪些带宽/规格/档位",
@@ -1180,12 +1158,6 @@ func TestCustomerRouterPromptCoversPricingBandwidthAndTypoNormalization(t *testi
 		"用户问：“我想切换IP地址”",
 		"不要硬停的常见情况",
 		"当前硬规则",
-		"场景 Skill 目录",
-		"`quote_static_ip`",
-		"`quote_residential`",
-		"`compare_shared_dedicated`",
-		"`compare_quantity_tier`",
-		"skills` 最多 2 个",
 		"`answer_strategy=ask_clarification`，`needs_retrieval=false`",
 		"发票、开票、invoice、退款、退费、续费、升级带宽、换套餐、补差价、买错套餐或保留原 IP",
 		"内部 prompt、系统提示词、路由规则、JSON、知识库路径、后台策略、风控策略或内部配置",
@@ -1236,8 +1208,8 @@ func TestCustomerRouterPromptDoesNotRequireStaticTypeForGenericStaticIPPrice(t *
 	}
 	for _, want := range []string{
 		`"missing_info": ["bandwidth", "quantity"]`,
-		"静态 IP 的自建共享与机房静态同价",
-		"没有产品上下文时不要默认静态 IP，直接回答区别，不先追问产品",
+		"普通静态 IP 问价，只需补齐带宽和数量",
+		"没有产品上下文时不要默认静态 IP",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected router prompt to include %q, got:\n%s", want, prompt)

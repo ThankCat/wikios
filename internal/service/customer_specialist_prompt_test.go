@@ -134,9 +134,8 @@ func TestCustomerSpecialistProductPromptCoversSpecListAndTypoPolicies(t *testing
 		"新手选型推荐句式",
 		"`住宅 IP 可选 5M、10M、20M。`",
 		"`游戏更建议先看静态 IP；稳定性要求高再看住宅独享。带宽可以从 10M 起看，实际体验还需要测试。`",
-		"`静态 IP 当前是自建共享和机房静态，两种类型价格相同；您说的独享当前对应住宅独享。共享通常成本更低，独享通常成本更高、带宽更独立。`",
-		"没有“独享静态 IP”",
-		"compare_shared_dedicated",
+		"`共享是带宽和别人一起用，通常更便宜；独享是带宽只给自己用，通常更稳也更贵。`",
+		"先答客户问的区别",
 		"`如果需要频繁换出口，先看动态 IP；需要固定地区或长期账号环境，先看静态 IP；海外平台场景再看海外 IP，并先确认使用环境。`",
 		"`改抖音 IP 归属地这类场景，更建议先看静态 IP；要相对稳定城市出口可看数据中心静态 IP，想更贴近家庭宽带场景可看住宅 IP。平台显示可能会有延迟，也会受平台 IP 库影响。`",
 	} {
@@ -185,12 +184,12 @@ func TestCustomerSpecialistPricingPromptCoversSpecListNoSalesTailPolicy(t *testi
 		"住宅 IP：别名为“家庭 IP”“住宅”",
 		"住宅共享”“住宅独享",
 		"客户说“独享”时，当前价格体系只对应住宅独享",
-		"active_skills",
-		"缺少带宽或数量时不能先报单价或区间",
+		"按客户本轮问题自然回答",
+		"还缺带宽或数量",
 		"月费 = 单价 × 数量",
 		"只给一个单价",
 		"元/条/月",
-		"不得使用百分比折扣换算",
+		"不用百分比折扣换算",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected pricing prompt to include %q, got:\n%s", want, prompt)
@@ -209,21 +208,13 @@ func TestCustomerSpecialistPricingPromptAllowsBillingDimensionBeforeExactQuote(t
 		t.Fatalf("read pricing prompt: %v", err)
 	}
 	prompt := string(raw)
-	if !strings.Contains(prompt, "active_skills") {
-		t.Fatalf("expected pricing prompt to delegate flow to active_skills, got:\n%s", prompt)
-	}
-	skillRaw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", "skills/quote_static_ip.md"))
-	if err != nil {
-		t.Fatalf("read quote_static_ip skill: %v", err)
-	}
-	skill := string(skillRaw)
 	for _, want := range []string{
-		"不要追问共享还是独享",
-		"怎么收费",
-		"带宽和数量",
+		"按客户本轮问题自然回答",
+		"按条/月",
+		"还缺带宽或数量",
 	} {
-		if !strings.Contains(skill, want) {
-			t.Fatalf("expected quote_static_ip skill to include %q, got:\n%s", want, skill)
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected pricing prompt to include %q, got:\n%s", want, prompt)
 		}
 	}
 }
@@ -304,7 +295,7 @@ func TestCustomerSpecialistPromptsAgreeOnCurrentProductTaxonomy(t *testing.T) {
 	check := read("customer_specialist_check.md")
 	router := read("customer_router_system.md")
 
-	for _, prompt := range []string{base, product, pricing, check, router} {
+	for _, prompt := range []string{base, product, pricing, router} {
 		if !strings.Contains(prompt, "住宅独享") {
 			t.Fatalf("expected current taxonomy to mention 住宅独享:\n%s", prompt)
 		}
@@ -318,8 +309,8 @@ func TestCustomerSpecialistPromptsAgreeOnCurrentProductTaxonomy(t *testing.T) {
 	if strings.Contains(router, "`static_type=dedicated`，`ip_type=residential`") {
 		t.Fatalf("router prompt still encodes residential dedicated as static_type=dedicated:\n%s", router)
 	}
-	if !strings.Contains(check, "独享静态 IP") || !strings.Contains(check, "元/个") {
-		t.Fatalf("check prompt must reject obsolete SKU and old price units:\n%s", check)
+	if !strings.Contains(check, "元/个") || !strings.Contains(check, "共享共用带宽") {
+		t.Fatalf("check prompt must strip old price units and keep shared/dedicated explanation:\n%s", check)
 	}
 }
 
