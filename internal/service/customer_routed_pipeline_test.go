@@ -590,8 +590,8 @@ func TestAnswerRoutedRefundGuardPreservesModelAnswer(t *testing.T) {
 		t.Fatalf("expected refund model answer and review signal to be preserved, got %#v", resp)
 	}
 	guard := auditMapValue(resp.Details["scenario_answer_guard"])
-	if !resultBoolValue(guard, "triggered") || guard["reason"] != "refund_boundary" || guard["action"] != "review_only" {
-		t.Fatalf("expected refund scenario guard, got %+v", guard)
+	if resultBoolValue(guard, "triggered") {
+		t.Fatalf("refund answers should pass through without hard-guard rewrite, got %+v", guard)
 	}
 }
 

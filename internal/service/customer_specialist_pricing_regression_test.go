@@ -96,17 +96,13 @@ func TestCustomerSpecialistPricingPromptCoversRegressionPolicies(t *testing.T) {
 	}
 	prompt := string(content)
 	for _, want := range []string{
-		"## 报价流程",
 		"按客户本轮问题自然回答",
-		"`conversation_context`",
 		"还缺带宽或数量",
-		"只给一个单价",
 		"月费 = 单价 × 数量",
-		"不用百分比折扣换算",
-		"来源文件、知识库路径",
-		"结构化 JSON 的 `sources` 只用于系统内部审计",
-		"## 价格边界",
-		"不能保证批准",
+		"candidate_pages",
+		"客服最低授权价、审批阈值、采购成本、毛利",
+		"对客价不能低于当前价格页写明的该档底价",
+		"不要编造能批到的数字",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected pricing prompt to cover policy %q, got:\n%s", want, prompt)

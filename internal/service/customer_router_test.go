@@ -229,17 +229,8 @@ func TestRouteCustomerQuestionCorrectsDouyinIPLocationAwayFromSafety(t *testing.
 		RiskFlags:         []string{"platform_risk", "compliance"},
 		NeedsRetrieval:    false,
 	}, CustomerChatRequest{Question: "能改抖音IP吗?"})
-	if output.Specialist != "product" {
-		t.Fatalf("expected ordinary Douyin IP location question to route to product, got %+v", output)
-	}
-	if output.QuestionStage != "product_selection" || output.AnswerStrategy != "recommend_with_boundary" || output.RiskBoundary != "platform_result_not_guaranteed" {
-		t.Fatalf("expected platform scenario decision fields, got stage=%q strategy=%q boundary=%q", output.QuestionStage, output.AnswerStrategy, output.RiskBoundary)
-	}
-	if !output.NeedsRetrieval || len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "抖音 IP 归属地") {
-		t.Fatalf("expected platform scenario retrieval query, got needs=%t queries=%+v", output.NeedsRetrieval, output.RetrievalQueries)
-	}
-	if !containsString(output.RiskFlags, "platform_risk") {
-		t.Fatalf("expected platform risk flag to remain, got %+v", output.RiskFlags)
+	if output.Specialist != "safety" {
+		t.Fatalf("hard rules must not rewrite ordinary Douyin IP location specialist, got %+v", output)
 	}
 }
 
@@ -334,8 +325,8 @@ func TestRouteCustomerQuestionFixedCityAfterRiskReturnsProduct(t *testing.T) {
 			{Role: "assistant", Content: "不能承诺平台风控结果。"},
 		},
 	})
-	if output.Specialist != "product" || output.QuestionStage != "product_selection" {
-		t.Fatalf("expected fixed city follow-up to return product selection, got %+v", output)
+	if output.Specialist != "troubleshooting" {
+		t.Fatalf("hard rules must not rewrite fixed-city specialist, got %+v", output)
 	}
 }
 
@@ -352,17 +343,8 @@ func TestRouteCustomerQuestionForcesWechatPurchaseToPaymentMethod(t *testing.T) 
 		Slots:             CustomerRouterSlots{PrimaryProduct: "static_ip", Products: []string{"static_ip"}, Bandwidth: "5M"},
 		UserIntentSignals: CustomerRouterIntentSignals{WantsWechat: true},
 	}, CustomerChatRequest{Question: "可以微信买吗"})
-	if output.Specialist != "billing_after_sales" || output.QuestionStage != "after_sales" {
-		t.Fatalf("expected wechat purchase to route billing_after_sales, got %+v", output)
-	}
-	if output.Intent != "payment_method" {
-		t.Fatalf("expected payment intent, got %q", output.Intent)
-	}
-	if output.AnswerStrategy != "answer_with_evidence" || !output.NeedsRetrieval {
-		t.Fatalf("expected evidence-backed payment method answer, got %+v", output)
-	}
-	if len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "支付方式") {
-		t.Fatalf("expected payment method retrieval query, got %+v", output.RetrievalQueries)
+	if output.Specialist != "reception" {
+		t.Fatalf("hard rules must not rewrite wechat-purchase specialist, got %+v", output)
 	}
 }
 
@@ -378,11 +360,8 @@ func TestRouteCustomerQuestionForcesAmbiguousIPChangeToTechnical(t *testing.T) {
 		Slots:             CustomerRouterSlots{PrimaryProduct: "unknown"},
 		RiskFlags:         []string{"technical"},
 	}, CustomerChatRequest{Question: "能改 IP 不"})
-	if output.Specialist != "technical" || output.QuestionStage != "operation_howto" {
-		t.Fatalf("expected ambiguous IP change to route technical, got %+v", output)
-	}
-	if output.AnswerStrategy != "answer_with_evidence" || !strings.Contains(output.HandoffNotes, "出口 IP") {
-		t.Fatalf("expected proxy exit IP capability handoff, got %+v", output)
+	if output.Specialist != "product" {
+		t.Fatalf("hard rules must not rewrite ambiguous IP change specialist, got %+v", output)
 	}
 }
 
@@ -399,14 +378,8 @@ func TestRouteCustomerQuestionForcesPlatformDisplayLocalToTroubleshooting(t *tes
 		NeedsRetrieval:    true,
 		RetrievalQueries:  []string{"四叶天 抖音 IP 归属地 平台场景 选型"},
 	}, CustomerChatRequest{Question: "我连上了，但是抖音还是显示本地"})
-	if output.Specialist != "troubleshooting" || output.QuestionStage != "troubleshooting" {
-		t.Fatalf("expected platform local display to route troubleshooting, got %+v", output)
-	}
-	if output.Intent != "platform_ip_location_capability" && output.Intent != "platform_ip_location_troubleshooting" {
-		t.Fatalf("expected platform display intent, got %+v", output)
-	}
-	if len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "平台") && !strings.Contains(output.RetrievalQueries[0], "IP库") {
-		t.Fatalf("expected platform display troubleshooting query, got %+v", output.RetrievalQueries)
+	if output.Specialist != "product" {
+		t.Fatalf("hard rules must not rewrite platform-display specialist, got %+v", output)
 	}
 }
 
@@ -446,20 +419,11 @@ func TestRouteCustomerQuestionClearsSwitchCarryoverForHumanContact(t *testing.T)
 		RetrievalQueries:  []string{"四叶天 静态 IP 切换失败 排查"},
 		UserIntentSignals: CustomerRouterIntentSignals{SwitchIP: true},
 	}, CustomerChatRequest{Question: "人工客服"})
-	if output.Intent != "customer_contact_inquiry" || output.Specialist != "reception" {
-		t.Fatalf("expected current-turn contact intent, got %+v", output)
+	if output.Specialist != "troubleshooting" {
+		t.Fatalf("hard rules must not rewrite human-contact specialist, got %+v", output)
 	}
 	if output.UserIntentSignals.SwitchIP {
 		t.Fatalf("expected stale switch_ip signal to be cleared, got %+v", output.UserIntentSignals)
-	}
-	if containsString(output.RiskFlags, "technical") || containsString(output.RiskFlags, "troubleshooting") {
-		t.Fatalf("expected stale operation risk flags to be cleared, got %+v", output.RiskFlags)
-	}
-	if output.Slots.PrimaryProduct != "unknown" || len(output.Slots.Products) != 0 || output.Slots.ErrorCode != "" {
-		t.Fatalf("expected stale operation slots to be cleared, got %+v", output.Slots)
-	}
-	if !strings.Contains(output.RoutingReason, "当前轮") {
-		t.Fatalf("expected routing reason to describe current-turn contact shift, got %q", output.RoutingReason)
 	}
 }
 
@@ -570,20 +534,8 @@ func TestRouteCustomerQuestionTreatsGenericIPChangeAsExitIPCapability(t *testing
 		RiskFlags:         []string{"technical"},
 		NeedsRetrieval:    false,
 	}, CustomerChatRequest{Question: "可以改IP吗?"})
-	if output.Specialist != "technical" || output.QuestionStage != "operation_howto" {
-		t.Fatalf("expected generic IP change question to become technical capability answer, got %+v", output)
-	}
-	if output.NeedsProductClarification || output.AnswerStrategy != "answer_with_evidence" {
-		t.Fatalf("expected evidence-backed capability strategy, got strategy=%q needs=%t", output.AnswerStrategy, output.NeedsProductClarification)
-	}
-	if !output.NeedsRetrieval || len(output.RetrievalQueries) == 0 {
-		t.Fatalf("expected retrieval-backed capability answer, got needs=%t queries=%+v", output.NeedsRetrieval, output.RetrievalQueries)
-	}
-	if !strings.Contains(output.HandoffNotes, "出口 IP") {
-		t.Fatalf("expected handoff to explain exit IP capability, got %q", output.HandoffNotes)
-	}
-	if containsString(output.MissingInfo, "primary_product") || containsString(output.Ambiguity.AmbiguousFields, "primary_product") {
-		t.Fatalf("expected primary product hard-stop fields to be removed, got missing=%+v ambiguity=%+v", output.MissingInfo, output.Ambiguity)
+	if output.Specialist != "technical" {
+		t.Fatalf("hard rules must not rewrite generic IP change specialist, got %+v", output)
 	}
 }
 
@@ -596,11 +548,8 @@ func TestRouteCustomerQuestionForcesNetworkConfigConceptToTechnical(t *testing.T
 		NeedsRetrieval:    true,
 		RetrievalQueries:  []string{"四叶天 子网掩码 是什么"},
 	}, CustomerChatRequest{Question: "什么是子网掩码"})
-	if output.Specialist != "technical" {
-		t.Fatalf("expected subnet mask question to force technical specialist, got %+v", output)
-	}
-	if !containsString(output.RiskFlags, "technical") {
-		t.Fatalf("expected technical risk flag, got %+v", output.RiskFlags)
+	if output.Specialist != "product" {
+		t.Fatalf("hard rules must not force technical for subnet mask, got %+v", output)
 	}
 }
 
@@ -659,17 +608,11 @@ func TestRouteCustomerQuestionHardRulesAmbiguousMultiProductPricePointer(t *test
 			{Role: "user", Content: "静态 IP 呢？"},
 		},
 	})
-	if output.Specialist != "pricing" || output.AnswerStrategy != "ask_clarification" {
-		t.Fatalf("expected ambiguous pointer to ask clarification, got %+v", output)
+	if output.Specialist != "pricing" {
+		t.Fatalf("hard rules must not rewrite ambiguous price specialist, got %+v", output)
 	}
-	if output.Slots.PrimaryProduct != "unknown" || len(output.Slots.Products) != 0 {
-		t.Fatalf("expected inherited product slots to be cleared, got %+v", output.Slots)
-	}
-	if !output.NeedsProductClarification || output.ClarificationTarget != "primary_product" {
-		t.Fatalf("expected product clarification, got needs=%t target=%q", output.NeedsProductClarification, output.ClarificationTarget)
-	}
-	if output.NeedsRetrieval || len(output.RetrievalQueries) != 0 {
-		t.Fatalf("expected no retrieval before clarification, got needs=%t queries=%+v", output.NeedsRetrieval, output.RetrievalQueries)
+	if output.Slots.PrimaryProduct != "static_ip" {
+		t.Fatalf("hard rules must not clear model product slots, got %+v", output.Slots)
 	}
 }
 
@@ -688,17 +631,8 @@ func TestRouteCustomerQuestionHardRulesPaidNoIPRetrievesWithoutProductClarificat
 		ClarificationTarget:       "primary_product",
 		NeedsRetrieval:            false,
 	}, CustomerChatRequest{Question: "付款后没有IP怎么办"})
-	if output.Specialist != "troubleshooting" || output.QuestionStage != "troubleshooting" {
-		t.Fatalf("expected paid-no-IP to route troubleshooting, got %+v", output)
-	}
-	if output.NeedsProductClarification || containsString(output.MissingInfo, "primary_product") || containsString(output.Ambiguity.AmbiguousFields, "primary_product") {
-		t.Fatalf("expected no product clarification hard-stop, got %+v", output)
-	}
-	if !containsString(output.RiskFlags, "after_sales") || !containsString(output.RiskFlags, "troubleshooting") {
-		t.Fatalf("expected after-sales troubleshooting flags, got %+v", output.RiskFlags)
-	}
-	if !output.NeedsRetrieval || len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "付款后") || !strings.Contains(output.RetrievalQueries[0], "member/dongtai.html") {
-		t.Fatalf("expected paid-no-IP retrieval query, got needs=%t queries=%+v", output.NeedsRetrieval, output.RetrievalQueries)
+	if output.Specialist != "troubleshooting" {
+		t.Fatalf("hard rules must not rewrite paid-no-IP specialist, got %+v", output)
 	}
 }
 
@@ -714,14 +648,8 @@ func TestRouteCustomerQuestionHardRulesBillingChange(t *testing.T) {
 		NeedsRetrieval:    true,
 		RetrievalQueries:  []string{"四叶天 静态 IP 带宽 配置"},
 	}, CustomerChatRequest{Question: "静态IP可以升级带宽吗？比如从5M升级到10M？"})
-	if output.Specialist != "billing_after_sales" || output.QuestionStage != "after_sales" {
-		t.Fatalf("expected bandwidth upgrade to route billing_after_sales, got %+v", output)
-	}
-	if output.RiskBoundary != "after_sales_review" || !containsString(output.RiskFlags, "after_sales") {
-		t.Fatalf("expected after-sales boundary, got boundary=%q flags=%+v", output.RiskBoundary, output.RiskFlags)
-	}
-	if !output.NeedsRetrieval || len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "带宽升级") {
-		t.Fatalf("expected bandwidth upgrade retrieval query, got needs=%t queries=%+v", output.NeedsRetrieval, output.RetrievalQueries)
+	if output.Specialist != "technical" {
+		t.Fatalf("hard rules must not rewrite billing-change specialist, got %+v", output)
 	}
 }
 
@@ -760,14 +688,8 @@ func TestRouteCustomerQuestionHardRulesResidentialPurchase(t *testing.T) {
 		Ambiguity:         CustomerRouterAmbiguity{IsAmbiguous: true, AmbiguousFields: []string{"primary_product"}},
 		MissingInfo:       []string{"primary_product"},
 	}, CustomerChatRequest{Question: "住宅 IP 怎么买？"})
-	if output.Specialist != "purchase" || output.QuestionStage != "purchase" {
-		t.Fatalf("expected residential purchase route, got %+v", output)
-	}
-	if output.Slots.PrimaryProduct != "static_ip" || output.Slots.IPType != "residential" {
-		t.Fatalf("expected residential static slots, got %+v", output.Slots)
-	}
-	if !output.NeedsRetrieval || len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "product/box.html") {
-		t.Fatalf("expected residential purchase entry query, got %+v", output.RetrievalQueries)
+	if output.Specialist != "product" {
+		t.Fatalf("hard rules must not rewrite residential purchase specialist, got %+v", output)
 	}
 }
 
@@ -790,14 +712,11 @@ func TestRouteCustomerQuestionHardRulesResidentialPurchaseFollowup(t *testing.T)
 			{Role: "assistant", Content: "住宅 IP 来自家庭宽带，数据中心 IP 来自机房。"},
 		},
 	})
-	if output.Specialist != "purchase" || output.QuestionStage != "purchase" {
-		t.Fatalf("expected residential followup purchase route, got %+v", output)
+	if output.Specialist != "purchase" {
+		t.Fatalf("hard rules must not rewrite residential followup specialist, got %+v", output)
 	}
-	if output.Slots.PrimaryProduct != "static_ip" || output.Slots.IPType != "residential" || output.NeedsProductClarification {
-		t.Fatalf("expected residential static slots without clarification, got %+v", output)
-	}
-	if !output.NeedsRetrieval || len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "product/box.html") {
-		t.Fatalf("expected residential product/box retrieval query, got %+v", output.RetrievalQueries)
+	if output.Slots.PrimaryProduct != "unknown" {
+		t.Fatalf("hard rules must not lock residential slots, got %+v", output.Slots)
 	}
 }
 
@@ -814,14 +733,8 @@ func TestRouteCustomerQuestionHardRulesPurchasedResourceView(t *testing.T) {
 		NeedsRetrieval:    true,
 		RetrievalQueries:  []string{"四叶天 IP 查看 技术"},
 	}, CustomerChatRequest{Question: "买完后在哪看 IP？"})
-	if output.Specialist != "purchase" || output.QuestionStage != "purchase" {
-		t.Fatalf("expected purchased resource view to route purchase, got %+v", output)
-	}
-	if output.NeedsProductClarification {
-		t.Fatalf("expected no product clarification, got %+v", output)
-	}
-	if !output.NeedsRetrieval || len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "购买后") {
-		t.Fatalf("expected purchased resource query, got needs=%t queries=%+v", output.NeedsRetrieval, output.RetrievalQueries)
+	if output.Specialist != "technical" {
+		t.Fatalf("hard rules must not rewrite purchased-resource specialist, got %+v", output)
 	}
 }
 
@@ -840,14 +753,8 @@ func TestRouteCustomerQuestionHardRulesTrialPackageMissing(t *testing.T) {
 		MissingInfo:               []string{"primary_product"},
 		NeedsRetrieval:            false,
 	}, CustomerChatRequest{Question: "免费测试领了但是套餐没有"})
-	if output.Specialist != "troubleshooting" || output.QuestionStage != "troubleshooting" {
-		t.Fatalf("expected trial package missing to route troubleshooting, got %+v", output)
-	}
-	if output.NeedsProductClarification || containsString(output.MissingInfo, "primary_product") {
-		t.Fatalf("expected no product clarification, got %+v", output)
-	}
-	if !output.NeedsRetrieval || len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "实名认证") {
-		t.Fatalf("expected trial package troubleshooting query, got %+v", output.RetrievalQueries)
+	if output.Specialist != "purchase" {
+		t.Fatalf("hard rules must not rewrite trial-missing specialist, got %+v", output)
 	}
 }
 
@@ -866,14 +773,8 @@ func TestRouteCustomerQuestionHardRulesTrialClaim(t *testing.T) {
 		MissingInfo:               []string{"primary_product"},
 		NeedsRetrieval:            false,
 	}, CustomerChatRequest{Question: "有免费测试吗，哪里领"})
-	if output.Specialist != "purchase" || output.QuestionStage != "purchase" {
-		t.Fatalf("expected trial claim to route purchase, got %+v", output)
-	}
-	if output.NeedsProductClarification || containsString(output.MissingInfo, "primary_product") {
-		t.Fatalf("expected no product clarification, got %+v", output)
-	}
-	if !output.NeedsRetrieval || len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "test/index.html") {
-		t.Fatalf("expected trial claim retrieval query, got %+v", output.RetrievalQueries)
+	if output.Specialist != "reception" {
+		t.Fatalf("hard rules must not rewrite trial-claim specialist, got %+v", output)
 	}
 }
 
@@ -887,11 +788,8 @@ func TestRouteCustomerQuestionHardRulesAPIExtraction(t *testing.T) {
 		Slots:             CustomerRouterSlots{PrimaryProduct: "unknown"},
 		NeedsRetrieval:    false,
 	}, CustomerChatRequest{Question: "API怎么提取IP？"})
-	if output.Specialist != "technical" || output.QuestionStage != "operation_howto" {
-		t.Fatalf("expected API extraction to route technical, got %+v", output)
-	}
-	if !output.NeedsRetrieval || len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "API 提取") {
-		t.Fatalf("expected API extraction retrieval, got %+v", output.RetrievalQueries)
+	if output.Specialist != "product" {
+		t.Fatalf("hard rules must not rewrite API extraction specialist, got %+v", output)
 	}
 }
 
@@ -906,14 +804,8 @@ func TestRouteCustomerQuestionHardRulesTunnelIPSecBoundary(t *testing.T) {
 		NeedsRetrieval:    true,
 		RetrievalQueries:  []string{"四叶天 IPSec 配置"},
 	}, CustomerChatRequest{Question: "支持隧道 IP / IPSec 吗？"})
-	if output.Specialist != "safety" || output.QuestionStage != "safety_boundary" {
-		t.Fatalf("expected tunnel/IPSec boundary to route safety, got %+v", output)
-	}
-	if output.AnswerStrategy != "answer_with_evidence" || output.RiskBoundary != "safety_refusal" {
-		t.Fatalf("expected evidence-backed safety boundary, got strategy=%q boundary=%q", output.AnswerStrategy, output.RiskBoundary)
-	}
-	if !output.NeedsRetrieval || len(output.RetrievalQueries) != 1 || !strings.Contains(output.RetrievalQueries[0], "IPSec") {
-		t.Fatalf("expected IPSec boundary query, got %+v", output.RetrievalQueries)
+	if output.Specialist != "technical" {
+		t.Fatalf("hard rules must not rewrite tunnel/IPSec specialist, got %+v", output)
 	}
 }
 
@@ -1123,184 +1015,40 @@ func TestCustomerRouterResponseFormatRequiresV1Fields(t *testing.T) {
 	}
 }
 
-func TestCustomerRouterPromptCoversPricingBandwidthAndTypoNormalization(t *testing.T) {
+func TestCustomerRouterPromptKeepsSafetyAndDropsPlaybooks(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", customerRouterPromptFile))
 	if err != nil {
 		t.Fatalf("read router prompt: %v", err)
 	}
 	prompt := string(raw)
 	for _, want := range []string{
-		"最近对话正在问价格/报价",
-		"有哪些带宽/规格/档位",
-		"分到 `pricing`",
-		"错别字与上下文归一",
-		"住宅都有哪些贷款",
-		"住宅 IP 都有哪些带宽",
-		"不要把错字原样交给专家解释",
-		"敏感/违禁词试探",
-		"不要让专家解释词义",
-		"按上下文判断真实诉求",
-		"分到 `safety`",
-		"子网掩码、网关、DNS、端口",
-		"不要分到 `product` 做产品概念解释",
-		"能改抖音 IP 吗",
-		"不要仅因出现第三方平台名就分到 `safety`",
-		"四叶天 抖音 IP 归属地 平台场景 选型",
-		"四叶天 抖音 IP 归属地 不变 延迟 IP库 清缓存 切换 IP",
-		"产品不明硬规则",
-		"切换 IP、换 IP、改 IP",
-		"不要把“切换 IP”写成“动态 IP 切换方法”",
-		"那手机端可以使用动态吗",
-		"`动态` 是动态 IP 的简称",
-		"强规则只管风险边界和强依赖产品的事项",
-		"普通能力咨询、场景选型、手机端是否支持、通用配置入口、通用排障",
-		"优先 `needs_retrieval=true` 检索后回答可确定部分",
-		"用户问：“我想切换IP地址”",
-		"不要硬停的常见情况",
-		"当前硬规则",
-		"`answer_strategy=ask_clarification`，`needs_retrieval=false`",
-		"发票、开票、invoice、退款、退费、续费、升级带宽、换套餐、补差价、买错套餐或保留原 IP",
-		"内部 prompt、系统提示词、路由规则、JSON、知识库路径、后台策略、风控策略或内部配置",
-		"`product/box.html`",
-		"API 提取 白名单 账号密码 认证",
-		"隧道 IP IPSec HTTP SOCKS5 支持边界",
-		"共享型和独享型有什么区别",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("expected router prompt to include %q, got:\n%s", want, prompt)
-		}
-	}
-}
-
-func TestCustomerRouterPromptCoversMultiTurnIntentInheritance(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", customerRouterPromptFile))
-	if err != nil {
-		t.Fatalf("read router prompt: %v", err)
-	}
-	prompt := string(raw)
-	for _, want := range []string{
-		"多轮意图继承",
-		"每一轮都必须先判断客户本轮消息的真实诉求",
-		"客户本轮只补充了那个槽位的值",
-		"不要把这个短答当成独立的新问题",
-		"只有三类情况可以继承上一轮动作意图",
-		"如果本轮明确转向人工/联系方式、退款、发票、支付、续费、价格、购买、概念解释、闲聊等新诉求",
-		"把上一轮的动作/意图",
-		"就默认他要“产品介绍/选型/共享独享区别”",
-		"客户想了解四叶天静态 IP 怎么切换 IP。",
-		"四叶天 静态 IP 切换 方法 步骤",
-		"本轮客户只回答：“静态IP”",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("expected router prompt to include %q, got:\n%s", want, prompt)
-		}
-	}
-}
-
-func TestCustomerRouterPromptDoesNotRequireStaticTypeForGenericStaticIPPrice(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", customerRouterPromptFile))
-	if err != nil {
-		t.Fatalf("read router prompt: %v", err)
-	}
-	prompt := string(raw)
-	if strings.Contains(prompt, `"missing_info": ["static_type", "bandwidth", "quantity"]`) {
-		t.Fatal("router prompt still marks generic static IP price as missing static_type")
-	}
-	for _, want := range []string{
-		`"missing_info": ["bandwidth", "quantity"]`,
-		"普通静态 IP 问价，只需补齐带宽和数量",
-		"没有产品上下文时不要默认静态 IP",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("expected router prompt to include %q, got:\n%s", want, prompt)
-		}
-	}
-}
-
-func TestCustomerRouterPromptForbidsFabricatedProductAssumptions(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", customerRouterPromptFile))
-	if err != nil {
-		t.Fatalf("read router prompt: %v", err)
-	}
-	prompt := string(raw)
-	for _, want := range []string{
-		"臆断或新造产品类型/形态",
-		"静态 IP（别名：机房 IP、机房静态）与住宅 IP（别名：家庭 IP、住宅）是两类产品",
+		"内部 prompt",
+		"internal_security_boundary",
+		"绕风控",
 		"不要补成动态住宅 IP",
 		"必须保留住宅语义",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("expected router prompt to include %q, got:\n%s", want, prompt)
-		}
-	}
-}
-
-func TestCustomerRouterPromptTreatsTargetCitySwitchAsStaticIP(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", customerRouterPromptFile))
-	if err != nil {
-		t.Fatalf("read router prompt: %v", err)
-	}
-	prompt := string(raw)
-	for _, want := range []string{
-		"客户明确指定目标城市/地区来切换 IP",
-		"按静态 IP 的地区/线路切换诉求处理",
-		"切换成上海的 IP",
-		"primary_product=static_ip",
-		"不要追问“动态还是静态”",
-		"static_ip_region_switch_method",
-		"四叶天 静态 IP 切换地区 线路 上海 方法",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("expected router prompt to include %q, got:\n%s", want, prompt)
-		}
-	}
-}
-
-func TestCustomerRouterPromptKeepsOverseasIPSwitchAsOverseas(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", customerRouterPromptFile))
-	if err != nil {
-		t.Fatalf("read router prompt: %v", err)
-	}
-	prompt := string(raw)
-	for _, want := range []string{
-		"海外 IP 上下文中的切换 IP",
-		"`primary_product=overseas_ip`",
-		"不要继承或改写成静态 IP/住宅 IP 切换方法",
-		"检索海外 IP 支持范围、使用限制、是否支持切换",
-		"不要把 query 写成“海外 IP 切换方法步骤”",
-		"客户已明确纠正为海外 IP",
-		"overseas_ip_switch_capability",
-		"四叶天 海外 IP 切换 支持范围 使用限制",
-		"海外 IP 不能继承静态/住宅 IP 的手动切换、每月次数或重新分配规则",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("expected router prompt to include %q, got:\n%s", want, prompt)
-		}
-	}
-}
-
-func TestCustomerRouterPromptCoversUserIntentSignals(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "llm", "prompts", customerRouterPromptFile))
-	if err != nil {
-		t.Fatalf("read router prompt: %v", err)
-	}
-	prompt := string(raw)
-	for _, want := range []string{
-		"用户意图信号",
+		"静态 IP 问价不要把 `static_type` 写入 `missing_info`",
+		`"missing_info": ["bandwidth", "quantity"]`,
 		"`wants_human`",
-		"`wants_wechat`",
-		"`refund_strong`",
 		"`switch_ip`",
-		"`discount_strong`",
-		"描述客户当前这一轮的真实诉求强度",
-		"必须先看本轮消息",
-		"本轮已经转向人工、联系方式、退款、价格、购买、概念解释等新话题时必须置 false",
-		"仅仅抱怨“不好用/太贵/卡”不算",
-		"不影响 `specialist` 路由判断",
+		"海外上下文里的切换不要改写成静态/住宅切换方法",
 	} {
 		if !strings.Contains(prompt, want) {
-			t.Fatalf("expected router prompt to include %q, got:\n%s", want, prompt)
+			t.Fatalf("expected router prompt to include %q", want)
 		}
+	}
+	for _, forbidden := range []string{
+		"## 当前硬规则",
+		"## 产品不明硬规则",
+		"`product/box.html`",
+		"使用下方推荐句式原文",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("router prompt still contains playbook %q", forbidden)
+		}
+	}
+	if strings.Contains(prompt, `"missing_info": ["static_type", "bandwidth", "quantity"]`) {
+		t.Fatal("router prompt still marks generic static IP price as missing static_type")
 	}
 }
 

@@ -214,72 +214,9 @@ func normalizeCustomerRouterOutput(output CustomerRouterOutput, req CustomerChat
 	if output.RoutingConfidence < customerRouterLowConfidenceThreshold {
 		output.RiskFlags = appendUniqueString(output.RiskFlags, "low_confidence")
 	}
-	if shouldForceGenericIPChangeCapabilityRoute(req.Question, output) {
-		output.Specialist = "technical"
-		output.QuestionStage = "operation_howto"
-		output.Intent = "proxy_exit_ip_capability_inquiry"
-		output.UserGoal = "了解四叶天代理 IP 是否可以改变电脑对外出口 IP"
-		output.RewrittenQuestion = "客户想了解四叶天代理 IP 是否可以改变电脑对外出口 IP。"
-		output.Ambiguity.IsAmbiguous = false
-		output.Ambiguity.AmbiguousFields = removeString(output.Ambiguity.AmbiguousFields, "primary_product")
-		if len(output.Ambiguity.AmbiguousFields) == 0 {
-			output.Ambiguity.Reason = ""
-		}
-		output.MissingInfo = removeString(output.MissingInfo, "primary_product")
-		output.NeedsProductClarification = false
-		output.ClarificationTarget = "none"
-		output.AnswerStrategy = "answer_with_evidence"
-		output.RiskBoundary = "none"
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 代理 IP 出口 IP 目标网站 本地公网 IP"}
-		output.HandoffNotes = "用户问代理 IP 能否改变电脑对外出口 IP；先回答可以让目标网站看到代理出口 IP，不要硬停追问产品类型。"
-	}
-	if shouldForcePlatformLocationCustomerRoute(req.Question, output) {
-		if customerPlatformLocationLooksTroubleshooting(req.Question, output) {
-			output.Specialist = "troubleshooting"
-			output.QuestionStage = "troubleshooting"
-			output.RiskFlags = appendUniqueString(output.RiskFlags, "troubleshooting")
-			output.Intent = firstNonEmpty(output.Intent, "platform_ip_location_troubleshooting")
-			output.RewrittenQuestion = firstNonEmpty(output.RewrittenQuestion, "客户想排查第三方平台 IP 归属地显示不变或不准确的问题。")
-			output.RetrievalQueries = []string{"四叶天 抖音 IP 归属地 不变 延迟 IP库 清缓存 切换 IP"}
-		} else {
-			output.Specialist = "product"
-			output.QuestionStage = "product_selection"
-			output.Intent = firstNonEmpty(output.Intent, "platform_ip_location_capability")
-			output.RewrittenQuestion = firstNonEmpty(output.RewrittenQuestion, "客户想了解四叶天产品能否用于抖音等平台的 IP 归属地场景。")
-			output.RetrievalQueries = []string{"四叶天 抖音 IP 归属地 平台场景 选型"}
-		}
-		output.RiskFlags = appendUniqueString(output.RiskFlags, "platform_risk")
-		output.NeedsRetrieval = true
-	}
-	if shouldForceTechnicalCustomerRoute(req.Question, output) {
-		output.Specialist = "technical"
-		output.QuestionStage = "operation_howto"
-		output.RiskFlags = appendUniqueString(output.RiskFlags, "technical")
-		output.NeedsRetrieval = true
-	}
 	output = applyCustomerRouterHardRules(req, output)
 	output.HasProduct = output.Slots.PrimaryProduct != "" && output.Slots.PrimaryProduct != "unknown"
 	output.RetrievalQueries = normalizeCustomerRouterList(output.RetrievalQueries, 3)
-	shouldClarifyPrimaryProduct := customerRouterShouldClarifyPrimaryProduct(req.Question, output)
-	if shouldClarifyPrimaryProduct {
-		output.Ambiguity.IsAmbiguous = true
-		output.Ambiguity.AmbiguousFields = appendUniqueString(output.Ambiguity.AmbiguousFields, "primary_product")
-		if output.Ambiguity.Reason == "" {
-			output.Ambiguity.Reason = "产品类型不明确。"
-		}
-		output.MissingInfo = appendUniqueString(output.MissingInfo, "primary_product")
-		output.NeedsRetrieval = false
-		output.RetrievalQueries = nil
-		output.NeedsProductClarification = true
-		output.ClarificationTarget = "primary_product"
-	} else if output.NeedsProductClarification && output.ClarificationTarget == "primary_product" {
-		output.NeedsProductClarification = false
-		output.ClarificationTarget = "none"
-		if output.AnswerStrategy == "ask_clarification" {
-			output.AnswerStrategy = ""
-		}
-	}
 	if output.Specialist == "technical" && output.NeedsRetrieval && len(output.RetrievalQueries) == 0 {
 		output.RetrievalQueries = []string{"四叶天 " + strings.TrimSpace(output.RewrittenQuestion) + " 技术配置"}
 	}
@@ -360,201 +297,6 @@ func applyCustomerRouterHardRules(req CustomerChatRequest, output CustomerRouter
 		}
 		return output
 	}
-	if customerRouterLooksAmbiguousPriceReference(req, output) {
-		output.Specialist = "pricing"
-		output.QuestionStage = "pricing"
-		output.AnswerStrategy = "ask_clarification"
-		output.RiskBoundary = "pricing_review"
-		output.RiskFlags = appendUniqueString(output.RiskFlags, "pricing")
-		output.Slots.PrimaryProduct = "unknown"
-		output.Slots.Products = nil
-		output.Slots.StaticType = ""
-		output.Slots.IPType = ""
-		output.Ambiguity.IsAmbiguous = true
-		output.Ambiguity.AmbiguousFields = appendUniqueString(output.Ambiguity.AmbiguousFields, "products")
-		output.Ambiguity.Reason = "最近上下文涉及多个产品，本轮价格指代不明确。"
-		output.MissingInfo = appendUniqueString(output.MissingInfo, "primary_product")
-		output.NeedsProductClarification = true
-		output.ClarificationTarget = "primary_product"
-		output.NeedsRetrieval = false
-		output.RetrievalQueries = nil
-		output.HandoffNotes = "多产品上下文下的指代问价，必须先问客户指动态 IP 还是静态 IP，不要直接报价。"
-		return output
-	}
-	if customerRouterLooksRefundRequest(userText) {
-		output.Specialist = "billing_after_sales"
-		output.QuestionStage = "after_sales"
-		output.AnswerStrategy = "answer_with_evidence"
-		output.RiskBoundary = "after_sales_review"
-		output.RiskFlags = appendUniqueString(appendUniqueString(output.RiskFlags, "refund"), "after_sales")
-		output = clearCustomerRouterOperationCarryover(output)
-		output = clearCustomerRouterProductClarification(output)
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 退款 条件 金额 时效 人工确认"}
-		output.UserIntentSignals.RefundStrong = true
-	}
-	if customerRouterLooksInvoiceRequest(userText) {
-		output.Specialist = "billing_after_sales"
-		output.QuestionStage = "after_sales"
-		output.AnswerStrategy = "answer_with_evidence"
-		output.RiskBoundary = "after_sales_review"
-		output.RiskFlags = appendUniqueString(output.RiskFlags, "billing")
-		output = clearCustomerRouterOperationCarryover(output)
-		output = clearCustomerRouterProductClarification(output)
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 发票 开票 invoice 对公 Apple 人工审核"}
-	}
-	if customerRouterLooksPaymentMethodQuestion(userText) {
-		output.Specialist = "billing_after_sales"
-		output.QuestionStage = "after_sales"
-		output.AnswerStrategy = "answer_with_evidence"
-		output.RiskBoundary = "after_sales_review"
-		output.RiskFlags = appendUniqueString(output.RiskFlags, "billing")
-		output = clearCustomerRouterOperationCarryover(output)
-		output = clearCustomerRouterProductClarification(output)
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 支付方式 微信 支付宝 对公打款"}
-		output.Intent = "payment_method"
-		output.UserGoal = firstNonEmpty(output.UserGoal, "询问是否支持微信、支付宝或对公打款等支付方式")
-		output.RewrittenQuestion = firstNonEmpty(output.RewrittenQuestion, "客户询问四叶天是否支持微信、支付宝或对公打款等支付方式。")
-		output.HandoffNotes = "用户询问支付方式，需说明官网或 App 下单可选微信支付/支付宝，对公打款以充值页面为准。"
-	}
-	if customerRouterLooksWeComContactQuestion(userText) || customerRouterLooksHumanContactQuestion(userText) {
-		output.Specialist = "reception"
-		output.QuestionStage = "reception"
-		output.AnswerStrategy = "smalltalk"
-		output.RiskBoundary = "none"
-		output.RiskFlags = removeString(output.RiskFlags, "after_sales")
-		output.RiskFlags = removeString(output.RiskFlags, "billing")
-		output.RiskFlags = removeString(output.RiskFlags, "refund")
-		output = clearCustomerRouterOperationCarryover(output)
-		output = clearCustomerRouterProductClarification(output)
-		output.NeedsRetrieval = false
-		output.RetrievalQueries = nil
-		output.Intent = "customer_contact_inquiry"
-		output.UserGoal = "询问客服或人工联系方式"
-		output.RewrittenQuestion = "客户询问不行时可以联系谁处理。"
-		output.RoutingReason = "用户明确要求人工客服或联系方式，当前轮已转向联系方式咨询。"
-		output.HandoffNotes = "用户询问联系方式，只回答官网右侧企业微信二维码或客服电话；不要回答微信支付、支付宝或对公打款。"
-		output.UserIntentSignals.WantsHuman = true
-		output.UserIntentSignals.WantsWechat = customerRouterLooksWeComContactQuestion(userText)
-	}
-	if customerRouterLooksPaidNoIPRequest(userText) {
-		output.Specialist = "troubleshooting"
-		output.QuestionStage = "troubleshooting"
-		output.AnswerStrategy = "troubleshoot_steps"
-		output.RiskBoundary = "after_sales_review"
-		output.RiskFlags = appendUniqueString(appendUniqueString(output.RiskFlags, "troubleshooting"), "after_sales")
-		output = clearCustomerRouterProductClarification(output)
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 付款后 没有 IP 未开通 查看 后台 动态套餐 member/dongtai.html"}
-		output.HandoffNotes = "付款后没有 IP 先给登录账号一致、刷新或重新登录、产品管理页查看、动态套餐后台入口和人工核查边界，不要因产品不明改成纯澄清。"
-	}
-	if customerRouterLooksTrialPackageMissing(userText) {
-		output.Specialist = "troubleshooting"
-		output.QuestionStage = "troubleshooting"
-		output.AnswerStrategy = "troubleshoot_steps"
-		output.RiskBoundary = "after_sales_review"
-		output.RiskFlags = appendUniqueString(appendUniqueString(output.RiskFlags, "troubleshooting"), "after_sales")
-		output = clearCustomerRouterProductClarification(output)
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 免费测试 领取 没有套餐 刷新 重新登录 实名认证 人工核查"}
-		output.HandoffNotes = "免费测试或试用权益领取后未显示，按测试权益未到账排查；先给刷新、重新登录、实名认证和人工核查边界，不要因产品不明改成纯澄清。"
-	}
-	if customerRouterLooksResourceMissingFollowup(req, output) {
-		output.Specialist = "troubleshooting"
-		output.QuestionStage = "troubleshooting"
-		output.AnswerStrategy = "troubleshoot_steps"
-		output.RiskBoundary = "after_sales_review"
-		output.RiskFlags = appendUniqueString(appendUniqueString(output.RiskFlags, "troubleshooting"), "after_sales")
-		output = clearCustomerRouterProductClarification(output)
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 购买后 套餐 IP 未显示 刷新 重新登录 人工核查"}
-		output.HandoffNotes = "客户反馈购买、领取测试或开通后资源未显示，按未显示排查；先给刷新、重新登录、实名认证或人工核查边界，不要停在购买入口。"
-	}
-	if customerRouterLooksTrialClaim(userText) {
-		output.Specialist = "purchase"
-		output.QuestionStage = "purchase"
-		output.AnswerStrategy = "purchase_guidance"
-		output.RiskBoundary = "none"
-		output.RiskFlags = removeString(output.RiskFlags, "after_sales")
-		output.RiskFlags = removeString(output.RiskFlags, "troubleshooting")
-		output = clearCustomerRouterOperationCarryover(output)
-		output = clearCustomerRouterProductClarification(output)
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 免费测试 试用 领取 入口 test/index.html 注册 认证"}
-		output.HandoffNotes = "客户询问免费测试或试用领取入口，直接给 test/index.html；说明注册并完成认证后查看页面权益，不要改成人工开通。"
-	}
-	if customerRouterLooksBillingChangeRequest(userText) {
-		output.Specialist = "billing_after_sales"
-		output.QuestionStage = "after_sales"
-		output.AnswerStrategy = "answer_with_evidence"
-		output.RiskBoundary = "after_sales_review"
-		output.RiskFlags = appendUniqueString(output.RiskFlags, "after_sales")
-		output = clearCustomerRouterOperationCarryover(output)
-		output = clearCustomerRouterProductClarification(output)
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 静态 IP 带宽升级 换套餐 续费 人工确认"}
-	}
-	if customerRouterLooksResidentialPurchase(userText) || customerRouterLooksResidentialPurchaseFollowup(req, output) {
-		output.Specialist = "purchase"
-		output.QuestionStage = "purchase"
-		output.AnswerStrategy = "purchase_guidance"
-		output.RiskBoundary = "none"
-		output.RiskFlags = removeString(output.RiskFlags, "pricing")
-		output = clearCustomerRouterOperationCarryover(output)
-		output.Slots.PrimaryProduct = "static_ip"
-		output.Slots.Products = []string{"static_ip"}
-		output.Slots.IPType = "residential"
-		output.NeedsProductClarification = false
-		output.ClarificationTarget = "none"
-		output.MissingInfo = removeString(output.MissingInfo, "primary_product")
-		output.MissingInfo = removeString(output.MissingInfo, "ip_type")
-		output.Ambiguity.AmbiguousFields = removeString(output.Ambiguity.AmbiguousFields, "primary_product")
-		output.Ambiguity.AmbiguousFields = removeString(output.Ambiguity.AmbiguousFields, "ip_type")
-		if len(output.Ambiguity.AmbiguousFields) == 0 {
-			output.Ambiguity.IsAmbiguous = false
-			output.Ambiguity.Reason = ""
-		}
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 住宅 IP 购买 入口 product/box.html"}
-		output.Intent = "residential_ip_purchase_inquiry"
-		output.UserGoal = "确认住宅 IP 是否可以购买并了解购买入口"
-		output.RewrittenQuestion = "客户想确认四叶天住宅 IP 是否可以购买及购买方式。"
-		output.HandoffNotes = "住宅 IP 购买入口固定使用 product/box.html，并说明可售城市和规格以当前页面为准；不要追问动态还是静态。"
-	}
-	if customerRouterLooksPurchasedResourceView(userText) {
-		output.Specialist = "purchase"
-		output.QuestionStage = "purchase"
-		output.AnswerStrategy = "purchase_guidance"
-		output.RiskBoundary = "none"
-		output = clearCustomerRouterOperationCarryover(output)
-		output = clearCustomerRouterProductClarification(output)
-		output.NeedsProductClarification = false
-		output.ClarificationTarget = "none"
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 购买后 查看 套餐 IP 个人中心 刷新 重新登录"}
-	}
-	if customerRouterLooksAPIExtraction(userText) {
-		output.Specialist = "technical"
-		output.QuestionStage = "operation_howto"
-		output.AnswerStrategy = "answer_with_evidence"
-		output.RiskBoundary = "none"
-		output.RiskFlags = appendUniqueString(output.RiskFlags, "technical")
-		output.NeedsProductClarification = false
-		output.ClarificationTarget = "none"
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 API 提取 白名单 账号密码 认证"}
-	}
-	if customerRouterLooksTunnelIPSecBoundary(userText) {
-		output.Specialist = "safety"
-		output.QuestionStage = "safety_boundary"
-		output.AnswerStrategy = "answer_with_evidence"
-		output.RiskBoundary = "safety_refusal"
-		output.RiskFlags = appendUniqueString(appendUniqueString(output.RiskFlags, "technical"), "compliance")
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 隧道 IP IPSec HTTP SOCKS5 支持边界"}
-	}
 	if customerRouterLooksPlatformRiskGuaranteeQuestion(userText) {
 		output.Specialist = "safety"
 		output.QuestionStage = "safety_boundary"
@@ -575,40 +317,6 @@ func applyCustomerRouterHardRules(req CustomerChatRequest, output CustomerRouter
 		output.UserGoal = firstNonEmpty(output.UserGoal, "询问产品能否保证不被平台风控")
 		output.RewrittenQuestion = firstNonEmpty(output.RewrittenQuestion, "客户询问四叶天产品能否保证不被平台风控。")
 		output.HandoffNotes = "用户询问能否保证不被平台风控，需明确告知不能承诺平台风控或账号结果。"
-	}
-	if customerRouterLooksResidentialCorrection(userText) {
-		output.Specialist = "product"
-		output.QuestionStage = "product_selection"
-		output.AnswerStrategy = "recommend_with_boundary"
-		output.RiskBoundary = "none"
-		output.Slots.PrimaryProduct = "static_ip"
-		output.Slots.Products = []string{"static_ip"}
-		output.Slots.IPType = "residential"
-		output.RiskFlags = removeString(output.RiskFlags, "technical")
-		output.RiskFlags = removeString(output.RiskFlags, "pricing")
-		output = clearCustomerRouterProductClarification(output)
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 住宅 IP 静态 IP 家庭宽带 同城轮换"}
-		output.Intent = "residential_ip_correction"
-		output.RewrittenQuestion = "客户纠正前文：不是动态 IP，而是住宅 IP。"
-		output.HandoffNotes = "客户本轮明确纠正为住宅 IP，按住宅静态 IP 说明；不要沿用上一轮动态或切换 IP 教程。"
-	}
-	if customerRouterLooksResidentialFixedQuestion(req, output) {
-		output.Specialist = "product"
-		output.QuestionStage = "product_selection"
-		output.AnswerStrategy = "answer_with_evidence"
-		output.RiskBoundary = "none"
-		output.Slots.PrimaryProduct = "static_ip"
-		output.Slots.Products = []string{"static_ip"}
-		output.Slots.IPType = "residential"
-		output.RiskFlags = removeString(output.RiskFlags, "technical")
-		output.RiskFlags = removeString(output.RiskFlags, "pricing")
-		output = clearCustomerRouterProductClarification(output)
-		output.NeedsRetrieval = true
-		output.RetrievalQueries = []string{"四叶天 住宅 IP 固定 同城轮换 静态 IP"}
-		output.Intent = "residential_ip_fixedness_inquiry"
-		output.RewrittenQuestion = "客户询问住宅 IP 是否固定。"
-		output.HandoffNotes = "按住宅静态 IP 固定性边界回答：更接近家庭宽带，但不承诺完全固定，可能同城轮换。"
 	}
 	return output
 }
@@ -758,31 +466,6 @@ func applyCustomerRouterDecisionDefaults(output CustomerRouterOutput, req Custom
 		output.UserGoal = strings.TrimSpace(req.Question)
 	}
 	return output
-}
-
-func shouldForcePlatformLocationCustomerRoute(question string, output CustomerRouterOutput) bool {
-	currentText := strings.ToLower(strings.TrimSpace(strings.Join([]string{
-		question,
-		output.RewrittenQuestion,
-		output.Slots.Scenario,
-		output.Slots.Platform,
-	}, " ")))
-	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{
-		currentText,
-		output.Intent,
-		output.RoutingReason,
-		output.HandoffNotes,
-	}, " ")))
-	if text == "" || !customerRouterMentionsDomesticPlatform(text) {
-		return false
-	}
-	if !customerRouterMentionsIPLocationChange(currentText) && !customerPlatformLocationLooksTroubleshooting(question, output) {
-		return false
-	}
-	if customerRouterMentionsExplicitSafetyAbuse(currentText) {
-		return false
-	}
-	return output.Specialist == "safety" || output.Specialist == "product" || output.Specialist == "troubleshooting"
 }
 
 func customerPlatformLocationLooksTroubleshooting(question string, output CustomerRouterOutput) bool {
@@ -1571,48 +1254,6 @@ func customerRouterListContains(items []string, want string) bool {
 	return false
 }
 
-func shouldForceTechnicalCustomerRoute(question string, output CustomerRouterOutput) bool {
-	if output.Specialist != "product" && output.Specialist != "reception" {
-		return false
-	}
-	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{question, output.RewrittenQuestion, output.Intent, output.HandoffNotes}, " ")))
-	if text == "" {
-		return false
-	}
-	for _, marker := range []string{"连不上", "不能用", "没变", "报错", "错误", "失败", "超时", "卡顿", "407", "503"} {
-		if strings.Contains(text, marker) {
-			return false
-		}
-	}
-	for _, marker := range []string{
-		"子网掩码",
-		"网关",
-		"dns",
-		"端口",
-		"代理协议",
-		"http代理",
-		"https代理",
-		"socks5",
-		"白名单",
-		"api",
-		"提取链接",
-		"认证",
-		"账号密码",
-		"代理地址",
-		"客户端配置",
-		"浏览器配置",
-		"怎么配置",
-		"如何配置",
-		"怎么接入",
-		"如何接入",
-	} {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	return false
-}
-
 func normalizeCustomerSpecialist(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "reception", "product", "pricing", "purchase", "technical", "troubleshooting", "billing_after_sales", "safety":
@@ -1842,27 +1483,6 @@ func removeString(items []string, value string) []string {
 		}
 	}
 	return out
-}
-
-func shouldForceGenericIPChangeCapabilityRoute(question string, output CustomerRouterOutput) bool {
-	text := strings.ToLower(strings.TrimSpace(question))
-	if text == "" || customerRouterMentionsDomesticPlatform(text) || customerRouterMentionsExplicitSafetyAbuse(text) {
-		return false
-	}
-	if !customerRouterMentionsIPLocationChange(text) {
-		return false
-	}
-	for _, marker := range []string{"怎么", "如何", "教程", "步骤", "配置", "白名单", "api", "socks5", "http", "端口", "客户端", "连不上", "没变", "不变", "报错", "失败"} {
-		if strings.Contains(text, marker) {
-			return false
-		}
-	}
-	for _, marker := range []string{"可以", "能", "能不能", "能否", "支持", "行不行", "可不可以"} {
-		if strings.Contains(text, marker) {
-			return output.Slots.PrimaryProduct == "unknown" && (output.Specialist == "technical" || output.Specialist == "product" || output.QuestionStage == "operation_howto")
-		}
-	}
-	return false
 }
 
 func normalizeCustomerRouterProduct(value string) string {
