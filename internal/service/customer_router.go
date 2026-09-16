@@ -318,7 +318,39 @@ func applyCustomerRouterHardRules(req CustomerChatRequest, output CustomerRouter
 		output.RewrittenQuestion = firstNonEmpty(output.RewrittenQuestion, "客户询问四叶天产品能否保证不被平台风控。")
 		output.HandoffNotes = "用户询问能否保证不被平台风控，需明确告知不能承诺平台风控或账号结果。"
 	}
+	return ensureCustomerPricingRetrieval(output)
+}
+
+func ensureCustomerPricingRetrieval(output CustomerRouterOutput) CustomerRouterOutput {
+	if output.Specialist != "pricing" {
+		return output
+	}
+	if output.NeedsProductClarification || output.Slots.PrimaryProduct == "" || output.Slots.PrimaryProduct == "unknown" {
+		return output
+	}
+	if output.NeedsRetrieval && len(output.RetrievalQueries) > 0 {
+		return output
+	}
+	output.NeedsRetrieval = true
+	if len(output.RetrievalQueries) == 0 {
+		output.RetrievalQueries = []string{customerRouterPricingEvidenceQuery(output)}
+	}
 	return output
+}
+
+func customerRouterPricingEvidenceQuery(output CustomerRouterOutput) string {
+	parts := []string{"四叶天", customerRouterProductLabel(output.Slots.PrimaryProduct, output.Slots.IPType)}
+	if bw := strings.TrimSpace(output.Slots.Bandwidth); bw != "" {
+		parts = append(parts, bw)
+	}
+	if qty := strings.TrimSpace(output.Slots.Quantity); qty != "" {
+		if !strings.Contains(qty, "条") {
+			qty += "条"
+		}
+		parts = append(parts, qty)
+	}
+	parts = append(parts, "数量档位", "价格")
+	return strings.Join(parts, " ")
 }
 
 func clearCustomerRouterProductClarification(output CustomerRouterOutput) CustomerRouterOutput {
@@ -896,7 +928,7 @@ func customerRouterLooksAmbiguousPriceReference(req CustomerChatRequest, output 
 }
 
 func customerRouterLooksPriceQuestion(text string) bool {
-	for _, marker := range []string{"多少钱", "价格", "怎么卖", "收费", "报价", "费用", "月费", "折扣", "优惠"} {
+	for _, marker := range []string{"多少钱", "价格", "怎么卖", "收费", "报价", "费用", "月费", "折扣", "优惠", "便宜"} {
 		if strings.Contains(text, marker) {
 			return true
 		}

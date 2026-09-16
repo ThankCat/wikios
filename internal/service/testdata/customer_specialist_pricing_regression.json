@@ -92,6 +92,15 @@
       "router_output": {"contract_version":"customer_router.v1","specialist":"pricing","intent":"static_ip_price_new_spec","rewritten_question":"客户将静态 IP 规格改为 20M 10 条。","history_summary":"此前对静态 IP 5M 10 条已经议价。","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"datacenter","bandwidth":"20M","quantity":"10"},"ambiguity":{"is_ambiguous":false},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 20M 10条 价格"],"handoff_notes":"按新规格价格页报价。"},
       "candidate_pages": [{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","title":"四叶天静态 IP 与住宅 IP 价格规则","confidence":"high","content":"静态 IP 20M 的 1-10 档为 60-70 元/条/月。对客价不能低于该档底价。"}],
       "expected": {"allowed_answer_modes":["evidence","mixed"],"must_include":["元/条/月"],"must_not_include":["59 元","来源","授权价"],"source_paths":["wiki/knowledge/si-ye-tian-static-ip-pricing.md"],"notes":"新规格按新价格页报价，不低于新档底价。"}
+    },
+    {
+      "id": "pricing_negotiation_more_quantity_cheaper",
+      "title": "议价不能把数量档说反",
+      "user_message": "你家卖的比别人家贵呀, 能便宜点吗?",
+      "received_at": "2026-09-16T13:43:43+08:00",
+      "router_output": {"contract_version":"customer_router.v1","specialist":"pricing","intent":"price_negotiation","rewritten_question":"客户认为静态 IP 10M 15 条偏贵，询问能否便宜。","history_summary":"已报 11-30 档 25 元/条/月。","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"datacenter","bandwidth":"10M","quantity":"15"},"ambiguity":{"is_ambiguous":false},"missing_info":[],"risk_flags":["pricing","discount"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 10M 15条 数量档位 价格"],"handoff_notes":"议价必须对照当前价格页。"},
+      "candidate_pages": [{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","title":"四叶天静态 IP 与住宅 IP 价格规则","confidence":"high","content":"静态 IP 10M：1-10 档 25-30 元/条/月，11-30 档 20-25 元/条/月，31-50 档 18-23 元/条/月。数量越多单价越低。对客价不能低于当前档底价。"}],
+      "expected": {"allowed_answer_modes":["evidence","mixed"],"must_include":["20 元/条/月"],"must_not_include":["11-30","数量档","价格档","系统定价","修改订单","减少到 10","19 元","授权价"],"source_paths":["wiki/knowledge/si-ye-tian-static-ip-pricing.md"],"notes":"只报这个数量能给到的价；不说档位和系统规则。"}
     }
   ]
 }

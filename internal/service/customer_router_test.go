@@ -519,6 +519,35 @@ func TestRouteCustomerQuestionProductPriceAfterInternalPromptDoesNotStick(t *tes
 	}
 }
 
+func TestRouteCustomerQuestionForcesPricingRetrievalOnNegotiation(t *testing.T) {
+	output := normalizeCustomerRouterOutput(CustomerRouterOutput{
+		Specialist:        "pricing",
+		QuestionStage:     "pricing",
+		AnswerStrategy:    "quote_or_price",
+		RiskBoundary:      "pricing_review",
+		RoutingConfidence: 0.95,
+		RoutingReason:     "规格已齐，议价无需检索。",
+		Intent:            "price_negotiation",
+		UserGoal:          "询问静态 IP 价格能否优惠",
+		RewrittenQuestion: "客户认为四叶天静态 IP 价格偏高，询问能否便宜点。",
+		HistorySummary:    "已报 15 条 10M 静态 IP 25 元/条/月。",
+		Slots:             CustomerRouterSlots{PrimaryProduct: "static_ip", Products: []string{"static_ip"}, Bandwidth: "10M", Quantity: "15"},
+		RiskFlags:         []string{"pricing"},
+		NeedsRetrieval:    false,
+		HandoffNotes:      "议价环节无需补充缺失信息。",
+		UserIntentSignals: CustomerRouterIntentSignals{DiscountStrong: true},
+	}, CustomerChatRequest{Question: "你家卖的比别人家贵呀, 能便宜点吗?"})
+	if output.Specialist != "pricing" {
+		t.Fatalf("negotiation must stay pricing, got %+v", output)
+	}
+	if !output.NeedsRetrieval || len(output.RetrievalQueries) == 0 {
+		t.Fatalf("pricing negotiation with a known product must retrieve the price page, got %+v", output)
+	}
+	if !strings.Contains(output.RetrievalQueries[0], "静态 IP") || !strings.Contains(output.RetrievalQueries[0], "价格") {
+		t.Fatalf("expected static IP price retrieval query, got %+v", output.RetrievalQueries)
+	}
+}
+
 func TestRouteCustomerQuestionTreatsGenericIPChangeAsExitIPCapability(t *testing.T) {
 	output := normalizeCustomerRouterOutput(CustomerRouterOutput{
 		Specialist:        "technical",
@@ -914,7 +943,7 @@ func TestRouteCustomerQuestionHardRulesQuantityCompare(t *testing.T) {
 	}
 }
 
-func TestRouteCustomerQuestionRequiresRetrievalQueryWhenNeeded(t *testing.T) {
+func TestRouteCustomerQuestionBackfillsPricingRetrievalQueryWhenNeeded(t *testing.T) {
 	llmClient := &customerRouterTestLLM{text: `{
 		"contract_version": "customer_router.v1",
 		"specialist": "pricing",
@@ -943,9 +972,15 @@ func TestRouteCustomerQuestionRequiresRetrievalQueryWhenNeeded(t *testing.T) {
 		"handoff_notes": "普通问价。"
 	}`}
 	svc := NewCustomerChatService(Deps{Config: &config.Config{}, LLM: llmClient, PromptDir: testCustomerRouterPromptDir(t)})
-	_, _, _, err := svc.routeCustomerQuestion(context.Background(), CustomerChatRequest{Question: "静态 IP 价格"}, "2026-05-22T10:00:00Z", RuntimeCustomerQuerySettings{})
-	if err == nil || !strings.Contains(err.Error(), "retrieval_queries is empty") {
-		t.Fatalf("expected retrieval query validation error, got %v", err)
+	output, _, _, err := svc.routeCustomerQuestion(context.Background(), CustomerChatRequest{Question: "静态 IP 价格"}, "2026-05-22T10:00:00Z", RuntimeCustomerQuerySettings{})
+	if err != nil {
+		t.Fatalf("pricing with known product should backfill retrieval query, got %v", err)
+	}
+	if output == nil || !output.NeedsRetrieval || len(output.RetrievalQueries) == 0 {
+		t.Fatalf("expected backfilled pricing retrieval query, got %+v", output)
+	}
+	if !strings.Contains(output.RetrievalQueries[0], "静态 IP") || !strings.Contains(output.RetrievalQueries[0], "价格") {
+		t.Fatalf("expected static IP price query, got %+v", output.RetrievalQueries)
 	}
 }
 
@@ -1032,6 +1067,7 @@ func TestCustomerRouterPromptKeepsSafetyAndDropsPlaybooks(t *testing.T) {
 		"`wants_human`",
 		"`switch_ip`",
 		"海外上下文里的切换不要改写成静态/住宅切换方法",
+		"报价、议价、优惠必须检索当前价格页",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected router prompt to include %q", want)

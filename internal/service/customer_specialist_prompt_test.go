@@ -85,6 +85,12 @@ func TestCustomerPromptsKeepHardSafetyEvidenceAndFloor(t *testing.T) {
 	if !strings.Contains(pricing, "还缺带宽或数量") {
 		t.Fatal("pricing prompt should keep a soft missing-slot reminder")
 	}
+	if !strings.Contains(pricing, "数量越多单价越低") || !strings.Contains(check, "减少数量来拿更低单价") {
+		t.Fatal("pricing/check prompts must keep quantity-tier direction")
+	}
+	if !strings.Contains(pricing, "不要对客说数量档、价格档") || !strings.Contains(pricing, "不要对客提系统定价、标准化或修改订单金额") {
+		t.Fatal("pricing prompt must hide tiers and system pricing from customers")
+	}
 }
 
 func TestCustomerPromptsDropCannedPlaybooks(t *testing.T) {
@@ -114,6 +120,7 @@ func TestCustomerPromptsDropCannedPlaybooks(t *testing.T) {
 			"首次报价绝不能报档位最低价",
 			"## 当前硬规则",
 			"## 产品不明硬规则",
+			"由于系统定价是标准化的，我这边无法直接为您修改订单金额",
 		} {
 			if strings.Contains(prompt, forbidden) {
 				t.Fatalf("%s still contains playbook %q", name, forbidden)
@@ -289,6 +296,7 @@ func TestCustomerSpecialistBasePromptForbidsInternalRoleLeakage(t *testing.T) {
 		"对客不提知识库、资料库、路径、prompt、router、检索、专家、分诊、JSON 字段名",
 		"也不要说“资料里没有”",
 		"不要说“转接某专家”",
+		"不要对客提系统定价、标准化计价或修改订单金额",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected base prompt to include %q, got:\n%s", want, prompt)
