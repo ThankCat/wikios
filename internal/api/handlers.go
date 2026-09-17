@@ -1812,22 +1812,16 @@ func (h *Handlers) gitStatus(ctx context.Context) (syncStatusResponse, error) {
 		}
 	}
 	status.BranchReady = strings.TrimSpace(status.Branch) != "" && strings.TrimSpace(status.Branch) != "HEAD" && (upstreamReady || remoteBranchReady)
-	if status.RemoteReady && strings.TrimSpace(status.Branch) != "" {
-		fetch, fetchErr := runner.Run(ctx, "fetch", remote, status.Branch)
-		if fetchErr != nil {
-			return syncStatusResponse{}, fetchErr
+	if remoteBranchReady {
+		if count, countErr := gitRevCount(ctx, runner, "HEAD.."+remote+"/"+status.Branch); countErr != nil {
+			return syncStatusResponse{}, countErr
+		} else {
+			status.Behind = count
 		}
-		if fetch.ExitCode == 0 {
-			if count, countErr := gitRevCount(ctx, runner, "HEAD.."+remote+"/"+status.Branch); countErr != nil {
-				return syncStatusResponse{}, countErr
-			} else {
-				status.Behind = count
-			}
-			if count, countErr := gitRevCount(ctx, runner, remote+"/"+status.Branch+"..HEAD"); countErr != nil {
-				return syncStatusResponse{}, countErr
-			} else {
-				status.Ahead = count
-			}
+		if count, countErr := gitRevCount(ctx, runner, remote+"/"+status.Branch+"..HEAD"); countErr != nil {
+			return syncStatusResponse{}, countErr
+		} else {
+			status.Ahead = count
 		}
 	}
 	status.ChangedCount = len(status.Files)

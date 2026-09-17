@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -2159,6 +2161,39 @@ func TestAdminDashboardReturnsSummaryWithoutAuth(t *testing.T) {
 	}
 }
 
+func TestAdminDashboardDoesNotFetchRemoteWiki(t *testing.T) {
+	fixture := newAPITestFixture(t, apiMockLLM{})
+	defer fixture.deps.Store.Close()
+
+	hangingRemote := startHangingGitRemote(t)
+	runGit(t, fixture.root, "init", "-b", "main")
+	runGit(t, fixture.root, "config", "user.email", "test@example.com")
+	runGit(t, fixture.root, "config", "user.name", "WikiOS Test")
+	runGit(t, fixture.root, "remote", "add", "origin", hangingRemote)
+	runGit(t, fixture.root, "add", "AGENT.md")
+	runGit(t, fixture.root, "commit", "-m", "init")
+
+	done := make(chan string, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/dashboard", nil)
+		rec := httptest.NewRecorder()
+		fixture.router.ServeHTTP(rec, req)
+		done <- fmt.Sprintf("%d %s", rec.Code, rec.Body.String())
+	}()
+
+	select {
+	case body := <-done:
+		if !strings.HasPrefix(body, "200 ") {
+			t.Fatalf("dashboard should return local sync status without fetch, got %s", body)
+		}
+		if strings.Contains(body, `"error"`) && strings.Contains(body, "context deadline") {
+			t.Fatalf("dashboard still waited on remote fetch: %s", body)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("dashboard hung; gitStatus still fetches the remote wiki")
+	}
+}
+
 func TestAdminRuntimeSettingsAPI(t *testing.T) {
 	fixture := newAPITestFixture(t, apiMockLLM{})
 
@@ -2552,6 +2587,28 @@ func runGit(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
 	}
+}
+
+func startHangingGitRemote(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen hanging git remote: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				time.Sleep(time.Minute)
+			}(conn)
+		}
+	}()
+	return "http://" + ln.Addr().String() + "/wiki.git"
 }
 
 func createAPITestWiki(t *testing.T) string {
