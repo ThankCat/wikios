@@ -22,6 +22,7 @@ type pricingRegressionCase struct {
 	Title          string                            `json:"title"`
 	UserMessage    string                            `json:"user_message"`
 	ReceivedAt     string                            `json:"received_at"`
+	History        []ChatMessage                     `json:"history"`
 	RouterOutput   CustomerRouterOutput              `json:"router_output"`
 	CandidatePages []pricingRegressionCandidatePage  `json:"candidate_pages"`
 	Expected       pricingRegressionExpectedBehavior `json:"expected"`
@@ -40,6 +41,8 @@ type pricingRegressionExpectedBehavior struct {
 	MustNotInclude     []string `json:"must_not_include"`
 	SourcePaths        []string `json:"source_paths"`
 	Notes              string   `json:"notes"`
+	QuoteStatus        string   `json:"quote_status"`
+	UnitPrice          int      `json:"unit_price"`
 }
 
 func TestCustomerSpecialistPricingRegressionFixture(t *testing.T) {
@@ -62,8 +65,16 @@ func TestCustomerSpecialistPricingRegressionFixture(t *testing.T) {
 			validatePricingRegressionCase(t, tc, seenIDs, profile)
 
 			evidence := pricingRegressionEvidence(t, profile, tc.CandidatePages)
+			req := CustomerChatRequest{Question: tc.UserMessage, History: tc.History}
+			facts := BuildCustomerQuoteFacts(req, &tc.RouterOutput, profile)
+			if status := strings.TrimSpace(tc.Expected.QuoteStatus); status != "" && facts.Status != status {
+				t.Fatalf("quote_facts.status=%q want %q (%+v)", facts.Status, status, facts)
+			}
+			if tc.Expected.UnitPrice > 0 && facts.UnitPrice != tc.Expected.UnitPrice {
+				t.Fatalf("quote_facts.unit_price=%d want %d (%+v)", facts.UnitPrice, tc.Expected.UnitPrice, facts)
+			}
 			userPrompt := svc.customerSpecialistDecisionPrompt(
-				CustomerChatRequest{Question: tc.UserMessage},
+				req,
 				tc.ReceivedAt,
 				&tc.RouterOutput,
 				profile,
@@ -77,6 +88,7 @@ func TestCustomerSpecialistPricingRegressionFixture(t *testing.T) {
 				"hard_boundary:",
 				"candidate_page_paths:",
 				"candidate_pages:",
+				"quote_facts:",
 			} {
 				if !strings.Contains(userPrompt, want) {
 					t.Fatalf("expected generated pricing prompt to contain %q, got:\n%s", want, userPrompt)
@@ -99,17 +111,12 @@ func TestCustomerSpecialistPricingPromptCoversRegressionPolicies(t *testing.T) {
 		"按客户本轮问题自然回答",
 		"还缺带宽或数量",
 		"月费 = 单价 × 数量",
-		"candidate_pages",
+		"quote_facts",
 		"客服最低授权价、审批阈值、采购成本、毛利",
-		"对客价不能低于当前价格页写明的该档底价",
-		"不要编更低数字",
 		"数量越多单价越低",
 		"不要建议客户减少数量来拿更低单价",
 		"不要对客说数量档、价格档",
-		"不要对客提系统定价、标准化或修改订单金额",
 		"不要提申请、特批或审批",
-		"不要说帮客户提交",
-		"底价看价格页，不看自己上一轮报过的价",
 		"不要整段复述上一轮",
 		"不要主动给电话、企业微信或购买链接",
 	} {

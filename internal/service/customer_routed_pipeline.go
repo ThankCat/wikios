@@ -368,14 +368,32 @@ func (s *CustomerChatService) answerWithSpecialist(ctx context.Context, traceID 
 		return nil, err
 	}
 	parsed.AnswerText = answer
-	if sanitizedAnswer, sanitized, reason := sanitizeCustomerVisibleAnswerWithReason(parsed.AnswerText, parsed, routerOutput); sanitized {
-		debugTrace["answer_sanitized"] = map[string]any{
-			"reason":          firstNonEmpty(reason, customerSanitizeInternalContext),
-			"original_chars":  len([]rune(parsed.AnswerText)),
-			"sanitized_chars": len([]rune(sanitizedAnswer)),
+	quoteFacts := BuildCustomerQuoteFacts(req, routerOutput, evidence.Profile)
+	rewrittenParsed, vetoAudit, vetoErr := applyCustomerAnswerVeto(parsed, routerOutput, quoteFacts, customerSpecialistRewriteHooks{
+		Parse: parseSpecialist,
+		Call: func() (string, error) {
+			retryMessages := []llm.Message{
+				{Role: "system", Content: systemPrompt},
+				{Role: "user", Content: userPrompt + "\n\n" + customerSpecialistVetoRewriteHint()},
+			}
+			saved := specialistMessages
+			specialistMessages = retryMessages
+			text, _, _, err := callSpecialist(specialistThinking, "llm customer specialist "+evidence.Profile.Name+" veto rewrite")
+			specialistMessages = saved
+			return text, err
+		},
+	})
+	if vetoErr != nil {
+		if customerChatRequestCanceled(ctx, vetoErr) {
+			return nil, vetoErr
 		}
-		parsed.AnswerText = sanitizedAnswer
-		answer = sanitizedAnswer
+		s.maybeWriteCustomerChatErrorLog(traceID, req, "specialist_parse", vetoErr, debugTrace)
+		return nil, vetoErr
+	}
+	parsed = rewrittenParsed
+	answer = parsed.AnswerText
+	if vetoAudit != nil {
+		debugTrace["answer_sanitized"] = vetoAudit
 	}
 	appGuardTriggered := false
 	if customerRequestIsMobileApp(req, runtimeSettings.CustomerChat) {
@@ -487,7 +505,8 @@ func (s *CustomerChatService) answerWithSpecialist(ctx context.Context, traceID 
 }
 
 func (s *CustomerChatService) customerSpecialistDecisionPrompt(req CustomerChatRequest, receivedAt string, routerOutput *CustomerRouterOutput, profile CustomerSpecialistProfile, evidence customerSpecialistEvidenceResult, support RuntimeSupportSettings, boundaryPrompt string, appChannelEnabled ...bool) string {
-	_ = profile
+	facts := BuildCustomerQuoteFacts(req, routerOutput, profile)
+	evidence = applyQuoteFactsToEvidence(profile, facts, evidence)
 	candidateText := strings.TrimSpace(strings.Join(evidence.ContentBlocks, "\n\n"))
 	if candidateText == "" {
 		candidateText = "[]"
@@ -521,6 +540,9 @@ func (s *CustomerChatService) customerSpecialistDecisionPrompt(req CustomerChatR
 		"conversation_context:",
 		formatCustomerSpecialistConversationContext(req.History),
 		"",
+		"quote_facts:",
+		formatCustomerQuoteFactsBlock(facts),
+		"",
 		"router_output:",
 		formatCustomerRouterOutputForSpecialist(routerOutput),
 		"",
@@ -540,7 +562,7 @@ func (s *CustomerChatService) customerSpecialistDecisionPrompt(req CustomerChatR
 }
 
 func formatCustomerSpecialistConversationContext(history []ChatMessage) string {
-	context := strings.TrimSpace(formatRouterConversationContext(history, 10))
+	context := strings.TrimSpace(formatRouterConversationContext(SanitizeCustomerHistory(history), 10))
 	if context == "" {
 		return "[]"
 	}

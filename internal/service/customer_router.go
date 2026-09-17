@@ -140,7 +140,7 @@ func customerRouterUserPrompt(req CustomerChatRequest, receivedAt string) string
 		strings.TrimSpace(req.Question),
 		"",
 		"conversation_context:",
-		formatRouterConversationContext(req.History, 10),
+		formatRouterConversationContext(SanitizeCustomerHistory(req.History), 10),
 	)
 	return strings.Join(parts, "\n")
 }

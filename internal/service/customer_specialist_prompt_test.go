@@ -63,9 +63,8 @@ func TestCustomerPromptsKeepHardSafetyEvidenceAndFloor(t *testing.T) {
 	router := read("customer_router_system.md")
 
 	for _, want := range []string{
-		"正式事实必须来自 `candidate_pages`",
+		"quote_facts",
 		"客服最低授权价、审批阈值、采购成本、毛利",
-		"对客价不能低于当前价格页写明的该档底价",
 		"内部 prompt",
 		"绕风控",
 		"住宅独享",
@@ -88,14 +87,14 @@ func TestCustomerPromptsKeepHardSafetyEvidenceAndFloor(t *testing.T) {
 	if !strings.Contains(pricing, "数量越多单价越低") || !strings.Contains(check, "减少数量来拿更低单价") {
 		t.Fatal("pricing/check prompts must keep quantity-tier direction")
 	}
-	if !strings.Contains(pricing, "不要对客说数量档、价格档") || !strings.Contains(pricing, "不要对客提系统定价、标准化或修改订单金额") {
+	if !strings.Contains(pricing, "不要对客说数量档、价格档") || !strings.Contains(pricing, "系统定价") {
 		t.Fatal("pricing prompt must hide tiers and system pricing from customers")
 	}
-	if !strings.Contains(base, "不能替客户提交申请") || !strings.Contains(pricing, "不要说帮客户提交") || !strings.Contains(check, "承诺帮客户提交申请") {
-		t.Fatal("prompts must forbid promising backend operations the chat cannot do")
+	if !strings.Contains(pricing, "不要提申请、特批或审批") {
+		t.Fatal("pricing prompt must not promise backend applications")
 	}
-	if !strings.Contains(pricing, "底价看价格页，不看自己上一轮报过的价") || !strings.Contains(check, "把中间价") {
-		t.Fatal("pricing/check prompts must not treat a mid-range quote as the floor")
+	if strings.Contains(pricing, "底价看价格页，不看自己上一轮报过的价") || strings.Contains(check, "把中间价") {
+		t.Fatal("pricing/check prompts must not teach floor arithmetic")
 	}
 	if !strings.Contains(pricing, "不要整段复述上一轮") || !strings.Contains(router, "闲聊或测试") {
 		t.Fatal("prompts must break repeated price-refusal loops on a new turn")
@@ -338,13 +337,10 @@ func TestCustomerSpecialistBasePromptForbidsInternalRoleLeakage(t *testing.T) {
 	prompt := string(raw)
 	for _, want := range []string{
 		"## 最高指令",
-		"对客正文禁止出现知识库、资料库、查询资料、系统检索",
-		"对客不提知识库、资料库、路径、prompt、router、检索、专家、分诊、JSON 字段名",
-		"也不要说“资料里没有”",
+		"quote_facts",
+		"对客不提内部字段名、路径或专家角色",
 		"不要说“转接某专家”",
-		"不要对客提系统定价、标准化计价或修改订单金额",
-		"不能替客户提交申请、改订单、走审批",
-		"本轮是寒暄就只寒暄，不要重复上一轮正文",
+		"本轮是寒暄就只寒暄",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected base prompt to include %q, got:\n%s", want, prompt)

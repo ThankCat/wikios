@@ -397,8 +397,11 @@ func TestAnswerRoutedUnsafeProductTermsGuardFlagsReviewWithoutRewriting(t *testi
 
 func TestAnswerRoutedHighRiskWithoutFinalSourcesCreatesReviewAndCountsFinalSources(t *testing.T) {
 	llmClient := &customerRoutedPipelineTestLLM{
-		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户是普通静态 IP 问价。"}`,
-		specialistText: `{"answer_mode":"evidence","answer":"共享型 25 元/个/月起。","review_question":"","confidence_breakdown":{"evidence_coverage":0.95,"source_directness":0.95,"answer_specificity":0.95,"missing_info_impact":0.95,"risk_sensitivity":0.95},"confidence":0.95,"evidence_confidence":0.95,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[],"notes":""}`,
+		routerText: `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户是普通静态 IP 问价。"}`,
+		specialistTexts: []string{
+			`{"answer_mode":"evidence","answer":"共享型 25 元/个/月起。","review_question":"","confidence_breakdown":{"evidence_coverage":0.95,"source_directness":0.95,"answer_specificity":0.95,"missing_info_impact":0.95,"risk_sensitivity":0.95},"confidence":0.95,"evidence_confidence":0.95,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[],"notes":""}`,
+			`{"answer_mode":"evidence","answer":"静态 IP 按条按月收费，具体要看带宽和数量。","review_question":"","confidence_breakdown":{"evidence_coverage":0.95,"source_directness":0.95,"answer_specificity":0.95,"missing_info_impact":0.95,"risk_sensitivity":0.95},"confidence":0.95,"evidence_confidence":0.95,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[],"notes":""}`,
+		},
 	}
 	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
 	resp, err := svc.answerRouted(context.Background(), "trace-routed-high-risk-no-final-sources", CustomerChatRequest{
@@ -1190,8 +1193,8 @@ func TestPricingSpecialistPromptDefinesGenericStartingPrice(t *testing.T) {
 	if strings.Contains(prompt, "derived_evidence_summary") {
 		t.Fatalf("pricing prompt must not reference service-derived evidence summary:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "candidate_pages") {
-		t.Fatalf("expected pricing prompt to rely on candidate_pages, got:\n%s", prompt)
+	if !strings.Contains(prompt, "quote_facts") {
+		t.Fatalf("expected pricing prompt to rely on quote_facts, got:\n%s", prompt)
 	}
 }
 
@@ -1962,8 +1965,11 @@ func TestCustomerSpecialistDecisionPromptIncludesMobileAppPolicy(t *testing.T) {
 func TestAnswerRoutedSanitizesSourcePathDisclosure(t *testing.T) {
 	rawAnswer := "请看 wiki/knowledge/internal.md 这条路径。"
 	llmClient := &customerRoutedPipelineTestLLM{
-		routerText:     `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户是普通静态 IP 问价。"}`,
-		specialistText: `{"answer_mode":"evidence","answer":"` + rawAnswer + `","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
+		routerText: `{"contract_version":"customer_router.v1","specialist":"pricing","routing_confidence":0.9,"routing_reason":"测试路由原因。","intent":"static_ip_price_inquiry","rewritten_question":"客户想了解四叶天静态 IP 怎么收费。","history_summary":"","slots":{"primary_product":"static_ip","products":["static_ip"],"static_type":"","ip_type":"","bandwidth":"","quantity":"","scenario":"","platform":"","device":"","error_code":""},"ambiguity":{"is_ambiguous":false,"ambiguous_fields":[],"reason":""},"missing_info":[],"risk_flags":["pricing"],"needs_retrieval":true,"retrieval_queries":["四叶天 静态 IP 价格"],"handoff_notes":"用户是普通静态 IP 问价。"}`,
+		specialistTexts: []string{
+			`{"answer_mode":"evidence","answer":"` + rawAnswer + `","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
+			`{"answer_mode":"evidence","answer":"静态 IP 按条按月收费，告诉我带宽和数量即可核算。","review_question":"","confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},"confidence":0.9,"evidence_confidence":0.9,"review_required":false,"review_reason":"","suggested_target_path":"","sources":[{"path":"wiki/knowledge/si-ye-tian-static-ip-pricing.md","confidence":"high"}],"notes":""}`,
+		},
 	}
 	svc := newCustomerRoutedPipelineTestService(t, llmClient, "")
 	resp, err := svc.answerRouted(context.Background(), "trace-routed-no-sanitize", CustomerChatRequest{

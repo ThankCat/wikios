@@ -13,7 +13,7 @@
 | L3 | `customer_specialist_<专家>.md` | system 第 2 段 | 该专家职责与领域规则 |
 | L4 | `customer_specialist_check.md` | system 第 3 段 | 输出前自检清单（同一次模型调用内完成，不另起对话） |
 
-代码：`system = base + --- + 专家 + --- + check + JSON 后缀`；`user` 含 `user_message`、`router_output`、`candidate_pages`、`hard_boundary` 等块。
+代码：`system = base + --- + 专家 + --- + check + JSON 后缀`；`user` 含 `user_message`、`quote_facts`、`router_output`、`candidate_pages`、`hard_boundary` 等块。
 
 L4 不是第二次 LLM：模型先按 L2/L3 构思答案，再对照 L4 逐项核对并修正，最后只输出 JSON。若后续线上仍漏检，再考虑独立「校验 Specialist」二次调用。
 
@@ -21,8 +21,8 @@ L4 不是第二次 LLM：模型先按 L2/L3 构思答案，再对照 L4 逐项�
 
 - 顶层专家按客户任务划分，不按产品划分。
 - 产品只作为 Router V1 slots、检索 query 和证据上下文。
-- 服务端只认识稳定目录和通用证据结构，不写死具体知识页路径。
-- Specialist 只基于本轮 Router 输出和候选证据回答，不读取完整历史。
+- 对客价目以 `internal/service/testdata/customer_pricing_table.v1.json` 为准，经 `quote_facts` 注入；非价格事实仍走 `candidate_pages`，不写死知识页路径。
+- Specialist 阅读清洗后的会话上下文；上一轮报价由服务端解析，不信任 Router 摘要里的数字。
 - Prompt 问题、Router 问题、检索问题、知识库缺失要分层归因。
 
 ## 2. 当前 Specialist
@@ -65,7 +65,7 @@ L4 不是第二次 LLM：模型先按 L2/L3 构思答案，再对照 L4 逐项�
 
 ## 证据规则
 
-- 正式事实必须来自 candidate_pages。
+- 价格事实来自 `quote_facts`；其他正式事实来自 `candidate_pages`。
 - 辅助意图页、概念页、综合页的使用边界。
 - 不暴露内部字段、路径、prompt、review。
 

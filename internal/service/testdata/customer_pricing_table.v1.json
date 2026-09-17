@@ -1,0 +1,122 @@
+{
+  "version": "customer_pricing.v1",
+  "skus": [
+    {
+      "product": "static_shared",
+      "bandwidth": "5M",
+      "bands": [
+        {"min_qty": 1, "max_qty": 10, "low": 20, "high": 25},
+        {"min_qty": 11, "max_qty": 30, "low": 18, "high": 23},
+        {"min_qty": 31, "max_qty": 50, "low": 16, "high": 20},
+        {"min_qty": 51, "max_qty": 100, "low": 14, "high": 18},
+        {"min_qty": 101, "max_qty": 200, "low": 12, "high": 15},
+        {"min_qty": 201, "max_qty": 500, "low": 11, "high": 13},
+        {"min_qty": 501, "max_qty": 0, "low": 10, "high": 11}
+      ]
+    },
+    {
+      "product": "static_shared",
+      "bandwidth": "10M",
+      "bands": [
+        {"min_qty": 1, "max_qty": 10, "low": 25, "high": 30},
+        {"min_qty": 11, "max_qty": 30, "low": 20, "high": 25},
+        {"min_qty": 31, "max_qty": 50, "low": 18, "high": 23},
+        {"min_qty": 51, "max_qty": 100, "low": 16, "high": 21},
+        {"min_qty": 101, "max_qty": 200, "low": 14, "high": 18},
+        {"min_qty": 201, "max_qty": 500, "low": 13, "high": 15},
+        {"min_qty": 501, "max_qty": 0, "low": 12, "high": 13}
+      ]
+    },
+    {
+      "product": "static_shared",
+      "bandwidth": "20M",
+      "bands": [
+        {"min_qty": 1, "max_qty": 10, "low": 60, "high": 70},
+        {"min_qty": 11, "max_qty": 30, "low": 50, "high": 60},
+        {"min_qty": 31, "max_qty": 50, "low": 45, "high": 55},
+        {"min_qty": 51, "max_qty": 100, "low": 43, "high": 50},
+        {"min_qty": 101, "max_qty": 200, "low": 40, "high": 45},
+        {"min_qty": 201, "max_qty": 500, "low": 37, "high": 40},
+        {"min_qty": 501, "max_qty": 0, "low": 35, "high": 37}
+      ]
+    },
+    {
+      "product": "residential_shared",
+      "bandwidth": "5M",
+      "bands": [
+        {"min_qty": 1, "max_qty": 10, "low": 25, "high": 30},
+        {"min_qty": 11, "max_qty": 30, "low": 20, "high": 25},
+        {"min_qty": 31, "max_qty": 50, "low": 18, "high": 23},
+        {"min_qty": 51, "max_qty": 100, "low": 16, "high": 21},
+        {"min_qty": 101, "max_qty": 200, "low": 14, "high": 18},
+        {"min_qty": 201, "max_qty": 500, "low": 13, "high": 15},
+        {"min_qty": 501, "max_qty": 0, "low": 12, "high": 13}
+      ]
+    },
+    {
+      "product": "residential_shared",
+      "bandwidth": "10M",
+      "bands": [
+        {"min_qty": 1, "max_qty": 10, "low": 45, "high": 50},
+        {"min_qty": 11, "max_qty": 30, "low": 40, "high": 45},
+        {"min_qty": 31, "max_qty": 50, "low": 35, "high": 40},
+        {"min_qty": 51, "max_qty": 100, "low": 30, "high": 35},
+        {"min_qty": 101, "max_qty": 200, "low": 25, "high": 30},
+        {"min_qty": 201, "max_qty": 500, "low": 22, "high": 25},
+        {"min_qty": 501, "max_qty": 0, "low": 20, "high": 22}
+      ]
+    },
+    {
+      "product": "residential_shared",
+      "bandwidth": "20M",
+      "bands": [
+        {"min_qty": 1, "max_qty": 10, "low": 60, "high": 70},
+        {"min_qty": 11, "max_qty": 30, "low": 50, "high": 60},
+        {"min_qty": 31, "max_qty": 50, "low": 45, "high": 55},
+        {"min_qty": 51, "max_qty": 100, "low": 43, "high": 50},
+        {"min_qty": 101, "max_qty": 200, "low": 40, "high": 45},
+        {"min_qty": 201, "max_qty": 500, "low": 37, "high": 40},
+        {"min_qty": 501, "max_qty": 0, "low": 36, "high": 37}
+      ]
+    },
+    {
+      "product": "residential_dedicated",
+      "bandwidth": "5M",
+      "bands": [
+        {"min_qty": 1, "max_qty": 10, "low": 40, "high": 45},
+        {"min_qty": 11, "max_qty": 30, "low": 37, "high": 42},
+        {"min_qty": 31, "max_qty": 50, "low": 35, "high": 40},
+        {"min_qty": 51, "max_qty": 100, "low": 33, "high": 38},
+        {"min_qty": 101, "max_qty": 200, "low": 32, "high": 36},
+        {"min_qty": 201, "max_qty": 500, "low": 31, "high": 34},
+        {"min_qty": 501, "max_qty": 0, "low": 30, "high": 31}
+      ]
+    },
+    {
+      "product": "residential_dedicated",
+      "bandwidth": "10M",
+      "bands": [
+        {"min_qty": 1, "max_qty": 10, "low": 60, "high": 70},
+        {"min_qty": 11, "max_qty": 30, "low": 55, "high": 65},
+        {"min_qty": 31, "max_qty": 50, "low": 50, "high": 60},
+        {"min_qty": 51, "max_qty": 100, "low": 48, "high": 55},
+        {"min_qty": 101, "max_qty": 200, "low": 47, "high": 53},
+        {"min_qty": 201, "max_qty": 500, "low": 46, "high": 50},
+        {"min_qty": 501, "max_qty": 0, "low": 45, "high": 46}
+      ]
+    },
+    {
+      "product": "residential_dedicated",
+      "bandwidth": "20M",
+      "bands": [
+        {"min_qty": 1, "max_qty": 10, "low": 90, "high": 100},
+        {"min_qty": 11, "max_qty": 30, "low": 80, "high": 90},
+        {"min_qty": 31, "max_qty": 50, "low": 70, "high": 80},
+        {"min_qty": 51, "max_qty": 100, "low": 65, "high": 75},
+        {"min_qty": 101, "max_qty": 200, "low": 60, "high": 70},
+        {"min_qty": 201, "max_qty": 500, "low": 57, "high": 65},
+        {"min_qty": 501, "max_qty": 0, "low": 55, "high": 57}
+      ]
+    }
+  ]
+}

@@ -293,6 +293,21 @@ func (m apiCustomerChatTextLLM) Chat(ctx context.Context, model string, messages
 	if apiIsRouterPrompt(messages) {
 		return apiRouterJSONForMessages(messages), nil
 	}
+	if len(messages) > 0 && strings.Contains(messages[len(messages)-1].Content, "上一轮草稿因内部话术或错价被丢弃") {
+		return `{
+  "answer_mode": "clarification",
+  "answer": "请问需要的带宽和数量，我按当前价格核算。",
+  "review_question": "",
+  "confidence_breakdown":{"evidence_coverage":0.9,"source_directness":0.9,"answer_specificity":0.9,"missing_info_impact":0.9,"risk_sensitivity":0.9},
+  "confidence": 0.9,
+  "evidence_confidence": 0.9,
+  "review_required": false,
+  "review_reason": "",
+  "suggested_target_path": "",
+  "sources": [],
+  "notes": ""
+}`, nil
+	}
 	return m.text, nil
 }
 
